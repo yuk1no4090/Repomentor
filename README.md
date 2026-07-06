@@ -15,14 +15,17 @@ Then open `http://localhost:3000`.
 
 ```bash
 npm run test:static
+npm run test:ui
 npm test
 ```
 
-`npm run test:static` runs `scripts/static-checks.js`, which performs syntax checks, locale-copy consistency checks, frontend agent UI checks, text-quality checks, runtime dependency checks, API documentation sync checks, store-schema checks, smoke reliability checks, safety guardrail contract checks, and agent response contract checks without starting a server. `npm test` runs the static checks plus the smoke test.
+`npm run test:static` runs `scripts/static-checks.js`, which performs syntax checks, locale-copy consistency checks, frontend agent UI checks, text-quality checks, runtime dependency checks, API documentation sync checks, store-schema checks, smoke reliability checks, UI acceptance wiring checks, safety guardrail contract checks, and agent response contract checks without starting a server. `npm test` runs the static checks, smoke test, and UI acceptance test.
 
 Static check scripts use the `scripts/check-*.js` naming convention. `scripts/static-checks.js` syntax-checks all `scripts/*.js` files and discovers/runs `check-*.js` automatically.
 
 The smoke test starts the server on temporary ports with isolated temporary data stores, then verifies custom `STORE_PATH` creation, corrupt store backup, invalid timeout/context-budget config fallback, sample import, LangGraph agent execution, memory confirmation/forget, Chinese memory suggestions, safety guardrails, Chinese prompt-injection and secret-request guardrails, tool-permission guardrails, retrieved-context prompt-injection handling, retrieved sensitive content handling, Q&A, evaluation metrics, API-key mode fallback when a fake OpenAI-compatible model returns schema-invalid JSON, context token budget fallback before external model calls, missing-citation guardrails when the fake model cites a nonexistent file, and sensitive-output guardrails when the fake model emits secret-like text. Smoke requests use explicit timeouts and wait for spawned servers to exit during cleanup. Use `npm run test:smoke` to run only the server-backed smoke test.
+
+The UI acceptance test starts the server with an isolated data directory, fetches the served frontend assets, imports the sample workspace, runs the Agent Workflow, confirms a memory suggestion when available, then verifies that Memory, Harness, Safety, long-term memory, dashboard metrics, and the harness audit panel all have renderable API data. Use `npm run test:ui` to run only this served frontend assets and UI data-contract check.
 
 GitHub Actions runs `npm ci` and `npm test` on pushes to `main` and pull requests.
 

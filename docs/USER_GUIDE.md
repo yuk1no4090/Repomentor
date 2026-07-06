@@ -209,6 +209,13 @@ npm run dev
 6. **切换到 Agent Tab**（1 分钟）→ 运行 Agent 工作流，展示 trace、Memory / Harness / Safety 状态和 guardrails
 7. **打开 Dashboard**（30 秒）→ 展示真实评估指标，包括 guardrail hits、memory confirmations、fallback runs
 
+### 7.1 自动化验收
+
+- `npm run test:static`：静态契约、文案、依赖、架构文档和前端 UI 结构检查。
+- `npm run test:smoke`：后端 API、LangGraph、记忆、harness、安全、评价指标的临时服务回归测试。
+- `npm run test:ui`：启动临时服务，拉取真实前端资源，导入 sample workspace，运行 Agent Workflow，并确认 Memory / Harness / Safety / long-term memory / Dashboard / harness audit panel 都有可渲染数据。
+- `npm test`：串联以上三类检查。
+
 **关键面试话术**：
 - "顶部绿色标识说明当前是 AI 增强模式，我接入了 DeepSeek API"
 - "每条回答都有文件引用——这是 RAG 的 citation 机制，降低幻觉"
