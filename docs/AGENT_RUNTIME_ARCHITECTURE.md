@@ -34,7 +34,7 @@ Each node appends trace metadata so the UI can show the agent path instead of hi
 
 ## Memory Boundary
 
-Confirmed preference memory is stored in `data/store.json` under `userPreferences`. Confirmed preference memory is global for the local app instance, not project-scoped. Confirmed long-term memory items are also stored in SQLite at `MEMORY_DB_PATH` under the `memory_items` table, with an FTS5 index when available. Each long-term memory item keeps its source `projectId` for filtering and audit. Memory suggestions carry `projectId` so the UI and API can verify which project produced the suggestion before confirmation or ignore actions.
+Confirmed preference memory is stored in `data/store.json` under `userPreferencesByUser`, with legacy `userPreferences` retained for the default `local-user` profile. API clients can pass `userId` in JSON bodies or `X-User-Id` / `X-AI-PM-User-Id` headers; missing values resolve to `local-user` for local/backward-compatible use. Confirmed long-term memory items are also stored in SQLite at `MEMORY_DB_PATH` under the `memory_items` table, with `memory_items.user_id` for user isolation and an FTS5 index when available. Each long-term memory item keeps its source `projectId` for filtering and audit. Memory suggestions carry `userId` and `projectId` so the UI and API can verify which user and project produced the suggestion before confirmation or ignore actions.
 
 Non-GET API requests run through an in-process write queue before reading and saving the store. Store saves use a same-directory temporary file followed by rename, so preference, feedback, and trace metadata writes are less likely to lose concurrent updates or leave a partial JSON file if the process is interrupted.
 
@@ -48,19 +48,19 @@ Supported preference fields:
 - `focusAreas`
 - `taskTypes`
 
-Memory suggestions are stored separately under `memorySuggestions`. The system may suggest memory from recent Agent Workflow or Direct Chat usage, but only `POST /api/memory/confirm` writes the value into long-lived preferences and the SQLite long-term memory store. `POST /api/memory/forget` can ignore one pending suggestion, clear one known preference key, or clear all preferences, and active matching long-term memory items are marked forgotten.
+Memory suggestions are stored separately under `memorySuggestions`. The system may suggest memory from recent Agent Workflow or Direct Chat usage, but only `POST /api/memory/confirm` writes the value into the resolved user's long-lived preferences and the SQLite long-term memory store. `POST /api/memory/forget` can ignore one pending suggestion, clear one known preference key, or clear all preferences for the resolved user, and active matching long-term memory items for that user are marked forgotten.
 
-Memory mutations are also recorded under `memoryEvents`. Confirming, ignoring, selectively forgetting, or clearing preferences creates a lightweight audit event with project id, suggestion id when available, action, preference key/value, status, and timestamp. `GET /api/memory` returns recent events alongside preferences and suggestions.
+Memory mutations are also recorded under `memoryEvents`. Confirming, ignoring, selectively forgetting, or clearing preferences creates a lightweight audit event with user id, project id, suggestion id when available, action, preference key/value, status, and timestamp. `GET /api/memory` returns recent events alongside preferences and suggestions for the resolved user.
 
-The Copilot inspector uses `GET /api/memory` plus `POST /api/memory/forget` as a lightweight memory manager. It shows confirmed preferences, recent long-term memory items, and audit events, and lets the user remove one key/value pair or clear all preferences without creating a separate page. `GET /api/memory` also supports `q`/`query`, `status=active|forgotten|superseded|all`, and `limit`; the response includes `long_term_memory_query` so UI and tests can verify the exact memory inspection filter.
+The Copilot inspector uses `GET /api/memory` plus `POST /api/memory/forget` as a lightweight memory manager. It shows confirmed preferences, recent long-term memory items, and audit events, and lets the user remove one key/value pair or clear all preferences without creating a separate page. `GET /api/memory` also supports `userId`, `q`/`query`, `status=active|forgotten|superseded|all`, and `limit`; the response includes `long_term_memory_query` so UI and tests can verify the exact memory inspection filter.
 
 Confirmed scalar preferences (`role`, `language`, and `detailLevel`) compact older conflicting long-term memory items by marking the previous active value as `superseded`. The runtime also maintains a `preference_summary` memory item with source `memory_compaction`, so later retrieval can use one compressed profile record instead of only raw suggestion records.
 
 Confirmed preferences are applied to both impact analysis and ordinary Q&A. Retrieved long-term memory is also reported to both flows. Product Manager, QA, focus-area, language, and detail-level preferences can change answer emphasis, suggested next questions, and concise/detailed shaping after schema validation and before safety checks.
 
-Suggestion records are normalized on store load/save so missing ids, timestamps, confidence values, and invalid statuses cannot destabilize the UI or metrics. Only pending suggestions can be confirmed or ignored. Confirm and forget requests may include `projectId`; when supplied, the suggestion must belong to that project or the request is rejected. Unknown preference keys are rejected instead of falling back to full memory deletion. Unknown preference values are rejected instead of writing arbitrary values into long-lived preferences. Ignored suggestions suppress the same key/value suggestion from being repeated. Selective forget clears one preference key while preserving the rest of the confirmed preference memory. Unsafe input does not create new memory suggestions; existing confirmed preferences may still be applied.
+Suggestion records are normalized on store load/save so missing ids, timestamps, confidence values, and invalid statuses cannot destabilize the UI or metrics. Only pending suggestions can be confirmed or ignored. Confirm and forget requests are user-scoped; if the resolved user does not match the suggestion owner, the request is rejected with `MEMORY_USER_MISMATCH`. Confirm and forget requests may include `projectId`; when supplied, the suggestion must belong to that project or the request is rejected. Unknown preference keys are rejected instead of falling back to full memory deletion. Unknown preference values are rejected instead of writing arbitrary values into long-lived preferences. Ignored suggestions suppress the same key/value suggestion from being repeated for that user. Selective forget clears one preference key while preserving the rest of the confirmed preference memory. Unsafe input does not create new memory suggestions; existing confirmed preferences may still be applied.
 
-Memory API errors return `{ error, code }` so the UI and tests can distinguish user-visible copy from machine-readable state. The memory boundary currently uses `MEMORY_SUGGESTION_NOT_FOUND`, `MEMORY_SUGGESTION_NOT_PENDING`, `MEMORY_PROJECT_MISMATCH`, and `UNKNOWN_MEMORY_PREFERENCE_KEY`.
+Memory API errors return `{ error, code }` so the UI and tests can distinguish user-visible copy from machine-readable state. The memory boundary currently uses `MEMORY_SUGGESTION_NOT_FOUND`, `MEMORY_SUGGESTION_NOT_PENDING`, `MEMORY_PROJECT_MISMATCH`, `MEMORY_USER_MISMATCH`, `UNKNOWN_MEMORY_PREFERENCE_KEY`, and `UNKNOWN_MEMORY_PREFERENCE_VALUE`.
 
 ## modelAdapter
 
@@ -160,12 +160,15 @@ The active safety policy is centralized in `SAFETY_POLICY` and summarized on `/a
 
 `npm run test:memory` runs a dedicated long-term memory compaction suite. It confirms conflicting role preferences, verifies the previous scalar value is marked `superseded`, and checks that the active `preference_summary` record from `memory_compaction` reflects the latest preference state.
 
+`npm run test:user-memory` runs a dedicated user isolation suite. It confirms two different users can keep different role memories, verifies cross-user memory confirmation is rejected, and checks that `GET /api/memory` plus SQLite long-term memory retrieval are scoped by user.
+
 ## Non-Goals
 
 The first version intentionally does not include:
 
-- database persistence
+- external database persistence beyond local JSON and SQLite files
 - vector long-term memory
+- real authentication and authorization
 - LangSmith tracing
 - dynamic supervisor routing
 - autonomous write tools
@@ -174,7 +177,7 @@ The first version intentionally does not include:
 
 ## Verification Gates
 
-`npm test` runs static checks, smoke tests, UI acceptance tests, safety red-team tests, and memory compaction tests.
+`npm test` runs static checks, smoke tests, UI acceptance tests, safety red-team tests, memory compaction tests, and user memory isolation tests.
 
 Static checks cover:
 
@@ -194,6 +197,7 @@ Smoke tests cover:
 - input prompt injection and secret request guardrails
 - safety policy health metadata and red-team cases
 - memory compaction, superseded preferences, and summary records
+- user-scoped memory isolation and cross-user confirmation rejection
 - retrieved-context prompt injection guardrails
 - retrieved sensitive content guardrails
 - API-key mode with fake OpenAI-compatible schema failure

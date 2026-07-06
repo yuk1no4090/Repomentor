@@ -20,6 +20,7 @@ const STORE_PATH = process.env.STORE_PATH
 const MEMORY_DB_PATH = process.env.MEMORY_DB_PATH
   ? path.resolve(process.env.MEMORY_DB_PATH)
   : path.join(DATA_DIR, "memory.sqlite");
+const DEFAULT_USER_ID = "local-user";
 
 function readTextFileSafe(filePath) {
   try {
@@ -406,6 +407,7 @@ function getMemoryDatabase() {
     PRAGMA journal_mode = WAL;
     CREATE TABLE IF NOT EXISTS memory_items (
       id TEXT PRIMARY KEY,
+      user_id TEXT,
       project_id TEXT,
       scope TEXT NOT NULL,
       type TEXT NOT NULL,
@@ -439,6 +441,12 @@ function getMemoryDatabase() {
     CREATE INDEX IF NOT EXISTS idx_langgraph_checkpoints_run ON langgraph_checkpoints(run_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_langgraph_checkpoints_project ON langgraph_checkpoints(project_id, created_at);
   `);
+  const memoryColumns = memoryDb.prepare("PRAGMA table_info(memory_items)").all().map((column) => column.name);
+  if (!memoryColumns.includes("user_id")) {
+    memoryDb.exec(`ALTER TABLE memory_items ADD COLUMN user_id TEXT;`);
+  }
+  memoryDb.prepare("UPDATE memory_items SET user_id = ? WHERE user_id IS NULL OR user_id = ''").run(DEFAULT_USER_ID);
+  memoryDb.exec(`CREATE INDEX IF NOT EXISTS idx_memory_items_user_status ON memory_items(user_id, status);`);
   try {
     memoryDb.exec(`
       DROP TABLE IF EXISTS memory_items_fts;
@@ -458,6 +466,7 @@ function normalizeLongTermMemoryItem(item) {
   if (!item || typeof item !== "object") return null;
   return {
     id: String(item.id || crypto.randomUUID()),
+    userId: item.user_id || item.userId || DEFAULT_USER_ID,
     projectId: item.project_id || item.projectId || null,
     scope: item.scope || "user",
     type: item.type || "preference",
@@ -505,10 +514,11 @@ function upsertLongTermMemoryFromSuggestion(suggestion) {
   ].filter(Boolean).join(" ");
   db.prepare(`
     INSERT INTO memory_items (
-      id, project_id, scope, type, key, value, label, content, source, confidence, status, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, user_id, project_id, scope, type, key, value, label, content, source, confidence, status, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       project_id = excluded.project_id,
+      user_id = excluded.user_id,
       scope = excluded.scope,
       type = excluded.type,
       key = excluded.key,
@@ -521,6 +531,7 @@ function upsertLongTermMemoryFromSuggestion(suggestion) {
       updated_at = excluded.updated_at
   `).run(
     id,
+    suggestion.userId || DEFAULT_USER_ID,
     suggestion.projectId || null,
     "user",
     "preference",
@@ -534,13 +545,13 @@ function upsertLongTermMemoryFromSuggestion(suggestion) {
     suggestion.createdAt || now,
     now
   );
-  compactLongTermPreferenceMemories({ projectId: suggestion.projectId || null, changedKey: suggestion.key, activeValue: String(suggestion.value) });
+  compactLongTermPreferenceMemories({ userId: suggestion.userId || DEFAULT_USER_ID, projectId: suggestion.projectId || null, changedKey: suggestion.key, activeValue: String(suggestion.value) });
   syncMemoryFtsRow(db, id);
-  refreshLongTermMemorySummary({ projectId: suggestion.projectId || null });
+  refreshLongTermMemorySummary({ userId: suggestion.userId || DEFAULT_USER_ID, projectId: suggestion.projectId || null });
   return getLongTermMemoryById(id);
 }
 
-function compactLongTermPreferenceMemories({ projectId = null, changedKey = null, activeValue = null } = {}) {
+function compactLongTermPreferenceMemories({ userId = DEFAULT_USER_ID, projectId = null, changedKey = null, activeValue = null } = {}) {
   if (!["role", "language", "detailLevel"].includes(changedKey)) {
     return { superseded: 0 };
   }
@@ -553,22 +564,24 @@ function compactLongTermPreferenceMemories({ projectId = null, changedKey = null
       AND type = 'preference'
       AND key = ?
       AND value != ?
+      AND user_id = ?
       AND (? IS NULL OR project_id = ? OR project_id IS NULL)
-  `).run(now, changedKey, String(activeValue), projectId, projectId);
+  `).run(now, changedKey, String(activeValue), userId, projectId, projectId);
   return { superseded: result.changes || 0 };
 }
 
-function refreshLongTermMemorySummary({ projectId = null } = {}) {
+function refreshLongTermMemorySummary({ userId = DEFAULT_USER_ID, projectId = null } = {}) {
   const db = getMemoryDatabase();
   const now = new Date().toISOString();
   const active = db.prepare(`
     SELECT key, value, label FROM memory_items
     WHERE status = 'active'
       AND type = 'preference'
+      AND user_id = ?
       AND (? IS NULL OR project_id = ? OR project_id IS NULL)
     ORDER BY key ASC, updated_at DESC
-  `).all(projectId, projectId);
-  const summaryId = `summary_${projectId || "global"}_preferences`;
+  `).all(userId, projectId, projectId);
+  const summaryId = `summary_${userId}_${projectId || "global"}_preferences`;
   if (!active.length) {
     db.prepare("UPDATE memory_items SET status = 'forgotten', updated_at = ? WHERE id = ?").run(now, summaryId);
     syncMemoryFtsRow(db, summaryId);
@@ -585,16 +598,18 @@ function refreshLongTermMemorySummary({ projectId = null } = {}) {
   const content = `Compressed user preference memory. ${summary}`;
   db.prepare(`
     INSERT INTO memory_items (
-      id, project_id, scope, type, key, value, label, content, source, confidence, status, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, user_id, project_id, scope, type, key, value, label, content, source, confidence, status, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       project_id = excluded.project_id,
+      user_id = excluded.user_id,
       value = excluded.value,
       content = excluded.content,
       status = excluded.status,
       updated_at = excluded.updated_at
   `).run(
     summaryId,
+    userId,
     projectId,
     "user",
     "preference_summary",
@@ -612,11 +627,13 @@ function refreshLongTermMemorySummary({ projectId = null } = {}) {
   return getLongTermMemoryById(summaryId);
 }
 
-function markLongTermMemoryForgotten({ projectId = null, key = null, value = null, reason = "forgotten" }) {
+function markLongTermMemoryForgotten({ userId = DEFAULT_USER_ID, projectId = null, key = null, value = null, reason = "forgotten" }) {
   const db = getMemoryDatabase();
   const now = new Date().toISOString();
   let sql = "UPDATE memory_items SET status = ?, updated_at = ? WHERE status = 'active'";
   const params = [reason, now];
+  sql += " AND user_id = ?";
+  params.push(userId);
   if (projectId) {
     sql += " AND (project_id = ? OR project_id IS NULL)";
     params.push(projectId);
@@ -630,7 +647,7 @@ function markLongTermMemoryForgotten({ projectId = null, key = null, value = nul
     params.push(String(value));
   }
   const result = db.prepare(sql).run(...params);
-  refreshLongTermMemorySummary({ projectId });
+  refreshLongTermMemorySummary({ userId, projectId });
   return result.changes || 0;
 }
 
@@ -660,10 +677,12 @@ function parsePositiveInteger(value, fallback, max) {
   return Math.min(parsed, max);
 }
 
-function buildLongTermMemoryFilters({ projectId = null, status = "active" } = {}) {
+function buildLongTermMemoryFilters({ userId = DEFAULT_USER_ID, projectId = null, status = "active" } = {}) {
   const statusFilter = normalizeLongTermMemoryStatusFilter(status);
   const clauses = [];
   const params = [];
+  clauses.push("m.user_id = ?");
+  params.push(userId);
   if (statusFilter === "active") {
     clauses.push("m.status = ?");
     params.push("active");
@@ -685,10 +704,10 @@ function buildLongTermMemoryFilters({ projectId = null, status = "active" } = {}
   };
 }
 
-function searchLongTermMemory({ projectId = null, query = "", limit = 5, status = "active", recordUsage = true } = {}) {
+function searchLongTermMemory({ userId = DEFAULT_USER_ID, projectId = null, query = "", limit = 5, status = "active", recordUsage = true } = {}) {
   const db = getMemoryDatabase();
   const tokens = tokenizeMemoryQuery(query);
-  const filters = buildLongTermMemoryFilters({ projectId, status });
+  const filters = buildLongTermMemoryFilters({ userId, projectId, status });
   let rows = [];
   if (tokens.length && memoryDbFtsEnabled) {
     const ftsQuery = tokens.map((token) => `${token.replaceAll('"', "")}*`).join(" OR ");
@@ -730,9 +749,9 @@ function searchLongTermMemory({ projectId = null, query = "", limit = 5, status 
   return rows.map(normalizeLongTermMemoryItem).filter(Boolean);
 }
 
-function listLongTermMemories({ projectId = null, limit = 20, status = "active" } = {}) {
+function listLongTermMemories({ userId = DEFAULT_USER_ID, projectId = null, limit = 20, status = "active" } = {}) {
   const db = getMemoryDatabase();
-  const filters = buildLongTermMemoryFilters({ projectId, status });
+  const filters = buildLongTermMemoryFilters({ userId, projectId, status });
   const rows = db.prepare(`
     SELECT * FROM memory_items m
     WHERE 1 = 1
@@ -906,6 +925,7 @@ function normalizeMemorySuggestion(item) {
   return {
     ...item,
     id: item.id || crypto.randomUUID(),
+    userId: typeof item.userId === "string" && item.userId ? item.userId : DEFAULT_USER_ID,
     key: typeof item.key === "string" ? item.key : "unknown",
     label: typeof item.label === "string" ? item.label : String(item.key || "Memory suggestion"),
     confidence: typeof item.confidence === "string" ? item.confidence : "medium",
@@ -919,6 +939,7 @@ function normalizeMemoryEvent(item) {
   const action = typeof item.action === "string" ? item.action : "memory_event";
   return {
     id: item.id || crypto.randomUUID(),
+    userId: typeof item.userId === "string" && item.userId ? item.userId : DEFAULT_USER_ID,
     projectId: typeof item.projectId === "string" ? item.projectId : null,
     suggestionId: typeof item.suggestionId === "string" ? item.suggestionId : null,
     action,
@@ -999,15 +1020,18 @@ function normalizeStore(store) {
     ...createEmptyPreferences(),
     ...(normalized.userPreferences || {})
   };
-  normalized.userPreferences.focusAreas = Array.isArray(normalized.userPreferences.focusAreas)
-    ? normalized.userPreferences.focusAreas.filter((value) => isKnownMemoryValue("focusAreas", value))
-    : [];
-  normalized.userPreferences.taskTypes = Array.isArray(normalized.userPreferences.taskTypes)
-    ? normalized.userPreferences.taskTypes.filter((value) => isKnownMemoryValue("taskTypes", value))
-    : [];
-  if (!isKnownMemoryValue("role", normalized.userPreferences.role)) normalized.userPreferences.role = null;
-  if (!isKnownMemoryValue("language", normalized.userPreferences.language)) normalized.userPreferences.language = null;
-  if (!isKnownMemoryValue("detailLevel", normalized.userPreferences.detailLevel)) normalized.userPreferences.detailLevel = null;
+  normalized.userPreferencesByUser = normalized.userPreferencesByUser && typeof normalized.userPreferencesByUser === "object"
+    ? normalized.userPreferencesByUser
+    : {};
+  if (!normalized.userPreferencesByUser[DEFAULT_USER_ID]) {
+    normalized.userPreferencesByUser[DEFAULT_USER_ID] = normalized.userPreferences;
+  }
+  Object.keys(normalized.userPreferencesByUser).forEach((userId) => {
+    const normalizedUserId = normalizeUserId(userId);
+    normalized.userPreferencesByUser[normalizedUserId] = normalizePreferences(normalized.userPreferencesByUser[userId]);
+    if (normalizedUserId !== userId) delete normalized.userPreferencesByUser[userId];
+  });
+  normalized.userPreferences = normalized.userPreferencesByUser[DEFAULT_USER_ID] || createEmptyPreferences();
   normalized.memorySuggestions = Array.isArray(normalized.memorySuggestions)
     ? normalized.memorySuggestions.map(normalizeMemorySuggestion).filter(Boolean)
     : [];
@@ -1015,6 +1039,60 @@ function normalizeStore(store) {
     ? normalized.memoryEvents.map(normalizeMemoryEvent).filter(Boolean)
     : [];
   return normalized;
+}
+
+function normalizePreferences(preferences) {
+  const normalized = {
+    ...createEmptyPreferences(),
+    ...(preferences || {})
+  };
+  normalized.focusAreas = Array.isArray(normalized.focusAreas)
+    ? normalized.focusAreas.filter((value) => isKnownMemoryValue("focusAreas", value))
+    : [];
+  normalized.taskTypes = Array.isArray(normalized.taskTypes)
+    ? normalized.taskTypes.filter((value) => isKnownMemoryValue("taskTypes", value))
+    : [];
+  if (!isKnownMemoryValue("role", normalized.role)) normalized.role = null;
+  if (!isKnownMemoryValue("language", normalized.language)) normalized.language = null;
+  if (!isKnownMemoryValue("detailLevel", normalized.detailLevel)) normalized.detailLevel = null;
+  return normalized;
+}
+
+function normalizeUserId(value) {
+  const raw = String(value || DEFAULT_USER_ID).trim();
+  const safe = raw.replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 80);
+  return safe || DEFAULT_USER_ID;
+}
+
+function resolveUserId(req, source = {}) {
+  return normalizeUserId(
+    source.userId
+    || source.user_id
+    || req.headers["x-user-id"]
+    || req.headers["x-ai-pm-user-id"]
+    || DEFAULT_USER_ID
+  );
+}
+
+function getUserPreferences(store, userId = DEFAULT_USER_ID) {
+  const normalizedUserId = normalizeUserId(userId);
+  store.userPreferencesByUser ||= {};
+  if (!store.userPreferencesByUser[normalizedUserId]) {
+    store.userPreferencesByUser[normalizedUserId] = normalizedUserId === DEFAULT_USER_ID
+      ? normalizePreferences(store.userPreferences)
+      : createEmptyPreferences();
+  }
+  return normalizePreferences(store.userPreferencesByUser[normalizedUserId]);
+}
+
+function setUserPreferences(store, userId, preferences) {
+  const normalizedUserId = normalizeUserId(userId);
+  store.userPreferencesByUser ||= {};
+  store.userPreferencesByUser[normalizedUserId] = normalizePreferences(preferences);
+  if (normalizedUserId === DEFAULT_USER_ID) {
+    store.userPreferences = store.userPreferencesByUser[normalizedUserId];
+  }
+  return store.userPreferencesByUser[normalizedUserId];
 }
 
 function isKnownMemoryValue(key, value) {
@@ -2233,17 +2311,20 @@ function preferenceAlreadyKnown(preferences, signal) {
   return current === signal.value;
 }
 
-function createMemorySuggestions(store, projectId, question) {
-  const preferences = store.userPreferences || createEmptyPreferences();
+function createMemorySuggestions(store, projectId, question, userId = DEFAULT_USER_ID) {
+  const normalizedUserId = normalizeUserId(userId);
+  const preferences = getUserPreferences(store, normalizedUserId);
   return inferPreferenceSignals(question)
     .filter((signal) => !preferenceAlreadyKnown(preferences, signal))
     .filter((signal) => !store.memorySuggestions.some((item) => {
       return ["pending", "ignored"].includes(item.status)
+        && (item.userId || DEFAULT_USER_ID) === normalizedUserId
         && item.key === signal.key
         && item.value === signal.value;
     }))
     .map((signal) => ({
       id: crypto.randomUUID(),
+      userId: normalizedUserId,
       projectId,
       key: signal.key,
       value: signal.value,
@@ -2272,9 +2353,10 @@ function applyMemorySuggestion(preferences, suggestion) {
   return next;
 }
 
-function createMemoryEvent({ projectId = null, suggestion = null, action, key = null, value = null, label = null, status = null }) {
+function createMemoryEvent({ userId = DEFAULT_USER_ID, projectId = null, suggestion = null, action, key = null, value = null, label = null, status = null }) {
   return {
     id: crypto.randomUUID(),
+    userId: suggestion?.userId || normalizeUserId(userId),
     projectId: suggestion?.projectId || projectId || null,
     suggestionId: suggestion?.id || null,
     action,
@@ -2715,6 +2797,7 @@ function createGraphStateAnnotation() {
   return Annotation.Root({
     project: Annotation({ reducer: replace, default: () => null }),
     store: Annotation({ reducer: replace, default: () => null }),
+    userId: Annotation({ reducer: replace, default: () => DEFAULT_USER_ID }),
     question: Annotation({ reducer: replace, default: () => "" }),
     preferences: Annotation({ reducer: replace, default: () => createEmptyPreferences() }),
     memorySuggestions: Annotation({ reducer: replace, default: () => [] }),
@@ -2751,11 +2834,12 @@ function createAgentGraph(checkpointer = false) {
       };
     })
     .addNode("memory", async (state) => {
-      const preferences = state.store.userPreferences || createEmptyPreferences();
-      const longTermMemories = searchLongTermMemory({ projectId: state.project.id, query: state.question, limit: 5 });
+      const userId = normalizeUserId(state.userId);
+      const preferences = getUserPreferences(state.store, userId);
+      const longTermMemories = searchLongTermMemory({ userId, projectId: state.project.id, query: state.question, limit: 5 });
       const memoryLearningAllowed = state.inputSafety.status === "passed";
       const suggestions = memoryLearningAllowed
-        ? createMemorySuggestions(state.store, state.project.id, state.question)
+        ? createMemorySuggestions(state.store, state.project.id, state.question, userId)
         : [];
       const summary = summarizePreferences(preferences);
       const longTermSummary = summarizeLongTermMemories(longTermMemories);
@@ -2774,7 +2858,7 @@ function createAgentGraph(checkpointer = false) {
           step: "2. Load user preference and long-term memory",
           tool: "memory.load_preferences",
           purpose: "Apply confirmed user preferences, retrieve long-term memory, and create explicit suggestions for unconfirmed memory.",
-          input: { project_id: state.project.id },
+          input: { project_id: state.project.id, user_id: userId },
           output: {
             memory_used: combinedSummary,
             long_term_memories: longTermMemories.length,
@@ -2979,7 +3063,7 @@ function createAgentGraph(checkpointer = false) {
     .compile({ checkpointer });
 }
 
-async function runAgenticImpactWorkflow(store, project, question) {
+async function runAgenticImpactWorkflow(store, project, question, userId = DEFAULT_USER_ID) {
   const started = Date.now();
   const runId = createHarnessRunId("agent");
   const checkpointer = new MemorySaver();
@@ -3000,8 +3084,9 @@ async function runAgenticImpactWorkflow(store, project, question) {
     state = await withWorkflowTimeout(graph.invoke({
       store,
       project,
+      userId: normalizeUserId(userId),
       question,
-      preferences: store.userPreferences || createEmptyPreferences()
+      preferences: getUserPreferences(store, userId)
     }, {
       configurable: {
         thread_id: runId,
@@ -3411,22 +3496,26 @@ async function handleApiUnlocked(req, res, pathname) {
       const url = new URL(req.url, `http://${req.headers.host}`);
       const projectId = url.searchParams.get("projectId");
       if (projectId) findProject(store, projectId);
+      const userId = resolveUserId(req, { userId: url.searchParams.get("userId") || url.searchParams.get("user_id") });
       const query = String(url.searchParams.get("query") || url.searchParams.get("q") || "").trim();
       const status = normalizeLongTermMemoryStatusFilter(url.searchParams.get("status") || "active");
       const limit = parsePositiveInteger(url.searchParams.get("limit"), 20, 50);
       const suggestions = store.memorySuggestions
+        .filter((item) => (item.userId || DEFAULT_USER_ID) === userId)
         .filter((item) => !projectId || item.projectId === projectId)
         .slice(-20)
         .reverse();
       const events = (store.memoryEvents || [])
+        .filter((item) => (item.userId || DEFAULT_USER_ID) === userId)
         .filter((item) => !projectId || item.projectId === projectId || item.projectId == null)
         .slice(-20)
         .reverse();
       const longTermMemories = query
-        ? searchLongTermMemory({ projectId, query, status, limit, recordUsage: false })
-        : listLongTermMemories({ projectId, status, limit });
+        ? searchLongTermMemory({ userId, projectId, query, status, limit, recordUsage: false })
+        : listLongTermMemories({ userId, projectId, status, limit });
       sendJson(res, 200, {
-        preferences: store.userPreferences,
+        user_id: userId,
+        preferences: getUserPreferences(store, userId),
         suggestions,
         events,
         long_term_memories: longTermMemories,
@@ -3442,15 +3531,18 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "POST" && pathname === "/api/memory/confirm") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
+      const userId = resolveUserId(req, body);
       const suggestion = store.memorySuggestions.find((item) => item.id === body.suggestionId);
       if (!suggestion) throw apiError("Memory suggestion not found.", "MEMORY_SUGGESTION_NOT_FOUND");
+      if ((suggestion.userId || DEFAULT_USER_ID) !== userId) throw apiError("Memory suggestion belongs to a different user.", "MEMORY_USER_MISMATCH", 409);
       if (body.projectId && suggestion.projectId !== body.projectId) throw apiError("Memory suggestion does not belong to this project.", "MEMORY_PROJECT_MISMATCH", 409);
       if (suggestion.status !== "pending") throw apiError("Memory suggestion is not pending.", "MEMORY_SUGGESTION_NOT_PENDING");
       validateMemorySuggestionValue(suggestion);
-      store.userPreferences = applyMemorySuggestion(store.userPreferences, suggestion);
+      setUserPreferences(store, userId, applyMemorySuggestion(getUserPreferences(store, userId), suggestion));
       suggestion.status = "confirmed";
       suggestion.confirmedAt = new Date().toISOString();
       store.memoryEvents.push(createMemoryEvent({
+        userId,
         suggestion,
         action: "confirmed",
         status: "confirmed"
@@ -3458,7 +3550,8 @@ async function handleApiUnlocked(req, res, pathname) {
       const longTermMemory = upsertLongTermMemoryFromSuggestion(suggestion);
       await saveStore(store);
       sendJson(res, 200, {
-        preferences: store.userPreferences,
+        user_id: userId,
+        preferences: getUserPreferences(store, userId),
         suggestion,
         event: store.memoryEvents.at(-1),
         long_term_memory: longTermMemory
@@ -3468,14 +3561,17 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "POST" && pathname === "/api/memory/forget") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
+      const userId = resolveUserId(req, body);
       if (body.suggestionId) {
         const suggestion = store.memorySuggestions.find((item) => item.id === body.suggestionId);
         if (!suggestion) throw apiError("Memory suggestion not found.", "MEMORY_SUGGESTION_NOT_FOUND");
+        if ((suggestion.userId || DEFAULT_USER_ID) !== userId) throw apiError("Memory suggestion belongs to a different user.", "MEMORY_USER_MISMATCH", 409);
         if (body.projectId && suggestion.projectId !== body.projectId) throw apiError("Memory suggestion does not belong to this project.", "MEMORY_PROJECT_MISMATCH", 409);
         if (suggestion.status !== "pending") throw apiError("Memory suggestion is not pending.", "MEMORY_SUGGESTION_NOT_PENDING");
         suggestion.status = "ignored";
         suggestion.ignoredAt = new Date().toISOString();
         store.memoryEvents.push(createMemoryEvent({
+          userId,
           suggestion,
           action: "ignored",
           status: "ignored"
@@ -3484,15 +3580,18 @@ async function handleApiUnlocked(req, res, pathname) {
         if (body.projectId) findProject(store, body.projectId);
         if (!MEMORY_PREFERENCE_KEYS.has(body.key)) throw apiError("Unknown memory preference key.", "UNKNOWN_MEMORY_PREFERENCE_KEY");
         if (body.value && !isKnownMemoryValue(body.key, body.value)) throw apiError("Unknown memory preference value.", "UNKNOWN_MEMORY_PREFERENCE_VALUE");
-        if (Array.isArray(store.userPreferences[body.key])) {
-          store.userPreferences[body.key] = body.value
-            ? store.userPreferences[body.key].filter((item) => item !== body.value)
+        const preferences = getUserPreferences(store, userId);
+        if (Array.isArray(preferences[body.key])) {
+          preferences[body.key] = body.value
+            ? preferences[body.key].filter((item) => item !== body.value)
             : [];
         } else {
-          store.userPreferences[body.key] = null;
+          preferences[body.key] = null;
         }
-        store.userPreferences.updatedAt = new Date().toISOString();
+        preferences.updatedAt = new Date().toISOString();
+        setUserPreferences(store, userId, preferences);
         store.memoryEvents.push(createMemoryEvent({
+          userId,
           projectId: body.projectId || null,
           action: "forgot_preference",
           key: body.key,
@@ -3501,6 +3600,7 @@ async function handleApiUnlocked(req, res, pathname) {
           status: "forgotten"
         }));
         markLongTermMemoryForgotten({
+          userId,
           projectId: body.projectId || null,
           key: body.key,
           value: body.value || null,
@@ -3508,24 +3608,27 @@ async function handleApiUnlocked(req, res, pathname) {
         });
       } else {
         if (body.projectId) findProject(store, body.projectId);
-        store.userPreferences = createEmptyPreferences();
+        setUserPreferences(store, userId, createEmptyPreferences());
         store.memoryEvents.push(createMemoryEvent({
+          userId,
           projectId: body.projectId || null,
           action: "cleared_preferences",
           label: "Cleared all user preferences",
           status: "cleared"
         }));
         markLongTermMemoryForgotten({
+          userId,
           projectId: body.projectId || null,
           reason: "forgotten"
         });
       }
       await saveStore(store);
       sendJson(res, 200, {
-        preferences: store.userPreferences,
-        suggestions: store.memorySuggestions.slice(-20).reverse(),
-        events: store.memoryEvents.slice(-20).reverse(),
-        long_term_memories: listLongTermMemories({ projectId: body.projectId || null, limit: 20 })
+        user_id: userId,
+        preferences: getUserPreferences(store, userId),
+        suggestions: store.memorySuggestions.filter((item) => (item.userId || DEFAULT_USER_ID) === userId).slice(-20).reverse(),
+        events: store.memoryEvents.filter((item) => (item.userId || DEFAULT_USER_ID) === userId).slice(-20).reverse(),
+        long_term_memories: listLongTermMemories({ userId, projectId: body.projectId || null, limit: 20 })
       });
       return;
     }
@@ -3572,6 +3675,7 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "POST" && pathname === "/api/chat") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
+      const userId = resolveUserId(req, body);
       const project = findProject(store, body.projectId);
       const question = String(body.question || "").trim();
       if (!question) throw apiError("Question is required.", "QUESTION_REQUIRED");
@@ -3581,9 +3685,9 @@ async function handleApiUnlocked(req, res, pathname) {
       const chunks = retrieveChunks(project, question, kind === "impact" ? 10 : 8);
       const inputSafety = scanInputSafety(question);
       const retrievedSafety = scanRetrievedSafety(chunks);
-      const preferences = store.userPreferences || createEmptyPreferences();
+      const preferences = getUserPreferences(store, userId);
       const memorySummary = summarizePreferences(preferences);
-      const longTermMemories = searchLongTermMemory({ projectId: project.id, query: question, limit: 5 });
+      const longTermMemories = searchLongTermMemory({ userId, projectId: project.id, query: question, limit: 5 });
       const longTermSummary = summarizeLongTermMemories(longTermMemories);
       const combinedMemorySummary = [
         memorySummary !== "none" ? memorySummary : null,
@@ -3591,7 +3695,7 @@ async function handleApiUnlocked(req, res, pathname) {
       ].filter(Boolean).join("; ") || "none";
       const memoryLearningAllowed = inputSafety.status === "passed";
       const memorySuggestions = memoryLearningAllowed
-        ? createMemorySuggestions(store, project.id, question)
+        ? createMemorySuggestions(store, project.id, question, userId)
         : [];
       const validatePayload = kind === "impact" ? validateImpactPayload : validateQaPayload;
       const modelResult = await runModelAdapter({ question, chunks, kind, project, validatePayload });
@@ -3694,6 +3798,7 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "POST" && pathname === "/api/onboarding") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
+      const userId = resolveUserId(req, body);
       const project = findProject(store, body.projectId);
       const started = Date.now();
       const runId = createHarnessRunId("onboarding");
@@ -3702,7 +3807,7 @@ async function handleApiUnlocked(req, res, pathname) {
       const inputSafety = scanInputSafety(question);
       const memoryLearningAllowed = inputSafety.status === "passed";
       const memorySuggestions = memoryLearningAllowed
-        ? createMemorySuggestions(store, project.id, question)
+        ? createMemorySuggestions(store, project.id, question, userId)
         : [];
       const outputSafety = scanOutputSafety(project, payload);
       const trace = [
@@ -3779,11 +3884,12 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "POST" && pathname === "/api/agent-impact") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
+      const userId = resolveUserId(req, body);
       const project = findProject(store, body.projectId);
       const question = String(body.question || "").trim();
       if (!question) throw apiError("Question is required.", "QUESTION_REQUIRED");
       const started = Date.now();
-      const payload = await runAgenticImpactWorkflow(store, project, question);
+      const payload = await runAgenticImpactWorkflow(store, project, question, userId);
       if (payload.memory_suggestions?.length) {
         store.memorySuggestions.push(...payload.memory_suggestions);
       }

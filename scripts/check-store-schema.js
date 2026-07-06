@@ -9,6 +9,7 @@ const requiredTopLevelFields = [
   "feedback",
   "harnessRuns",
   "userPreferences",
+  "userPreferencesByUser",
   "memorySuggestions",
   "memoryEvents"
 ];
@@ -37,8 +38,10 @@ const missingPreferenceFields = requiredPreferenceFields.filter((field) => {
 });
 
 const arrayNormalizationChecks = [
-  "normalized.userPreferences.focusAreas = Array.isArray(normalized.userPreferences.focusAreas)",
-  "normalized.userPreferences.taskTypes = Array.isArray(normalized.userPreferences.taskTypes)",
+  "function normalizePreferences",
+  "normalized.focusAreas = Array.isArray(normalized.focusAreas)",
+  "normalized.taskTypes = Array.isArray(normalized.taskTypes)",
+  "normalized.userPreferencesByUser[normalizedUserId] = normalizePreferences",
   "normalized.memorySuggestions = Array.isArray(normalized.memorySuggestions)",
   "normalized.memorySuggestions.map(normalizeMemorySuggestion).filter(Boolean)",
   "normalized.memoryEvents = Array.isArray(normalized.memoryEvents)",

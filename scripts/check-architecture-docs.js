@@ -22,9 +22,10 @@ const requiredSections = [
 const requiredTerms = [
   "LangGraph `StateGraph`",
   "userPreferences",
+  "userPreferencesByUser",
   "memorySuggestions",
-  "Confirmed preference memory is global for the local app instance, not project-scoped",
-  "Memory suggestions carry `projectId`",
+  "Confirmed preference memory is stored in `data/store.json` under `userPreferencesByUser`",
+  "Memory suggestions carry `userId` and `projectId`",
   "runModelAdapter()",
   "buildAgentHarnessReport()",
   "withWorkflowTimeout()",
@@ -41,12 +42,14 @@ const requiredTerms = [
   "Suggestion records are normalized on store load/save",
   "Confirmed preferences are applied to both impact analysis and ordinary Q&A",
   "Only pending suggestions can be confirmed or ignored",
+  "Confirm and forget requests are user-scoped",
   "Confirm and forget requests may include `projectId`",
   "the suggestion must belong to that project",
   "Unknown preference keys are rejected instead of falling back to full memory deletion",
   "Memory API errors return `{ error, code }`",
   "MEMORY_SUGGESTION_NOT_PENDING",
   "MEMORY_PROJECT_MISMATCH",
+  "MEMORY_USER_MISMATCH",
   "UNKNOWN_MEMORY_PREFERENCE_KEY"
 ];
 

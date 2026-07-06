@@ -30,11 +30,12 @@ const readmeDiff = diffDocumentedRoutes(readmeDocumented);
 const userGuideDiff = diffDocumentedRoutes(userGuideDocumented);
 const requiredErrorDocSnippets = [
   "Error responses keep a human-readable `error` string and add a machine-readable `code`",
-  "Confirmed preferences are global to the local app instance",
-  "suggestions carry project ownership",
+  "Confirmed preferences are scoped by `userId`",
+  "suggestions carry user and project ownership",
   "MEMORY_SUGGESTION_NOT_FOUND",
   "MEMORY_SUGGESTION_NOT_PENDING",
   "MEMORY_PROJECT_MISMATCH",
+  "MEMORY_USER_MISMATCH",
   "UNKNOWN_MEMORY_PREFERENCE_KEY",
   "UNKNOWN_MEMORY_PREFERENCE_VALUE",
   "PROJECT_REQUIRED",

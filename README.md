@@ -18,10 +18,11 @@ npm run test:static
 npm run test:ui
 npm run test:safety
 npm run test:memory
+npm run test:user-memory
 npm test
 ```
 
-`npm run test:static` runs `scripts/static-checks.js`, which performs syntax checks, locale-copy consistency checks, frontend agent UI checks, text-quality checks, runtime dependency checks, API documentation sync checks, store-schema checks, smoke reliability checks, UI acceptance wiring checks, safety guardrail contract checks, safety red-team wiring checks, memory compaction checks, and agent response contract checks without starting a server. `npm test` runs the static checks, smoke test, UI acceptance test, safety red-team test, and memory compaction test.
+`npm run test:static` runs `scripts/static-checks.js`, which performs syntax checks, locale-copy consistency checks, frontend agent UI checks, text-quality checks, runtime dependency checks, API documentation sync checks, store-schema checks, smoke reliability checks, UI acceptance wiring checks, safety guardrail contract checks, safety red-team wiring checks, memory compaction checks, user memory isolation checks, and agent response contract checks without starting a server. `npm test` runs the static checks, smoke test, UI acceptance test, safety red-team test, memory compaction test, and user memory isolation test.
 
 Static check scripts use the `scripts/check-*.js` naming convention. `scripts/static-checks.js` syntax-checks all `scripts/*.js` files and discovers/runs `check-*.js` automatically.
 
@@ -32,6 +33,8 @@ The UI acceptance test starts the server with an isolated data directory, fetche
 The safety red-team test starts the server with an isolated data directory, verifies the health endpoint exposes the active `safety_policy`, runs prompt-injection, secret-request, tool-escalation, retrieved-instruction, and retrieved-secret cases, and confirms unsafe inputs do not create memory suggestions. Use `npm run test:safety` to run only these red-team cases.
 
 The memory compaction test starts the server with an isolated data directory, confirms conflicting role preferences, verifies the old scalar preference becomes `superseded`, and checks that an active `preference_summary` record with source `memory_compaction` is maintained. Use `npm run test:memory` to run only this long-term memory compaction check.
+
+The user memory isolation test starts the server with an isolated data directory, runs two users through separate memory suggestions using `X-User-Id`, verifies cross-user confirmation returns `MEMORY_USER_MISMATCH`, and checks that preferences plus SQLite long-term memory stay isolated. Use `npm run test:user-memory` to run only this boundary check.
 
 GitHub Actions runs `npm ci` and `npm test` on pushes to `main` and pull requests.
 
@@ -93,7 +96,7 @@ Without an API key, the app falls back to a deterministic retrieval-based answer
 - Impact analysis with impacted modules, risk level, testing suggestions, and open questions.
 - Agent Workflow tab backed by a LangGraph StateGraph with classifier, retriever, context expansion, impact analysis, QA planning, memory, safety guardrails, structured synthesis, and MemorySaver checkpointing.
 - Onboarding plans run through a lightweight deterministic harness with trace, safety, guardrails, citations, and pending memory suggestions.
-- User preference memory suggestions that require explicit confirmation before being saved. Confirmed preferences are global to the local app instance and can shape both impact analysis and ordinary Q&A emphasis; confirmed memory is also written to SQLite long-term memory for searchable reuse across later Agent Workflow and Direct Chat runs. Memory suggestions carry project ownership so confirmation/ignore actions can verify the active project. Ignored suggestions suppress the same key/value suggestion from being repeated. The Copilot inspector includes a lightweight preference and long-term memory manager for viewing, removing one preference value, or clearing all preferences.
+- User preference memory suggestions that require explicit confirmation before being saved. Confirmed preferences are scoped by `userId`, defaulting to `local-user` for local/backward-compatible use. API clients can pass `userId` in JSON bodies or the `X-User-Id` header. Confirmed preferences can shape both impact analysis and ordinary Q&A emphasis; confirmed memory is also written to SQLite long-term memory for searchable reuse across later Agent Workflow and Direct Chat runs. Memory suggestions carry user and project ownership so confirmation/ignore actions can verify the active boundary. Ignored suggestions suppress the same key/value suggestion from being repeated for that user. The Copilot inspector includes a lightweight preference and long-term memory manager for viewing, removing one preference value, or clearing all preferences.
 - Application-level AI safety checks for prompt injection, system/developer prompt leakage requests, secret requests, read-only tool boundaries, retrieved sensitive content, citation validation, uncited impact areas, sensitive output, and overconfidence.
 - A centralized safety policy is exposed as `safety_policy` on `/api/health` and covered by red-team tests.
 - Evaluation dashboard with total questions, agent runs, helpful rate, citation coverage, citation status distribution, uncertainty rate, negative feedback, high-risk questions, guardrail hits, memory confirmations, memory status distribution, recent memory events, fallback runs, harness snapshot count, average response time, safety risk and status distribution, import safety risk/status, recent safety events, harness runtime, model mode, tool policy, budget status, schema status, LLM usage, and trace tool distribution, fallback reason distribution, recent harness runs, and recent feedback correlated with harness run ids.
@@ -129,15 +132,16 @@ The `modelAdapter` boundary uses an OpenAI-compatible chat completions call when
 | `POST` | `/api/feedback` | Record answer feedback. |
 | `GET` | `/api/evaluation` | Return quality, memory, safety, and fallback metrics. |
 | `GET` | `/api/harness-run` | Return one persisted harness run audit by `projectId` and `runId`. |
-| `GET` | `/api/memory` | Return confirmed preferences, recent memory suggestions, memory audit events, and long-term memories. Supports `projectId`, `q`/`query`, `status=active|forgotten|superseded|all`, and `limit` for memory inspection. |
-| `POST` | `/api/memory/confirm` | Confirm a pending memory suggestion and update preferences. |
-| `POST` | `/api/memory/forget` | Ignore a suggestion, clear one preference, or clear all preferences. |
+| `GET` | `/api/memory` | Return confirmed preferences, recent memory suggestions, memory audit events, and long-term memories for the resolved user. Supports `X-User-Id` or `userId`, plus `projectId`, `q`/`query`, `status=active|forgotten|superseded|all`, and `limit` for memory inspection. |
+| `POST` | `/api/memory/confirm` | Confirm a pending memory suggestion for the resolved user and update preferences. |
+| `POST` | `/api/memory/forget` | Ignore a suggestion, clear one preference, or clear all preferences for the resolved user. |
 
 Error responses keep a human-readable `error` string and add a machine-readable `code`. Memory endpoints currently use:
 
 - `MEMORY_SUGGESTION_NOT_FOUND`
 - `MEMORY_SUGGESTION_NOT_PENDING`
 - `MEMORY_PROJECT_MISMATCH`
+- `MEMORY_USER_MISMATCH`
 - `UNKNOWN_MEMORY_PREFERENCE_KEY`
 - `UNKNOWN_MEMORY_PREFERENCE_VALUE`
 
