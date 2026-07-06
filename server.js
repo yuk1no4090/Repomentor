@@ -600,6 +600,81 @@ async function createMemoryDatabaseBackup() {
   };
 }
 
+async function listMemoryDatabaseBackups() {
+  await fs.mkdir(path.dirname(MEMORY_DB_PATH), { recursive: true });
+  const entries = await fs.readdir(path.dirname(MEMORY_DB_PATH), { withFileTypes: true });
+  const backups = await Promise.all(entries
+    .filter((entry) => entry.isFile() && /^memory-.+\.sqlite\.bak$/.test(entry.name))
+    .map(async (entry) => {
+      const backupPath = path.join(path.dirname(MEMORY_DB_PATH), entry.name);
+      const stats = await fs.stat(backupPath);
+      return {
+        path_basename: entry.name,
+        directory_basename: path.basename(path.dirname(backupPath)),
+        size_bytes: stats.size,
+        createdAt: stats.birthtime.toISOString(),
+        modifiedAt: stats.mtime.toISOString()
+      };
+    }));
+  backups.sort((left, right) => String(right.modifiedAt).localeCompare(String(left.modifiedAt)));
+  return backups;
+}
+
+function resolveMemoryBackupPath(backupName) {
+  const basename = path.basename(String(backupName || "").trim());
+  if (!/^memory-.+\.sqlite\.bak$/.test(basename)) {
+    throw apiError("Backup basename is required.", "MEMORY_BACKUP_REQUIRED");
+  }
+  const backupPath = path.join(path.dirname(MEMORY_DB_PATH), basename);
+  const resolvedBackupPath = path.resolve(backupPath);
+  const resolvedMemoryDir = path.resolve(path.dirname(MEMORY_DB_PATH));
+  if (path.dirname(resolvedBackupPath) !== resolvedMemoryDir) {
+    throw apiError("Backup path is outside the memory database directory.", "MEMORY_BACKUP_INVALID", 400);
+  }
+  return resolvedBackupPath;
+}
+
+function createMemoryDatabaseRestorePlan({ backupName, expectedSha256 = null } = {}) {
+  getMemoryDatabase();
+  const backupPath = resolveMemoryBackupPath(backupName);
+  let bytes;
+  try {
+    bytes = readFileSync(backupPath);
+  } catch {
+    throw apiError("Memory database backup not found.", "MEMORY_BACKUP_NOT_FOUND", 404);
+  }
+  const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
+  if (expectedSha256 && String(expectedSha256).toLowerCase() !== sha256) {
+    throw apiError("Backup checksum does not match expected SHA-256.", "MEMORY_BACKUP_CHECKSUM_MISMATCH", 409);
+  }
+  const current = getMemoryDatabaseStatus();
+  return {
+    mode: "restore plan",
+    executable: false,
+    backup: {
+      path_basename: path.basename(backupPath),
+      directory_basename: path.basename(path.dirname(backupPath)),
+      size_bytes: bytes.byteLength,
+      sha256
+    },
+    current_database: {
+      path_basename: current.path_basename,
+      size_bytes: current.size_bytes,
+      total_memory_items: current.total_memory_items,
+      schema_migration_count: current.schema_migration_count,
+      langgraph_checkpoint_count: current.langgraph_checkpoint_count
+    },
+    steps: [
+      "Stop application writes.",
+      "Create a fresh backup of the current memory database.",
+      "Verify the selected backup SHA-256 checksum.",
+      "Replace the memory database file while the application is stopped.",
+      "Restart the application and verify /api/memory/status."
+    ],
+    note: "This endpoint validates a backup and returns a rollback plan only; it does not replace or mutate the active SQLite database."
+  };
+}
+
 function normalizeLongTermMemoryItem(item) {
   if (!item || typeof item !== "object") return null;
   return {
@@ -1613,7 +1688,7 @@ function requiredScopeForRequest(req, pathname) {
   if (pathname === "/api/health") return null;
   if (req.method === "GET") return "project:read";
   if (pathname === "/api/import") return "project:write";
-  if (pathname === "/api/memory/confirm" || pathname === "/api/memory/forget" || pathname === "/api/memory/backup") return "memory:write";
+  if (pathname === "/api/memory/confirm" || pathname === "/api/memory/forget" || pathname === "/api/memory/backup" || pathname === "/api/memory/restore-plan") return "memory:write";
   if (pathname === "/api/chat" || pathname === "/api/agent-impact" || pathname === "/api/onboarding") return "answer:write";
   if (pathname === "/api/feedback") return "feedback:write";
   return "project:read";
@@ -4117,9 +4192,29 @@ async function handleApiUnlocked(req, res, pathname) {
       return;
     }
 
+    if (req.method === "GET" && pathname === "/api/memory/backups") {
+      const backups = await listMemoryDatabaseBackups();
+      sendJson(res, 200, {
+        backups,
+        backup_count: backups.length,
+        directory_basename: path.basename(path.dirname(MEMORY_DB_PATH))
+      });
+      return;
+    }
+
     if (req.method === "POST" && pathname === "/api/memory/backup") {
       const backup = await createMemoryDatabaseBackup();
       sendJson(res, 200, { backup });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/memory/restore-plan") {
+      const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
+      const restorePlan = createMemoryDatabaseRestorePlan({
+        backupName: body.backup || body.backupName || body.backup_name,
+        expectedSha256: body.sha256 || body.expectedSha256 || body.expected_sha256 || null
+      });
+      sendJson(res, 200, { restore_plan: restorePlan });
       return;
     }
 

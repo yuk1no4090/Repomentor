@@ -195,7 +195,9 @@ npm run dev
 | GET | `/api/langgraph-replay` | 按 projectId 和 runId 查看 LangGraph checkpoint summary replay |
 | GET | `/api/memory` | 获取已确认偏好和最近记忆建议 |
 | GET | `/api/memory/status` | 查看长期记忆 SQLite 数据库健康状态 |
+| GET | `/api/memory/backups` | 查看长期记忆 SQLite 备份列表 |
 | POST | `/api/memory/backup` | 创建长期记忆 SQLite 备份 |
+| POST | `/api/memory/restore-plan` | 校验备份并生成手动恢复计划 |
 | POST | `/api/memory/confirm` | 确认待保存的记忆建议 |
 | POST | `/api/memory/forget` | 忽略建议、清除单项偏好或清空偏好 |
 

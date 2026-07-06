@@ -1013,6 +1013,29 @@ async function main() {
     assert(/^[a-f0-9]{64}$/.test(memoryBackup.backup.sha256 || ""), "memory backup did not return sha256 checksum");
     const dataFilesAfterBackup = await readdir(dataDir);
     assert(dataFilesAfterBackup.includes(memoryBackup.backup.path_basename), "memory backup file was not created in data directory");
+    const memoryBackups = await request("/api/memory/backups");
+    assert(memoryBackups.backup_count >= 1, "memory backups endpoint did not list created backup");
+    assert(memoryBackups.backups.some((item) => item.path_basename === memoryBackup.backup.path_basename), "memory backups endpoint omitted created backup");
+    const restorePlan = await request("/api/memory/restore-plan", {
+      method: "POST",
+      body: JSON.stringify({
+        backup: memoryBackup.backup.path_basename,
+        sha256: memoryBackup.backup.sha256
+      })
+    });
+    assert(restorePlan.restore_plan?.mode === "restore plan", "memory restore plan returned wrong mode");
+    assert(restorePlan.restore_plan.executable === false, "memory restore plan should not mutate the active database");
+    assert(restorePlan.restore_plan.backup.sha256 === memoryBackup.backup.sha256, "memory restore plan returned wrong checksum");
+    assert(Array.isArray(restorePlan.restore_plan.steps) && restorePlan.restore_plan.steps.length >= 5, "memory restore plan did not include operator steps");
+    const badRestorePlan = await requestError("/api/memory/restore-plan", {
+      method: "POST",
+      body: JSON.stringify({
+        backup: memoryBackup.backup.path_basename,
+        sha256: "0".repeat(64)
+      })
+    });
+    assert(badRestorePlan.status === 409, "bad restore checksum should return 409");
+    assert(badRestorePlan.payload.code === "MEMORY_BACKUP_CHECKSUM_MISMATCH", "bad restore checksum returned wrong code");
 
     const remembered = await request("/api/agent-impact", {
       method: "POST",

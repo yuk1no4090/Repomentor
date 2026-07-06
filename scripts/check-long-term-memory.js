@@ -36,12 +36,17 @@ const requiredServerSnippets = [
   "function refreshLongTermMemorySummary",
   "function getMemoryDatabaseStatus",
   "function createMemoryDatabaseBackup",
+  "function listMemoryDatabaseBackups",
+  "function createMemoryDatabaseRestorePlan",
   "preference_summary",
   "memory_compaction",
   "long_term_memory_query",
   "memory_database",
   "\"/api/memory/status\"",
+  "\"/api/memory/backups\"",
   "\"/api/memory/backup\"",
+  "\"/api/memory/restore-plan\"",
+  "MEMORY_BACKUP_CHECKSUM_MISMATCH",
   "vector_search",
   "long_term_memories",
   "long_term:"
@@ -65,7 +70,9 @@ const requiredDocSnippets = [
   "embedding_model",
   "schema_migrations",
   "/api/memory/status",
+  "/api/memory/backups",
   "/api/memory/backup",
+  "/api/memory/restore-plan",
   "SHA-256 checksum"
 ];
 
