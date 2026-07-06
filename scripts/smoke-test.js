@@ -714,6 +714,8 @@ async function main() {
     assert(Number.isInteger(health.uptime_seconds), "health endpoint did not report integer uptime");
     assert(health.llm.request_timeout_ms === 30000, "health endpoint did not report effective LLM timeout");
     assert(health.llm.context_token_budget === 8000, "health endpoint did not report effective context token budget");
+    assert(health.schema_migrations?.store === "SQLite schema_migrations", "health endpoint did not report schema migration store");
+    assert(Array.isArray(health.schema_migrations.recent), "health endpoint did not report recent schema migrations");
 
     const missingProject = await requestError("/api/evaluation");
     assert(missingProject.status === 400, "missing project should return 400");
@@ -1325,6 +1327,9 @@ async function main() {
     assert(Array.isArray(evaluation.metrics.recent_harness_runs), "evaluation did not report recent harness runs");
     assert(evaluation.metrics.langgraph_checkpoint_count >= 1, "evaluation did not report LangGraph checkpoint count");
     assert(Array.isArray(evaluation.metrics.recent_langgraph_checkpoints), "evaluation did not expose recent LangGraph checkpoints");
+    assert(evaluation.metrics.schema_migration_count >= 1, "evaluation did not report schema migration count");
+    assert(Array.isArray(evaluation.metrics.recent_schema_migrations), "evaluation did not expose recent schema migrations");
+    assert(evaluation.metrics.recent_schema_migrations.some((item) => item.id && item.appliedAt), "recent schema migrations did not include audit details");
     assert(evaluation.metrics.recent_harness_runs.some((item) => item.checkpointing?.checkpoint_count > 0), "recent harness runs did not include checkpointing metadata");
     assert(evaluation.metrics.recent_harness_runs.some((item) => /^agent_[0-9a-f-]{36}$/.test(item.run_id || "")), "recent harness runs did not include an agent run id");
     assert(evaluation.metrics.recent_harness_runs.some((item) => /^chat_[0-9a-f-]{36}$/.test(item.run_id || "")), "recent harness runs did not include a chat run id");

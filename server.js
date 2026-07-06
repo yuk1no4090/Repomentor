@@ -403,10 +403,45 @@ async function saveStore(store) {
 let memoryDb = null;
 let memoryDbFtsEnabled = false;
 
+function ensureSchemaMigrationTable(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      id TEXT PRIMARY KEY,
+      scope TEXT NOT NULL,
+      description TEXT NOT NULL,
+      applied_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_schema_migrations_scope ON schema_migrations(scope, applied_at);
+  `);
+}
+
+function recordSchemaMigration(db, id, description, scope = "sqlite") {
+  db.prepare(`
+    INSERT OR IGNORE INTO schema_migrations (id, scope, description, applied_at)
+    VALUES (?, ?, ?, ?)
+  `).run(id, scope, description, new Date().toISOString());
+}
+
+function listSchemaMigrations(limit = 20) {
+  const db = getMemoryDatabase();
+  return db.prepare(`
+    SELECT id, scope, description, applied_at
+    FROM schema_migrations
+    ORDER BY applied_at DESC
+    LIMIT ?
+  `).all(limit).map((row) => ({
+    id: row.id,
+    scope: row.scope,
+    description: row.description,
+    appliedAt: row.applied_at
+  }));
+}
+
 function getMemoryDatabase() {
   if (memoryDb) return memoryDb;
   mkdirSync(path.dirname(MEMORY_DB_PATH), { recursive: true });
   memoryDb = new DatabaseSync(MEMORY_DB_PATH);
+  ensureSchemaMigrationTable(memoryDb);
   memoryDb.exec(`
     PRAGMA journal_mode = WAL;
     CREATE TABLE IF NOT EXISTS memory_items (
@@ -448,22 +483,34 @@ function getMemoryDatabase() {
     CREATE INDEX IF NOT EXISTS idx_langgraph_checkpoints_run ON langgraph_checkpoints(run_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_langgraph_checkpoints_project ON langgraph_checkpoints(project_id, created_at);
   `);
+  recordSchemaMigration(memoryDb, "001_base_memory_and_checkpoints", "Create memory_items and langgraph_checkpoints base tables.");
   const memoryColumns = memoryDb.prepare("PRAGMA table_info(memory_items)").all().map((column) => column.name);
   if (!memoryColumns.includes("user_id")) {
     memoryDb.exec(`ALTER TABLE memory_items ADD COLUMN user_id TEXT;`);
   }
+  recordSchemaMigration(memoryDb, "002_memory_items_user_id", "Add user_id to memory_items for user-scoped long-term memory.");
   if (!memoryColumns.includes("embedding_json")) {
     memoryDb.exec(`ALTER TABLE memory_items ADD COLUMN embedding_json TEXT;`);
   }
+  recordSchemaMigration(memoryDb, "003_memory_items_embedding_json", "Add embedding_json to memory_items for local vector retrieval.");
   if (!memoryColumns.includes("embedding_model")) {
     memoryDb.exec(`ALTER TABLE memory_items ADD COLUMN embedding_model TEXT;`);
   }
+  recordSchemaMigration(memoryDb, "004_memory_items_embedding_model", "Add embedding_model to memory_items.");
   if (!memoryColumns.includes("embedding_updated_at")) {
     memoryDb.exec(`ALTER TABLE memory_items ADD COLUMN embedding_updated_at TEXT;`);
   }
-  memoryDb.prepare("UPDATE memory_items SET user_id = ? WHERE user_id IS NULL OR user_id = ''").run(DEFAULT_USER_ID);
+  recordSchemaMigration(memoryDb, "005_memory_items_embedding_updated_at", "Add embedding_updated_at to memory_items.");
+  const userBackfill = memoryDb.prepare("UPDATE memory_items SET user_id = ? WHERE user_id IS NULL OR user_id = ''").run(DEFAULT_USER_ID);
+  if (userBackfill.changes) {
+    recordSchemaMigration(memoryDb, "006_backfill_default_user_id", "Backfill legacy memory rows to the default local user.");
+  }
   memoryDb.exec(`CREATE INDEX IF NOT EXISTS idx_memory_items_user_status ON memory_items(user_id, status);`);
-  hydrateMissingMemoryEmbeddings(memoryDb);
+  recordSchemaMigration(memoryDb, "007_memory_items_user_status_index", "Create user/status index for memory_items.");
+  const embeddingBackfill = hydrateMissingMemoryEmbeddings(memoryDb);
+  if (embeddingBackfill) {
+    recordSchemaMigration(memoryDb, "008_backfill_memory_embeddings", "Backfill local embeddings for existing memory rows.");
+  }
   try {
     memoryDb.exec(`
       DROP TABLE IF EXISTS memory_items_fts;
@@ -472,6 +519,7 @@ function getMemoryDatabase() {
     `);
     memoryDbFtsEnabled = true;
     rebuildMemoryFtsIndex(memoryDb);
+    recordSchemaMigration(memoryDb, "009_rebuild_memory_fts", "Rebuild memory_items FTS index.");
   } catch (error) {
     memoryDbFtsEnabled = false;
     console.warn(`[memory] FTS5 unavailable for ${MEMORY_DB_PATH}; falling back to LIKE search. ${error.message}`);
@@ -582,7 +630,7 @@ function hydrateMissingMemoryEmbeddings(db) {
     SELECT id, type, key, value, label, content FROM memory_items
     WHERE embedding_json IS NULL OR embedding_model IS NULL OR embedding_model != ?
   `).all(MEMORY_EMBEDDING_MODEL);
-  if (!rows.length) return;
+  if (!rows.length) return 0;
   const update = db.prepare(`
     UPDATE memory_items
     SET embedding_json = ?, embedding_model = ?, embedding_updated_at = ?
@@ -593,6 +641,7 @@ function hydrateMissingMemoryEmbeddings(db) {
     const embedding = memoryEmbeddingFields(row, now);
     update.run(embedding.embeddingJson, embedding.embeddingModel, embedding.embeddingUpdatedAt, row.id);
   });
+  return rows.length;
 }
 
 function syncMemoryFtsRow(db, memoryId) {
@@ -3572,6 +3621,7 @@ function computeMetrics(store, projectId) {
     .slice(-8)
     .reverse();
   const recentLangGraphCheckpoints = listLangGraphCheckpoints({ projectId, limit: 20 });
+  const recentSchemaMigrations = listSchemaMigrations(20);
   const recentSafetyEvents = answers
     .filter((item) => item.payload?.safety?.status === "needs_review" || item.payload?.safety?.risk_types?.length)
     .slice(-8)
@@ -3639,6 +3689,7 @@ function computeMetrics(store, projectId) {
     fallback_runs: answers.filter((item) => item.payload?.harness?.fallback_used).length,
     harness_run_snapshots: projectHarnessRuns.length,
     langgraph_checkpoint_count: recentLangGraphCheckpoints.length,
+    schema_migration_count: recentSchemaMigrations.length,
     average_response_time_ms: responseTimes.length
       ? Math.round(responseTimes.reduce((sum, value) => sum + value, 0) / responseTimes.length)
       : 0,
@@ -3663,6 +3714,7 @@ function computeMetrics(store, projectId) {
     import_sensitive_files: importSafety.sensitive_files || [],
     recent_harness_runs: recentHarnessRuns,
     recent_langgraph_checkpoints: recentLangGraphCheckpoints.slice(0, 8),
+    recent_schema_migrations: recentSchemaMigrations.slice(0, 8),
     recent_safety_events: recentSafetyEvents,
     recent_tool_policy_events: recentToolPolicyEvents,
     recent_redaction_events: outputRedactionEvents.slice(-8).reverse(),
@@ -4198,6 +4250,10 @@ async function handleApiUnlocked(req, res, pathname) {
           required: AUTH_REQUIRED,
           token_count: AUTH_TOKEN_TO_USER.size,
           user_binding: "token"
+        },
+        schema_migrations: {
+          store: "SQLite schema_migrations",
+          recent: listSchemaMigrations(5)
         },
         safety_policy: safetyPolicySummary(),
         uptime_seconds: Math.floor(process.uptime())

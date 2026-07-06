@@ -16,6 +16,11 @@ const requiredServerSnippets = [
   "function markLongTermMemoryForgotten",
   "function searchLongTermMemory",
   "function listLongTermMemories",
+  "CREATE TABLE IF NOT EXISTS schema_migrations",
+  "function recordSchemaMigration",
+  "function listSchemaMigrations",
+  "schema_migration_count",
+  "recent_schema_migrations",
   "MEMORY_EMBEDDING_MODEL",
   "MEMORY_EMBEDDING_DIMS",
   "embedding_json",
@@ -47,7 +52,8 @@ const requiredDocSnippets = [
   "long_term_memory_query",
   "superseded",
   "preference_summary",
-  "embedding_model"
+  "embedding_model",
+  "schema_migrations"
 ];
 
 const missingServerSnippets = requiredServerSnippets.filter((snippet) => !serverSource.includes(snippet));

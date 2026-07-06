@@ -36,6 +36,8 @@ Each node appends trace metadata so the UI can show the agent path instead of hi
 
 Confirmed preference memory is stored in `data/store.json` under `userPreferencesByUser`, with legacy `userPreferences` retained for the default `local-user` profile. API clients can pass `userId` in JSON bodies or `X-User-Id` / `X-AI-PM-User-Id` headers; missing values resolve to `local-user` for local/backward-compatible use. Confirmed long-term memory items are also stored in SQLite at `MEMORY_DB_PATH` under the `memory_items` table, with `memory_items.user_id` for user isolation, an FTS5 index when available, and local `embedding_json` vectors for deterministic similarity ranking. The local embedding model is reported as `embedding_model=local-hash-v1`; it is an offline lexical vector for recall ranking, not an external semantic embedding service. Each long-term memory item keeps its source `projectId` for filtering and audit. Memory suggestions carry `userId` and `projectId` so the UI and API can verify which user and project produced the suggestion before confirmation or ignore actions.
 
+SQLite schema and data backfills are recorded in `schema_migrations`. Current audited migrations cover base memory/checkpoint tables, user-scoped memory columns, local embedding columns, legacy user backfill, user/status indexing, embedding backfill, and FTS rebuilds. `/api/health` returns the recent migration audit without exposing application data.
+
 Non-GET API requests run through an in-process write queue before reading and saving the store. Store saves use a same-directory temporary file followed by rename, so preference, feedback, and trace metadata writes are less likely to lose concurrent updates or leave a partial JSON file if the process is interrupted.
 
 If the store file exists but contains invalid JSON, startup moves it aside with a `.corrupt-` suffix before creating a fresh normalized store. This preserves the damaged file for inspection instead of silently overwriting it.
@@ -128,7 +130,7 @@ It also derives `memory_event_counts` and `recent_memory_events` from project-ow
 
 The evaluation payload also exposes `safety_status_counts`, `import_safety_status`, `import_safety_risk_counts`, and `memory_status_counts`, so the dashboard can distinguish passed versus review-needed safety outcomes, import-time safety findings, and pending versus confirmed or ignored memory suggestions.
 
-For harness observability, the evaluation payload exposes `harness_runtime_counts`, `model_mode_counts`, `tool_policy_counts`, `recent_tool_policy_events`, `budget_status_counts`, `schema_status_counts`, `llm_usage_counts`, `trace_tool_counts`, `langgraph_checkpoint_count`, and `recent_langgraph_checkpoints`, derived from saved harness metadata, trace steps, and SQLite checkpoint summaries.
+For harness observability, the evaluation payload exposes `harness_runtime_counts`, `model_mode_counts`, `tool_policy_counts`, `recent_tool_policy_events`, `budget_status_counts`, `schema_status_counts`, `llm_usage_counts`, `trace_tool_counts`, `langgraph_checkpoint_count`, `recent_langgraph_checkpoints`, `schema_migration_count`, and `recent_schema_migrations`, derived from saved harness metadata, trace steps, SQLite checkpoint summaries, and SQLite migration audit rows.
 
 Citation observability uses the same validation boundary as the output guardrail. `citation_status_counts` distinguishes valid citations, missing files, uncited impact areas, and answers with no repository citation, using related files, impact-area files, onboarding plan files, and trace citations.
 
@@ -175,6 +177,7 @@ The first version intentionally does not include:
 - external database persistence beyond local JSON and SQLite files
 - external semantic embedding provider integration
 - full account management, password login, sessions, roles, and org authorization
+- external database migration framework
 - LangSmith tracing
 - dynamic supervisor routing
 - autonomous write tools

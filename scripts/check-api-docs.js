@@ -68,6 +68,7 @@ const requiredErrorDocSnippets = [
   "harness runtime, model mode, tool policy, budget status, schema status, LLM usage, and trace tool distribution",
   "fallback reason distribution",
   "recent harness runs",
+  "recent schema migrations",
   "harness snapshot count",
   "persisted harness run audit",
   "risk_details",
@@ -108,6 +109,8 @@ const requiredEvaluationMetricSnippets = [
   "fallback_reasons",
   "recent_harness_runs",
   "harness_run_snapshots",
+  "schema_migration_count",
+  "recent_schema_migrations",
   "rankCounts(safetyRiskCounts)",
   "rankCounts(fallbackReasonCounts)"
 ];
