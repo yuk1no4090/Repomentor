@@ -517,8 +517,82 @@ function upsertLongTermMemoryFromSuggestion(suggestion) {
     suggestion.createdAt || now,
     now
   );
+  compactLongTermPreferenceMemories({ projectId: suggestion.projectId || null, changedKey: suggestion.key, activeValue: String(suggestion.value) });
   syncMemoryFtsRow(db, id);
+  refreshLongTermMemorySummary({ projectId: suggestion.projectId || null });
   return getLongTermMemoryById(id);
+}
+
+function compactLongTermPreferenceMemories({ projectId = null, changedKey = null, activeValue = null } = {}) {
+  if (!["role", "language", "detailLevel"].includes(changedKey)) {
+    return { superseded: 0 };
+  }
+  const db = getMemoryDatabase();
+  const now = new Date().toISOString();
+  const result = db.prepare(`
+    UPDATE memory_items
+    SET status = 'superseded', updated_at = ?
+    WHERE status = 'active'
+      AND type = 'preference'
+      AND key = ?
+      AND value != ?
+      AND (? IS NULL OR project_id = ? OR project_id IS NULL)
+  `).run(now, changedKey, String(activeValue), projectId, projectId);
+  return { superseded: result.changes || 0 };
+}
+
+function refreshLongTermMemorySummary({ projectId = null } = {}) {
+  const db = getMemoryDatabase();
+  const now = new Date().toISOString();
+  const active = db.prepare(`
+    SELECT key, value, label FROM memory_items
+    WHERE status = 'active'
+      AND type = 'preference'
+      AND (? IS NULL OR project_id = ? OR project_id IS NULL)
+    ORDER BY key ASC, updated_at DESC
+  `).all(projectId, projectId);
+  const summaryId = `summary_${projectId || "global"}_preferences`;
+  if (!active.length) {
+    db.prepare("UPDATE memory_items SET status = 'forgotten', updated_at = ? WHERE id = ?").run(now, summaryId);
+    syncMemoryFtsRow(db, summaryId);
+    return null;
+  }
+  const grouped = new Map();
+  active.forEach((item) => {
+    if (!grouped.has(item.key)) grouped.set(item.key, []);
+    if (!grouped.get(item.key).includes(item.value)) grouped.get(item.key).push(item.value);
+  });
+  const summary = [...grouped.entries()]
+    .map(([key, values]) => `${key}=${values.join(",")}`)
+    .join("; ");
+  const content = `Compressed user preference memory. ${summary}`;
+  db.prepare(`
+    INSERT INTO memory_items (
+      id, project_id, scope, type, key, value, label, content, source, confidence, status, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      project_id = excluded.project_id,
+      value = excluded.value,
+      content = excluded.content,
+      status = excluded.status,
+      updated_at = excluded.updated_at
+  `).run(
+    summaryId,
+    projectId,
+    "user",
+    "preference_summary",
+    "profile",
+    summary,
+    "Compressed preference summary",
+    content,
+    "memory_compaction",
+    "high",
+    "active",
+    now,
+    now
+  );
+  syncMemoryFtsRow(db, summaryId);
+  return getLongTermMemoryById(summaryId);
 }
 
 function markLongTermMemoryForgotten({ projectId = null, key = null, value = null, reason = "forgotten" }) {
@@ -539,6 +613,7 @@ function markLongTermMemoryForgotten({ projectId = null, key = null, value = nul
     params.push(String(value));
   }
   const result = db.prepare(sql).run(...params);
+  refreshLongTermMemorySummary({ projectId });
   return result.changes || 0;
 }
 
@@ -557,6 +632,7 @@ function tokenizeMemoryQuery(text) {
 function normalizeLongTermMemoryStatusFilter(status = "active") {
   const normalized = String(status || "active").toLowerCase();
   if (normalized === "all") return "all";
+  if (normalized === "superseded") return "superseded";
   if (normalized === "forgotten") return "forgotten";
   return "active";
 }
@@ -574,9 +650,12 @@ function buildLongTermMemoryFilters({ projectId = null, status = "active" } = {}
   if (statusFilter === "active") {
     clauses.push("m.status = ?");
     params.push("active");
+  } else if (statusFilter === "superseded") {
+    clauses.push("m.status = ?");
+    params.push("superseded");
   } else if (statusFilter === "forgotten") {
-    clauses.push("m.status != ?");
-    params.push("active");
+    clauses.push("m.status = ?");
+    params.push("forgotten");
   }
   if (projectId) {
     clauses.push("(m.project_id = ? OR m.project_id IS NULL)");

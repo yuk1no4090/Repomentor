@@ -10,7 +10,7 @@ const packageJson = JSON.parse(packageJsonRaw);
 
 const requiredPackageScripts = {
   "test:ui": "node scripts/ui-acceptance.js",
-  test: "npm run test:static && npm run test:smoke && npm run test:ui && npm run test:safety"
+  test: "npm run test:static && npm run test:smoke && npm run test:ui && npm run test:safety && npm run test:memory"
 };
 
 const missingPackageScripts = Object.entries(requiredPackageScripts)

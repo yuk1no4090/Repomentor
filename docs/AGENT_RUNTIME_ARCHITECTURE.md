@@ -51,7 +51,9 @@ Memory suggestions are stored separately under `memorySuggestions`. The system m
 
 Memory mutations are also recorded under `memoryEvents`. Confirming, ignoring, selectively forgetting, or clearing preferences creates a lightweight audit event with project id, suggestion id when available, action, preference key/value, status, and timestamp. `GET /api/memory` returns recent events alongside preferences and suggestions.
 
-The Copilot inspector uses `GET /api/memory` plus `POST /api/memory/forget` as a lightweight memory manager. It shows confirmed preferences, recent long-term memory items, and audit events, and lets the user remove one key/value pair or clear all preferences without creating a separate page. `GET /api/memory` also supports `q`/`query`, `status=active|forgotten|all`, and `limit`; the response includes `long_term_memory_query` so UI and tests can verify the exact memory inspection filter.
+The Copilot inspector uses `GET /api/memory` plus `POST /api/memory/forget` as a lightweight memory manager. It shows confirmed preferences, recent long-term memory items, and audit events, and lets the user remove one key/value pair or clear all preferences without creating a separate page. `GET /api/memory` also supports `q`/`query`, `status=active|forgotten|superseded|all`, and `limit`; the response includes `long_term_memory_query` so UI and tests can verify the exact memory inspection filter.
+
+Confirmed scalar preferences (`role`, `language`, and `detailLevel`) compact older conflicting long-term memory items by marking the previous active value as `superseded`. The runtime also maintains a `preference_summary` memory item with source `memory_compaction`, so later retrieval can use one compressed profile record instead of only raw suggestion records.
 
 Confirmed preferences are applied to both impact analysis and ordinary Q&A. Retrieved long-term memory is also reported to both flows. Product Manager, QA, focus-area, language, and detail-level preferences can change answer emphasis, suggested next questions, and concise/detailed shaping after schema validation and before safety checks.
 
@@ -153,6 +155,8 @@ The active safety policy is centralized in `SAFETY_POLICY` and summarized on `/a
 
 `npm run test:safety` runs a red-team suite against a temporary server. It covers direct prompt injection, system/developer prompt leakage requests, secret requests, tool escalation, retrieved-context prompt injection, retrieved sensitive content, and the invariant that unsafe input does not create memory suggestions.
 
+`npm run test:memory` runs a dedicated long-term memory compaction suite. It confirms conflicting role preferences, verifies the previous scalar value is marked `superseded`, and checks that the active `preference_summary` record from `memory_compaction` reflects the latest preference state.
+
 ## Non-Goals
 
 The first version intentionally does not include:
@@ -167,7 +171,7 @@ The first version intentionally does not include:
 
 ## Verification Gates
 
-`npm test` runs static checks, smoke tests, UI acceptance tests, and safety red-team tests.
+`npm test` runs static checks, smoke tests, UI acceptance tests, safety red-team tests, and memory compaction tests.
 
 Static checks cover:
 
@@ -186,6 +190,7 @@ Smoke tests cover:
 - memory confirm, ignore, selective forget, full forget, post-forget behavior, and unsafe-input learning suppression
 - input prompt injection and secret request guardrails
 - safety policy health metadata and red-team cases
+- memory compaction, superseded preferences, and summary records
 - retrieved-context prompt injection guardrails
 - retrieved sensitive content guardrails
 - API-key mode with fake OpenAI-compatible schema failure
