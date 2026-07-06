@@ -23,6 +23,7 @@ const MEMORY_DB_PATH = process.env.MEMORY_DB_PATH
 const DEFAULT_USER_ID = "local-user";
 const MEMORY_EMBEDDING_MODEL = "local-hash-v1";
 const MEMORY_EMBEDDING_DIMS = 64;
+const MEMORY_VECTOR_INDEX_PROVIDER = String(process.env.MEMORY_VECTOR_INDEX_PROVIDER || "").toLowerCase();
 const AUTH_REQUIRED = /^(1|true|yes)$/i.test(String(process.env.AI_PM_AUTH_REQUIRED || ""));
 const AUTH_TOKEN_CONFIG = process.env.AI_PM_USER_TOKENS || "";
 
@@ -571,6 +572,7 @@ function getMemoryDatabaseStatus() {
     fts_enabled: memoryDbFtsEnabled,
     embedding_model: resolveMemoryEmbeddingMode().model,
     embedding_provider: resolveMemoryEmbeddingMode().provider,
+    vector_index_provider: resolveMemoryVectorIndexMode().provider,
     vector_search: true,
     memory_counts: memoryCounts,
     memory_type_counts: memoryTypeCounts,
@@ -778,6 +780,25 @@ function resolveMemoryEmbeddingMode() {
   };
 }
 
+function resolveMemoryVectorIndexMode() {
+  const endpoint = String(process.env.MEMORY_VECTOR_INDEX_URL || "").replace(/\/+$/, "");
+  const apiKey = process.env.MEMORY_VECTOR_INDEX_API_KEY || "";
+  if ((MEMORY_VECTOR_INDEX_PROVIDER === "http" || MEMORY_VECTOR_INDEX_PROVIDER === "http-compatible") && endpoint) {
+    return {
+      provider: "http-compatible",
+      endpoint,
+      apiKey,
+      namespace: process.env.MEMORY_VECTOR_INDEX_NAMESPACE || "ai-pm-memory"
+    };
+  }
+  return {
+    provider: "local-sqlite",
+    endpoint: null,
+    apiKey: null,
+    namespace: "memory_items"
+  };
+}
+
 function normalizeEmbeddingVector(vector) {
   const numeric = Array.isArray(vector)
     ? vector.map((value) => Number(value) || 0)
@@ -848,6 +869,110 @@ async function createMemoryQueryEmbedding(query) {
     vector: createLocalMemoryEmbedding(query),
     model: MEMORY_EMBEDDING_MODEL
   };
+}
+
+async function requestMemoryVectorIndex(pathname, body, mode = resolveMemoryVectorIndexMode()) {
+  if (mode.provider !== "http-compatible") return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), LLM_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${mode.endpoint}${pathname}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(mode.apiKey ? { authorization: `Bearer ${mode.apiKey}` } : {})
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(`memory vector index request failed: ${response.status}`);
+    }
+    return payload;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function upsertMemoryVectorIndex(memoryRow) {
+  const mode = resolveMemoryVectorIndexMode();
+  if (mode.provider !== "http-compatible" || !memoryRow) {
+    return { attempted: false, provider: mode.provider };
+  }
+  const vector = parseMemoryEmbedding(memoryRow.embedding_json);
+  if (!vector?.length) {
+    return { attempted: false, provider: mode.provider, reason: "missing_embedding" };
+  }
+  try {
+    await requestMemoryVectorIndex("/upsert", {
+      namespace: mode.namespace,
+      vectors: [{
+        id: memoryRow.id,
+        values: vector,
+        metadata: {
+          user_id: memoryRow.user_id || DEFAULT_USER_ID,
+          project_id: memoryRow.project_id || null,
+          status: memoryRow.status || "active",
+          type: memoryRow.type || "memory",
+          key: memoryRow.key || null,
+          value: memoryRow.value || null,
+          label: memoryRow.label || null,
+          content: memoryRow.content || "",
+          embedding_model: memoryRow.embedding_model || null,
+          updated_at: memoryRow.updated_at || null
+        }
+      }]
+    }, mode);
+    return { attempted: true, provider: mode.provider, ok: true };
+  } catch (error) {
+    console.warn(`[memory] Remote vector upsert failed; local SQLite retrieval remains active. ${error.message}`);
+    return { attempted: true, provider: mode.provider, ok: false, error: error.message };
+  }
+}
+
+async function queryMemoryVectorIndex({ userId = DEFAULT_USER_ID, projectId = null, query = "", status = "active", limit = 5 } = {}) {
+  const mode = resolveMemoryVectorIndexMode();
+  if (mode.provider !== "http-compatible" || !query) {
+    return { attempted: false, provider: mode.provider, rows: [] };
+  }
+  try {
+    const queryEmbedding = await createMemoryQueryEmbedding(query);
+    const payload = await requestMemoryVectorIndex("/query", {
+      namespace: mode.namespace,
+      vector: queryEmbedding.vector,
+      topK: Math.max(limit, 10),
+      filter: {
+        user_id: userId,
+        project_id: projectId,
+        status
+      }
+    }, mode);
+    const ids = (payload?.matches || [])
+      .map((match) => String(match.id || "").trim())
+      .filter(Boolean)
+      .slice(0, 50);
+    if (!ids.length) return { attempted: true, provider: mode.provider, rows: [] };
+    const db = getMemoryDatabase();
+    const filters = buildLongTermMemoryFilters({ userId, projectId, status });
+    const placeholders = ids.map(() => "?").join(", ");
+    const scoreById = new Map((payload.matches || []).map((match) => [String(match.id), Number(match.score) || 0]));
+    const rows = db.prepare(`
+      SELECT m.* FROM memory_items m
+      WHERE m.id IN (${placeholders})
+        ${filters.sql}
+    `).all(...ids, ...filters.params)
+      .map((row) => ({ ...row, vector_score: scoreById.get(row.id) || 0 }))
+      .sort((left, right) => {
+        if (right.vector_score !== left.vector_score) return right.vector_score - left.vector_score;
+        return ids.indexOf(left.id) - ids.indexOf(right.id);
+      })
+      .slice(0, limit);
+    return { attempted: true, provider: mode.provider, rows };
+  } catch (error) {
+    console.warn(`[memory] Remote vector query failed; falling back to local SQLite vector search. ${error.message}`);
+    return { attempted: true, provider: mode.provider, rows: [], error: error.message };
+  }
 }
 
 function cosineSimilarity(left, right) {
@@ -961,6 +1086,7 @@ async function upsertLongTermMemoryFromSuggestion(suggestion) {
   );
   compactLongTermPreferenceMemories({ userId: suggestion.userId || DEFAULT_USER_ID, projectId: suggestion.projectId || null, changedKey: suggestion.key, activeValue: String(suggestion.value) });
   syncMemoryFtsRow(db, id);
+  await upsertMemoryVectorIndex(db.prepare("SELECT * FROM memory_items WHERE id = ?").get(id));
   await refreshLongTermMemorySummary({ userId: suggestion.userId || DEFAULT_USER_ID, projectId: suggestion.projectId || null });
   return getLongTermMemoryById(id);
 }
@@ -1052,6 +1178,7 @@ async function refreshLongTermMemorySummary({ userId = DEFAULT_USER_ID, projectI
     now
   );
   syncMemoryFtsRow(db, summaryId);
+  await upsertMemoryVectorIndex(db.prepare("SELECT * FROM memory_items WHERE id = ?").get(summaryId));
   return getLongTermMemoryById(summaryId);
 }
 
@@ -1188,6 +1315,8 @@ async function searchLongTermMemory({ userId = DEFAULT_USER_ID, projectId = null
     `).all(...filters.params, like, like, like, like, limit);
   }
   if (tokens.length) {
+    const remoteVector = await queryMemoryVectorIndex({ userId, projectId, query, status, limit });
+    rows = mergeMemoryRows(rows, remoteVector.rows, limit);
     const vectorCandidates = db.prepare(`
       SELECT m.* FROM memory_items m
       WHERE 1 = 1
@@ -4180,6 +4309,7 @@ async function handleApiUnlocked(req, res, pathname) {
           limit,
           embedding_model: resolveMemoryEmbeddingMode().model,
           embedding_provider: resolveMemoryEmbeddingMode().provider,
+          vector_index_provider: resolveMemoryVectorIndexMode().provider,
           vector_search: !!query,
           result_count: longTermMemories.length
         }
@@ -4699,6 +4829,11 @@ async function handleApiUnlocked(req, res, pathname) {
           provider: resolveMemoryEmbeddingMode().provider,
           model: resolveMemoryEmbeddingMode().model,
           external_configured: resolveMemoryEmbeddingMode().provider !== "local"
+        },
+        memory_vector_index: {
+          provider: resolveMemoryVectorIndexMode().provider,
+          namespace: resolveMemoryVectorIndexMode().namespace,
+          external_configured: resolveMemoryVectorIndexMode().provider !== "local-sqlite"
         },
         schema_migrations: {
           store: "SQLite schema_migrations",

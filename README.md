@@ -64,6 +64,10 @@ The project targets Node.js 24 because the long-term memory store uses the built
 | `OPENAI_EMBEDDING_API_KEY` | `OPENAI_API_KEY` | API key for the embeddings endpoint when external memory embeddings are enabled. |
 | `OPENAI_EMBEDDING_BASE_URL` | `OPENAI_BASE_URL` or `https://api.openai.com` | Base URL for the embeddings endpoint; the app calls `/v1/embeddings`. |
 | `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model name used when external memory embeddings are enabled. |
+| `MEMORY_VECTOR_INDEX_PROVIDER` | unset | Set to `http` for an HTTP-compatible external long-term memory vector index. |
+| `MEMORY_VECTOR_INDEX_URL` | unset | Base URL for the external vector index; the app calls `/upsert` and `/query`. |
+| `MEMORY_VECTOR_INDEX_API_KEY` | unset | Optional bearer token for the external vector index. |
+| `MEMORY_VECTOR_INDEX_NAMESPACE` | `ai-pm-memory` | Namespace passed to the external vector index. |
 | `OPENAI_API_KEY` | unset | Enables AI-enhanced model calls when set. |
 | `OPENAI_BASE_URL` | `https://api.openai.com` | OpenAI-compatible API base URL. |
 | `OPENAI_MODEL` | `gpt-4o-mini` | Chat completion model name. |
@@ -100,7 +104,7 @@ Without an API key, the app falls back to a deterministic retrieval-based answer
 - The runtime uses Node.js plus LangGraph packages for the agent workflow and `@langchain/langgraph-checkpoint` for checkpoint-compatible graph execution.
 - GitHub imports use public repository ZIP downloads.
 - ZIP uploads are parsed locally by the server.
-- Runtime data is stored in `data/store.json` by default. Override with `DATA_DIR` or `STORE_PATH` for isolated runs and tests. Confirmed long-term memory is additionally stored in SQLite at `MEMORY_DB_PATH` using a `memory_items` table plus FTS search when available and `embedding_json` vectors for similarity ranking. By default embeddings are deterministic local `local-hash-v1`; setting `MEMORY_EMBEDDING_PROVIDER=openai` switches memory write/query paths to an OpenAI-compatible `/v1/embeddings` endpoint with local fallback on provider failure. SQLite schema and data backfills are audited in `schema_migrations`. Non-GET API requests run through a write queue. Store saves write a same-directory temporary file and rename it into place to reduce partial-write corruption. If an existing store contains invalid JSON, it is moved aside with a `.corrupt-` suffix before a fresh normalized store is created.
+- Runtime data is stored in `data/store.json` by default. Override with `DATA_DIR` or `STORE_PATH` for isolated runs and tests. Confirmed long-term memory is additionally stored in SQLite at `MEMORY_DB_PATH` using a `memory_items` table plus FTS search when available and `embedding_json` vectors for similarity ranking. By default embeddings are deterministic local `local-hash-v1`; setting `MEMORY_EMBEDDING_PROVIDER=openai` switches memory write/query paths to an OpenAI-compatible `/v1/embeddings` endpoint with local fallback on provider failure. Setting `MEMORY_VECTOR_INDEX_PROVIDER=http` and `MEMORY_VECTOR_INDEX_URL` additionally mirrors long-term memory vectors to an HTTP-compatible vector index and queries it before local SQLite vector ranking; remote failures fall back to SQLite. SQLite schema and data backfills are audited in `schema_migrations`. Non-GET API requests run through a write queue. Store saves write a same-directory temporary file and rename it into place to reduce partial-write corruption. If an existing store contains invalid JSON, it is moved aside with a `.corrupt-` suffix before a fresh normalized store is created.
 
 ## Current MVP Features
 
