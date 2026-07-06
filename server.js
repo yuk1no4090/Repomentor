@@ -1739,6 +1739,22 @@ function normalizeMemoryEvent(item) {
   };
 }
 
+function normalizeAuthEvent(item) {
+  if (!item || typeof item !== "object") return null;
+  return {
+    id: item.id || crypto.randomUUID(),
+    userId: typeof item.userId === "string" ? item.userId : null,
+    role: typeof item.role === "string" ? item.role : null,
+    scopes: normalizeAuthScopes(item.scopes),
+    method: typeof item.method === "string" ? item.method : "UNKNOWN",
+    path: typeof item.path === "string" ? item.path : "unknown",
+    requiredScope: typeof item.requiredScope === "string" ? item.requiredScope : null,
+    status: typeof item.status === "string" ? item.status : "unknown",
+    reason: typeof item.reason === "string" ? item.reason : null,
+    createdAt: item.createdAt || new Date().toISOString()
+  };
+}
+
 function normalizeHarnessRun(item) {
   if (!item || typeof item !== "object") return null;
   const runId = typeof item.run_id === "string" && item.run_id ? item.run_id : null;
@@ -1803,6 +1819,9 @@ function normalizeStore(store) {
   normalized.feedback ||= [];
   normalized.authUsers = Array.isArray(normalized.authUsers)
     ? normalized.authUsers.map(normalizeAuthUserRecord).filter(Boolean)
+    : [];
+  normalized.authEvents = Array.isArray(normalized.authEvents)
+    ? normalized.authEvents.map(normalizeAuthEvent).filter(Boolean).slice(-200)
     : [];
   normalized.harnessRuns = Array.isArray(normalized.harnessRuns)
     ? normalized.harnessRuns.map(normalizeHarnessRun).filter(Boolean)
@@ -1989,6 +2008,42 @@ function listAuthUsers(store) {
   }));
 }
 
+function createAuthEvent({ identity = null, req, pathname, requiredScope = null, status, reason = null }) {
+  return normalizeAuthEvent({
+    userId: identity?.userId || null,
+    role: identity?.role || null,
+    scopes: identity?.scopes || [],
+    method: req?.method || "UNKNOWN",
+    path: pathname || "unknown",
+    requiredScope,
+    status,
+    reason
+  });
+}
+
+function recordAuthEvent(store, event) {
+  if (!event) return;
+  store.authEvents ||= [];
+  store.authEvents.push(event);
+  store.authEvents = store.authEvents.slice(-200);
+}
+
+function listAuthEvents(store, limit = 50) {
+  const boundedLimit = Math.max(1, Math.min(Number(limit) || 50, 100));
+  return (store.authEvents || []).slice(-boundedLimit).reverse().map((event) => ({
+    id: event.id,
+    user_id: event.userId,
+    role: event.role,
+    scopes: event.scopes,
+    method: event.method,
+    path: event.path,
+    required_scope: event.requiredScope,
+    status: event.status,
+    reason: event.reason,
+    createdAt: event.createdAt
+  }));
+}
+
 function getRequestAuthToken(req) {
   const authorization = String(req.headers.authorization || "");
   const bearer = authorization.match(/^Bearer\s+(.+)$/i);
@@ -2055,6 +2110,7 @@ function requireAuthScope(req, pathname) {
     throw error;
   }
   req.auth = identity;
+  req.authEvent = createAuthEvent({ identity, req, pathname, requiredScope, status: "allowed" });
   return identity;
 }
 
@@ -4486,11 +4542,32 @@ async function handleApi(req, res, pathname) {
 }
 
 async function handleApiUnlocked(req, res, pathname) {
+  let store = null;
   try {
+    store = await ensureStore();
     if (AUTH_REQUIRED && pathname !== "/api/health") {
-      requireAuthScope(req, pathname);
+      try {
+        requireAuthScope(req, pathname);
+      } catch (error) {
+        recordAuthEvent(store, createAuthEvent({
+          identity: error.auth ? {
+            userId: error.auth.user_id,
+            role: error.auth.role,
+            scopes: error.auth.scopes,
+            orgId: error.auth.org_id
+          } : null,
+          req,
+          pathname,
+          requiredScope: error.required_scope || requiredScopeForRequest(req, pathname),
+          status: "denied",
+          reason: error.code || "AUTH_DENIED"
+        }));
+        await saveStore(store);
+        throw error;
+      }
+      recordAuthEvent(store, req.authEvent);
+      await saveStore(store);
     }
-    const store = await ensureStore();
 
     if (req.method === "GET" && pathname === "/api/auth/me") {
       const identity = resolveAuthenticatedIdentity(req, {});
@@ -4505,6 +4582,15 @@ async function handleApiUnlocked(req, res, pathname) {
       sendJson(res, 200, {
         auth_required: AUTH_REQUIRED,
         users: listAuthUsers(store)
+      });
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/auth/events") {
+      const url = new URL(req.url, `http://${req.headers.host}`);
+      sendJson(res, 200, {
+        auth_required: AUTH_REQUIRED,
+        events: listAuthEvents(store, url.searchParams.get("limit") || 50)
       });
       return;
     }

@@ -8,6 +8,7 @@ const requiredTopLevelFields = [
   "answers",
   "feedback",
   "authUsers",
+  "authEvents",
   "harnessRuns",
   "userPreferences",
   "userPreferencesByUser",
@@ -51,7 +52,9 @@ const arrayNormalizationChecks = [
   "normalized.harnessRuns.map(normalizeHarnessRun).filter(Boolean)",
   "normalized.authUsers = Array.isArray(normalized.authUsers)",
   "normalized.authUsers.map(normalizeAuthUserRecord).filter(Boolean)",
-  "normalized.authUsers = mergeAuthUsersWithConfiguredTokens(normalized.authUsers)"
+  "normalized.authUsers = mergeAuthUsersWithConfiguredTokens(normalized.authUsers)",
+  "normalized.authEvents = Array.isArray(normalized.authEvents)",
+  "normalized.authEvents.map(normalizeAuthEvent).filter(Boolean).slice(-200)"
 ];
 
 const missingArrayNormalization = arrayNormalizationChecks.filter((snippet) => {

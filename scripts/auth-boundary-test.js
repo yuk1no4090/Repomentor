@@ -227,6 +227,15 @@ async function run() {
     assert(viewerRestorePlan.payload.code === "AUTH_SCOPE_FORBIDDEN", "viewer restore plan did not return AUTH_SCOPE_FORBIDDEN");
     assert(viewerRestorePlan.payload.required_scope === "memory:write", "viewer restore plan required wrong scope");
 
+    const { payload: authEvents } = await request(baseUrl, "/api/auth/events?limit=20", { token: "token-a" });
+    assert(Array.isArray(authEvents.events), "auth events did not return an events array");
+    assert(authEvents.events.some((event) => event.status === "allowed" && event.user_id === "user-a"), "auth events missing allowed user-a event");
+    assert(authEvents.events.some((event) => event.status === "denied" && event.reason === "AUTH_REQUIRED"), "auth events missing missing-token denial");
+    assert(authEvents.events.some((event) => event.status === "denied" && event.reason === "AUTH_INVALID"), "auth events missing invalid-token denial");
+    assert(authEvents.events.some((event) => event.status === "denied" && event.required_scope === "memory:write"), "auth events missing memory scope denial");
+    assert(!JSON.stringify(authEvents).includes("token-a"), "auth events should not expose token values");
+    assert(!JSON.stringify(authEvents).includes("viewer-token"), "auth events should not expose viewer token value");
+
     const { payload: confirmed } = await request(baseUrl, "/api/memory/confirm", {
       method: "POST",
       token: "token-a",
