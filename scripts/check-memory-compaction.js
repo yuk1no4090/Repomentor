@@ -12,7 +12,7 @@ const packageJson = JSON.parse(packageJsonRaw);
 
 const requiredPackageScripts = {
   "test:memory": "node scripts/memory-compaction-test.js",
-  test: "npm run test:static && npm run test:smoke && npm run test:ui && npm run test:safety && npm run test:memory && npm run test:user-memory"
+  test: "npm run test:static && npm run test:smoke && npm run test:ui && npm run test:safety && npm run test:memory && npm run test:user-memory && npm run test:auth"
 };
 
 const missingPackageScripts = Object.entries(requiredPackageScripts)

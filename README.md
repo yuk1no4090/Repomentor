@@ -19,10 +19,11 @@ npm run test:ui
 npm run test:safety
 npm run test:memory
 npm run test:user-memory
+npm run test:auth
 npm test
 ```
 
-`npm run test:static` runs `scripts/static-checks.js`, which performs syntax checks, locale-copy consistency checks, frontend agent UI checks, text-quality checks, runtime dependency checks, API documentation sync checks, store-schema checks, smoke reliability checks, UI acceptance wiring checks, safety guardrail contract checks, safety red-team wiring checks, memory compaction checks, user memory isolation checks, and agent response contract checks without starting a server. `npm test` runs the static checks, smoke test, UI acceptance test, safety red-team test, memory compaction test, and user memory isolation test.
+`npm run test:static` runs `scripts/static-checks.js`, which performs syntax checks, locale-copy consistency checks, frontend agent UI checks, text-quality checks, runtime dependency checks, API documentation sync checks, store-schema checks, smoke reliability checks, UI acceptance wiring checks, safety guardrail contract checks, safety red-team wiring checks, memory compaction checks, user memory isolation checks, auth boundary checks, and agent response contract checks without starting a server. `npm test` runs the static checks, smoke test, UI acceptance test, safety red-team test, memory compaction test, user memory isolation test, and auth boundary test.
 
 Static check scripts use the `scripts/check-*.js` naming convention. `scripts/static-checks.js` syntax-checks all `scripts/*.js` files and discovers/runs `check-*.js` automatically.
 
@@ -35,6 +36,8 @@ The safety red-team test starts the server with an isolated data directory, veri
 The memory compaction test starts the server with an isolated data directory, confirms conflicting role preferences, verifies the old scalar preference becomes `superseded`, and checks that an active `preference_summary` record with source `memory_compaction` is maintained. Use `npm run test:memory` to run only this long-term memory compaction check.
 
 The user memory isolation test starts the server with an isolated data directory, runs two users through separate memory suggestions using `X-User-Id`, verifies cross-user confirmation returns `MEMORY_USER_MISMATCH`, and checks that preferences plus SQLite long-term memory stay isolated. Use `npm run test:user-memory` to run only this boundary check.
+
+The auth boundary test starts the server with `AI_PM_AUTH_REQUIRED=true`, verifies `/api/health` remains public, rejects missing or invalid tokens, blocks token/user mismatch with `AUTH_USER_MISMATCH`, and confirms memory suggestions are bound to the authenticated user. Use `npm run test:auth` to run only this boundary check.
 
 GitHub Actions runs `npm ci` and `npm test` on pushes to `main` and pull requests.
 
@@ -49,6 +52,8 @@ The project targets Node.js 24 because the long-term memory store uses the built
 | `DATA_DIR` | `data` | Directory for runtime JSON storage. |
 | `STORE_PATH` | `DATA_DIR/store.json` | Exact runtime store file path. |
 | `MEMORY_DB_PATH` | `DATA_DIR/memory.sqlite` | SQLite database path for confirmed long-term memory items. |
+| `AI_PM_AUTH_REQUIRED` | unset | Set to `true` to require token authentication for API routes except `/api/health`. |
+| `AI_PM_USER_TOKENS` | unset | Token-to-user mapping, either JSON such as `{"token-a":"user-a"}` or comma-separated `token:userId` pairs. |
 | `OPENAI_API_KEY` | unset | Enables AI-enhanced model calls when set. |
 | `OPENAI_BASE_URL` | `https://api.openai.com` | OpenAI-compatible API base URL. |
 | `OPENAI_MODEL` | `gpt-4o-mini` | Chat completion model name. |
@@ -144,6 +149,9 @@ Error responses keep a human-readable `error` string and add a machine-readable 
 - `MEMORY_USER_MISMATCH`
 - `UNKNOWN_MEMORY_PREFERENCE_KEY`
 - `UNKNOWN_MEMORY_PREFERENCE_VALUE`
+- `AUTH_REQUIRED`
+- `AUTH_INVALID`
+- `AUTH_USER_MISMATCH`
 
 Common API errors include:
 

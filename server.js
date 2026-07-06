@@ -23,6 +23,8 @@ const MEMORY_DB_PATH = process.env.MEMORY_DB_PATH
 const DEFAULT_USER_ID = "local-user";
 const MEMORY_EMBEDDING_MODEL = "local-hash-v1";
 const MEMORY_EMBEDDING_DIMS = 64;
+const AUTH_REQUIRED = /^(1|true|yes)$/i.test(String(process.env.AI_PM_AUTH_REQUIRED || ""));
+const AUTH_TOKEN_CONFIG = process.env.AI_PM_USER_TOKENS || "";
 
 function readTextFileSafe(filePath) {
   try {
@@ -1237,6 +1239,48 @@ function normalizeUserId(value) {
   const raw = String(value || DEFAULT_USER_ID).trim();
   const safe = raw.replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 80);
   return safe || DEFAULT_USER_ID;
+}
+
+function parseAuthTokenConfig(raw = AUTH_TOKEN_CONFIG) {
+  if (!raw) return new Map();
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return new Map();
+    return new Map(Object.entries(parsed)
+      .filter(([token, userId]) => token && typeof userId === "string" && userId.trim())
+      .map(([token, userId]) => [String(token), normalizeUserId(userId)]));
+  } catch {
+    return new Map(String(raw).split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .map((entry) => {
+        const [token, userId] = entry.split(":");
+        return [String(token || "").trim(), String(userId || "").trim() ? normalizeUserId(userId) : ""];
+      })
+      .filter(([token, userId]) => token && userId));
+  }
+}
+
+const AUTH_TOKEN_TO_USER = parseAuthTokenConfig();
+
+function getRequestAuthToken(req) {
+  const authorization = String(req.headers.authorization || "");
+  const bearer = authorization.match(/^Bearer\s+(.+)$/i);
+  if (bearer) return bearer[1].trim();
+  return String(req.headers["x-api-key"] || req.headers["x-ai-pm-token"] || "").trim();
+}
+
+function resolveAuthenticatedUserId(req, source = {}) {
+  if (!AUTH_REQUIRED) return resolveUserId(req, source);
+  const token = getRequestAuthToken(req);
+  if (!token) throw apiError("Authentication token is required.", "AUTH_REQUIRED", 401);
+  const userId = AUTH_TOKEN_TO_USER.get(token);
+  if (!userId) throw apiError("Authentication token is invalid.", "AUTH_INVALID", 401);
+  const requestedUserId = source.userId || source.user_id || req.headers["x-user-id"] || req.headers["x-ai-pm-user-id"];
+  if (requestedUserId && normalizeUserId(requestedUserId) !== userId) {
+    throw apiError("Authenticated token cannot act as a different user.", "AUTH_USER_MISMATCH", 403);
+  }
+  return userId;
 }
 
 function resolveUserId(req, source = {}) {
@@ -3649,6 +3693,9 @@ async function handleApi(req, res, pathname) {
 
 async function handleApiUnlocked(req, res, pathname) {
   try {
+    if (AUTH_REQUIRED && pathname !== "/api/health") {
+      resolveAuthenticatedUserId(req, {});
+    }
     const store = await ensureStore();
 
     if (req.method === "GET" && pathname === "/api/projects") {
@@ -3671,7 +3718,7 @@ async function handleApiUnlocked(req, res, pathname) {
       const url = new URL(req.url, `http://${req.headers.host}`);
       const projectId = url.searchParams.get("projectId");
       if (projectId) findProject(store, projectId);
-      const userId = resolveUserId(req, { userId: url.searchParams.get("userId") || url.searchParams.get("user_id") });
+      const userId = resolveAuthenticatedUserId(req, { userId: url.searchParams.get("userId") || url.searchParams.get("user_id") });
       const query = String(url.searchParams.get("query") || url.searchParams.get("q") || "").trim();
       const status = normalizeLongTermMemoryStatusFilter(url.searchParams.get("status") || "active");
       const limit = parsePositiveInteger(url.searchParams.get("limit"), 20, 50);
@@ -3708,7 +3755,7 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "POST" && pathname === "/api/memory/confirm") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
-      const userId = resolveUserId(req, body);
+      const userId = resolveAuthenticatedUserId(req, body);
       const suggestion = store.memorySuggestions.find((item) => item.id === body.suggestionId);
       if (!suggestion) throw apiError("Memory suggestion not found.", "MEMORY_SUGGESTION_NOT_FOUND");
       if ((suggestion.userId || DEFAULT_USER_ID) !== userId) throw apiError("Memory suggestion belongs to a different user.", "MEMORY_USER_MISMATCH", 409);
@@ -3738,7 +3785,7 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "POST" && pathname === "/api/memory/forget") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
-      const userId = resolveUserId(req, body);
+      const userId = resolveAuthenticatedUserId(req, body);
       if (body.suggestionId) {
         const suggestion = store.memorySuggestions.find((item) => item.id === body.suggestionId);
         if (!suggestion) throw apiError("Memory suggestion not found.", "MEMORY_SUGGESTION_NOT_FOUND");
@@ -3852,7 +3899,7 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "POST" && pathname === "/api/chat") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
-      const userId = resolveUserId(req, body);
+      const userId = resolveAuthenticatedUserId(req, body);
       const project = findProject(store, body.projectId);
       const question = String(body.question || "").trim();
       if (!question) throw apiError("Question is required.", "QUESTION_REQUIRED");
@@ -3975,7 +4022,7 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "POST" && pathname === "/api/onboarding") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
-      const userId = resolveUserId(req, body);
+      const userId = resolveAuthenticatedUserId(req, body);
       const project = findProject(store, body.projectId);
       const started = Date.now();
       const runId = createHarnessRunId("onboarding");
@@ -4061,7 +4108,7 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "POST" && pathname === "/api/agent-impact") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
-      const userId = resolveUserId(req, body);
+      const userId = resolveAuthenticatedUserId(req, body);
       const project = findProject(store, body.projectId);
       const question = String(body.question || "").trim();
       if (!question) throw apiError("Question is required.", "QUESTION_REQUIRED");
@@ -4147,6 +4194,11 @@ async function handleApiUnlocked(req, res, pathname) {
         commit: RUNTIME_METADATA.commit,
         node: RUNTIME_METADATA.node,
         environment: RUNTIME_METADATA.environment,
+        auth: {
+          required: AUTH_REQUIRED,
+          token_count: AUTH_TOKEN_TO_USER.size,
+          user_binding: "token"
+        },
         safety_policy: safetyPolicySummary(),
         uptime_seconds: Math.floor(process.uptime())
       });

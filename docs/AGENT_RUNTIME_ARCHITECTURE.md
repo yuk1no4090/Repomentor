@@ -62,6 +62,12 @@ Suggestion records are normalized on store load/save so missing ids, timestamps,
 
 Memory API errors return `{ error, code }` so the UI and tests can distinguish user-visible copy from machine-readable state. The memory boundary currently uses `MEMORY_SUGGESTION_NOT_FOUND`, `MEMORY_SUGGESTION_NOT_PENDING`, `MEMORY_PROJECT_MISMATCH`, `MEMORY_USER_MISMATCH`, `UNKNOWN_MEMORY_PREFERENCE_KEY`, and `UNKNOWN_MEMORY_PREFERENCE_VALUE`.
 
+## Auth Boundary
+
+Authentication is optional and disabled by default for local demos. When `AI_PM_AUTH_REQUIRED=true`, every API route except `GET /api/health` requires a token from `Authorization: Bearer ...`, `X-API-Key`, or `X-AI-PM-Token`. Tokens are mapped to user ids through `AI_PM_USER_TOKENS`, either as JSON (`{"token-a":"user-a"}`) or comma-separated `token:userId` pairs.
+
+The authenticated token becomes the token-bound user identity for memory, chat, onboarding, and LangGraph Agent Workflow calls. If a request also provides `userId`, `user_id`, `X-User-Id`, or `X-AI-PM-User-Id`, it must match the authenticated user or the request is rejected with `AUTH_USER_MISMATCH`. Missing and invalid tokens return `AUTH_REQUIRED` and `AUTH_INVALID`. `/api/health` reports whether auth is required and how many tokens are configured without exposing token values.
+
 ## modelAdapter
 
 `runModelAdapter()` is the only agent model boundary.
@@ -168,7 +174,7 @@ The first version intentionally does not include:
 
 - external database persistence beyond local JSON and SQLite files
 - external semantic embedding provider integration
-- real authentication and authorization
+- full account management, password login, sessions, roles, and org authorization
 - LangSmith tracing
 - dynamic supervisor routing
 - autonomous write tools
