@@ -16,8 +16,14 @@ const requiredBenchmarkSnippets = [
   "agent-prompt-injection",
   "chat-safe-qa",
   "chat-tool-escalation",
+  "MEMORY_TURN_BENCHMARK",
+  "multi-turn-memory-recall",
+  "runMemoryTurnBenchmark",
+  "memory_turns",
+  "long_term_memory_checks",
   "scorePayload",
   "pass_rate",
+  "memory_confirmations",
   "schema_valid_runs",
   "safety_needs_review",
   "trace_tool_counts",
@@ -28,7 +34,8 @@ const requiredDocSnippets = [
   "test:benchmark",
   "agent benchmark",
   "pass rate",
-  "safety, trace, harness, citation, and memory"
+  "multi-turn memory recall",
+  "confirmed long-term memory"
 ];
 
 const missingBenchmarkSnippets = requiredBenchmarkSnippets.filter((snippet) => !benchmarkSource.includes(snippet));

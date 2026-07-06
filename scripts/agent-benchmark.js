@@ -55,6 +55,13 @@ const BENCHMARK_CASES = [
   }
 ];
 
+const MEMORY_TURN_BENCHMARK = {
+  id: "multi-turn-memory-recall",
+  seedQuestion: "As QA, I prefer detailed testing-focused answers for checkout risk reviews.",
+  recallChatQuestion: "Where should I focus checkout regression testing?",
+  recallAgentQuestion: "Assess checkout release risk with my saved preferences."
+};
+
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
@@ -187,6 +194,78 @@ async function runCase(baseUrl, projectId, testCase) {
   return scorePayload(testCase, response);
 }
 
+async function runMemoryTurnBenchmark(baseUrl, projectId) {
+  const seed = await request(baseUrl, "/api/agent-impact", {
+    method: "POST",
+    body: JSON.stringify({
+      projectId,
+      question: MEMORY_TURN_BENCHMARK.seedQuestion
+    })
+  });
+  const suggestion = (seed.payload?.memory_suggestions || [])
+    .find((item) => item.key === "role" && item.value === "QA" && item.status === "pending");
+  assert(suggestion, "memory benchmark did not create a QA role suggestion");
+
+  const confirmed = await request(baseUrl, "/api/memory/confirm", {
+    method: "POST",
+    body: JSON.stringify({ projectId, suggestionId: suggestion.id })
+  });
+  assert(confirmed.preferences?.role === "QA", "memory benchmark did not confirm QA role preference");
+  assert(confirmed.long_term_memory?.status === "active", "memory benchmark did not persist active long-term memory");
+
+  const recallChat = await request(baseUrl, "/api/chat", {
+    method: "POST",
+    body: JSON.stringify({
+      projectId,
+      kind: "qa",
+      question: MEMORY_TURN_BENCHMARK.recallChatQuestion
+    })
+  });
+  const recallAgent = await request(baseUrl, "/api/agent-impact", {
+    method: "POST",
+    body: JSON.stringify({
+      projectId,
+      question: MEMORY_TURN_BENCHMARK.recallAgentQuestion
+    })
+  });
+  const memoryInspection = await request(baseUrl, `/api/memory?projectId=${encodeURIComponent(projectId)}&q=${encodeURIComponent("QA testing checkout")}`);
+  const chatPayload = recallChat.payload || {};
+  const agentPayload = recallAgent.payload || {};
+  const chatMemorySummary = String(chatPayload.memory_used?.summary || "");
+  const agentMemorySummary = String(agentPayload.memory_used?.summary || "");
+  const chatText = JSON.stringify({
+    answer: chatPayload.answer,
+    key_points: chatPayload.key_points,
+    suggested_next_questions: chatPayload.suggested_next_questions
+  });
+  const agentText = JSON.stringify({
+    impact_areas: agentPayload.impact_areas,
+    testing_suggestions: agentPayload.testing_suggestions,
+    open_questions: agentPayload.open_questions
+  });
+  const checks = {
+    suggestion_created: !!suggestion,
+    confirmed_preference: confirmed.preferences?.role === "QA",
+    long_term_memory_persisted: memoryInspection.long_term_memories?.some((item) => item.key === "role" && item.value === "QA" && item.status === "active"),
+    chat_memory_used: chatPayload.memory_used?.used === true && chatMemorySummary.includes("QA"),
+    agent_memory_used: agentPayload.memory_used?.used === true && agentMemorySummary.includes("QA"),
+    chat_qa_shaping: /QA|test|regression|risk/i.test(chatText),
+    agent_qa_shaping: /QA|test|regression|risk/i.test(agentText),
+    no_repeat_role_suggestion: !(agentPayload.memory_suggestions || []).some((item) => item.key === "role" && item.value === "QA")
+  };
+  return {
+    id: MEMORY_TURN_BENCHMARK.id,
+    kind: "memory",
+    passed: Object.values(checks).every(Boolean),
+    checks,
+    suggestion_id: suggestion.id,
+    confirmed_memory_id: confirmed.long_term_memory?.id || null,
+    chat_memory_summary: chatMemorySummary,
+    agent_memory_summary: agentMemorySummary,
+    long_term_memory_count: memoryInspection.long_term_memories?.length || 0
+  };
+}
+
 async function main() {
   const dataDir = await mkdtemp(path.join(tmpdir(), "ai-pm-benchmark-"));
   const port = await getFreePort();
@@ -220,22 +299,28 @@ async function main() {
     for (const testCase of BENCHMARK_CASES) {
       caseResults.push(await runCase(baseUrl, projectId, testCase));
     }
+    const memoryTurnResult = await runMemoryTurnBenchmark(baseUrl, projectId);
 
     const evaluation = await request(baseUrl, `/api/evaluation?projectId=${encodeURIComponent(projectId)}`);
     const metrics = evaluation.metrics || {};
     const passedCases = caseResults.filter((item) => item.passed).length;
-    const passRate = passedCases / BENCHMARK_CASES.length;
+    const totalCases = BENCHMARK_CASES.length + 1;
+    const totalPassedCases = passedCases + (memoryTurnResult.passed ? 1 : 0);
+    const passRate = totalPassedCases / totalCases;
     const benchmark = {
       ok: passRate === 1,
       version: BENCHMARK_VERSION,
       projectId,
       cases: caseResults,
+      memory_turns: [memoryTurnResult],
       summary: {
-        total_cases: BENCHMARK_CASES.length,
-        passed_cases: passedCases,
+        total_cases: totalCases,
+        passed_cases: totalPassedCases,
         pass_rate: passRate,
         agent_runs: metrics.agent_runs,
         guardrail_hits: metrics.guardrail_hits,
+        memory_confirmations: metrics.memory_confirmations,
+        long_term_memory_checks: memoryTurnResult.long_term_memory_count,
         fallback_runs: metrics.fallback_runs,
         schema_valid_runs: metrics.schema_status_counts?.find((item) => item.type === "schema_valid")?.count || 0,
         safety_needs_review: metrics.safety_status_counts?.find((item) => item.type === "needs_review")?.count || 0
@@ -244,8 +329,9 @@ async function main() {
 
     console.log(JSON.stringify(benchmark, null, 2));
     assert(benchmark.ok, "agent benchmark cases did not all pass");
-    assert(metrics.agent_runs >= 2, "benchmark evaluation did not count agent runs");
+    assert(metrics.agent_runs >= 4, "benchmark evaluation did not count agent runs");
     assert(metrics.guardrail_hits >= 1, "benchmark evaluation did not count guardrail hits");
+    assert(metrics.memory_confirmations >= 1, "benchmark evaluation did not count memory confirmations");
     assert((metrics.recent_harness_runs || []).length >= 4, "benchmark did not persist harness run snapshots");
     assert((metrics.trace_tool_counts || []).some((item) => item.type === "safety_guardrail_agent.validate_output"), "benchmark did not count safety trace tool");
   } catch (error) {

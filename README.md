@@ -43,7 +43,7 @@ The auth boundary test starts the server with `AI_PM_AUTH_REQUIRED=true`, verifi
 
 The embedding provider test starts a fake OpenAI-compatible `/v1/embeddings` server, configures the app with `MEMORY_EMBEDDING_PROVIDER=openai`, confirms memory, and verifies external embedding write and query paths use the configured model. Use `npm run test:embedding` to run only this boundary check.
 
-The agent benchmark starts the server with an isolated data directory, imports the sample repository, and runs a fixed offline benchmark matrix across safe impact analysis, prompt injection, safe Q&A, and tool escalation. It reports pass rate plus safety, trace, harness, citation, and memory checks, then verifies evaluation metrics such as guardrail hits, persisted harness runs, schema-valid runs, and trace tool counts. Use `npm run test:benchmark` to run only this benchmark.
+The agent benchmark starts the server with an isolated data directory, imports the sample repository, and runs a fixed offline benchmark matrix across safe impact analysis, prompt injection, safe Q&A, tool escalation, and multi-turn memory recall. It reports pass rate plus safety, trace, harness, citation, memory suggestion, confirmed long-term memory, and memory reuse checks, then verifies evaluation metrics such as guardrail hits, memory confirmations, persisted harness runs, schema-valid runs, and trace tool counts. Use `npm run test:benchmark` to run only this benchmark.
 
 GitHub Actions runs `npm ci` and `npm test` on pushes to `main` and pull requests.
 
