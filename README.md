@@ -56,7 +56,7 @@ The project targets Node.js 24 because the long-term memory store uses the built
 | `STORE_PATH` | `DATA_DIR/store.json` | Exact runtime store file path. |
 | `MEMORY_DB_PATH` | `DATA_DIR/memory.sqlite` | SQLite database path for confirmed long-term memory items. |
 | `AI_PM_AUTH_REQUIRED` | unset | Set to `true` to require token authentication for API routes except `/api/health`. |
-| `AI_PM_USER_TOKENS` | unset | Token-to-user mapping, either JSON such as `{"token-a":"user-a"}` or comma-separated `token:userId` pairs. |
+| `AI_PM_USER_TOKENS` | unset | Token-to-user mapping, either JSON such as `{"token-a":"user-a"}` / `{"token-a":{"userId":"user-a","role":"viewer","scopes":["project:read"]}}` or comma-separated `token:userId` pairs. |
 | `MEMORY_EMBEDDING_PROVIDER` | unset | Set to `openai` to use an OpenAI-compatible embeddings endpoint for long-term memory vectors. |
 | `OPENAI_EMBEDDING_API_KEY` | `OPENAI_API_KEY` | API key for the embeddings endpoint when external memory embeddings are enabled. |
 | `OPENAI_EMBEDDING_BASE_URL` | `OPENAI_BASE_URL` or `https://api.openai.com` | Base URL for the embeddings endpoint; the app calls `/v1/embeddings`. |
@@ -160,6 +160,7 @@ Error responses keep a human-readable `error` string and add a machine-readable 
 - `AUTH_REQUIRED`
 - `AUTH_INVALID`
 - `AUTH_USER_MISMATCH`
+- `AUTH_SCOPE_FORBIDDEN`
 
 Common API errors include:
 

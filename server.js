@@ -1227,6 +1227,7 @@ const MEMORY_VALUE_OPTIONS = {
   focusAreas: new Set(["testing", "risk", "safety"]),
   taskTypes: new Set(["impact_analysis"])
 };
+const DEFAULT_AUTH_SCOPES = ["*"];
 const SENSITIVE_VALUE_PATTERN = /(sk-[A-Za-z0-9_-]{12,}|AKIA[0-9A-Z]{16}|BEGIN PRIVATE KEY|(?:api[_-]?key|apikey|token|password|credential|secret)["']?\s*[:=]\s*(?:"[^"]{8,}"|'[^']{8,}'|[A-Za-z0-9_./+-]*\d[A-Za-z0-9_./+-]{7,}))/i;
 const SECRET_REDACTION = "[REDACTED_SECRET]";
 
@@ -1401,27 +1402,50 @@ function normalizeUserId(value) {
   return safe || DEFAULT_USER_ID;
 }
 
+function normalizeAuthIdentity(value) {
+  if (typeof value === "string") {
+    return {
+      userId: normalizeUserId(value),
+      role: "admin",
+      scopes: [...DEFAULT_AUTH_SCOPES],
+      orgId: null
+    };
+  }
+  if (!value || typeof value !== "object") return null;
+  const userId = value.userId || value.user_id || value.id;
+  if (!userId) return null;
+  const scopes = Array.isArray(value.scopes)
+    ? value.scopes.map((scope) => String(scope || "").trim()).filter(Boolean)
+    : [...DEFAULT_AUTH_SCOPES];
+  return {
+    userId: normalizeUserId(userId),
+    role: typeof value.role === "string" && value.role.trim() ? value.role.trim() : "user",
+    scopes: scopes.length ? scopes : [...DEFAULT_AUTH_SCOPES],
+    orgId: value.orgId || value.org_id || null
+  };
+}
+
 function parseAuthTokenConfig(raw = AUTH_TOKEN_CONFIG) {
   if (!raw) return new Map();
   try {
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return new Map();
     return new Map(Object.entries(parsed)
-      .filter(([token, userId]) => token && typeof userId === "string" && userId.trim())
-      .map(([token, userId]) => [String(token), normalizeUserId(userId)]));
+      .map(([token, identity]) => [String(token), normalizeAuthIdentity(identity)])
+      .filter(([token, identity]) => token && identity));
   } catch {
     return new Map(String(raw).split(",")
       .map((entry) => entry.trim())
       .filter(Boolean)
       .map((entry) => {
         const [token, userId] = entry.split(":");
-        return [String(token || "").trim(), String(userId || "").trim() ? normalizeUserId(userId) : ""];
+        return [String(token || "").trim(), String(userId || "").trim() ? normalizeAuthIdentity(userId) : null];
       })
-      .filter(([token, userId]) => token && userId));
+      .filter(([token, identity]) => token && identity));
   }
 }
 
-const AUTH_TOKEN_TO_USER = parseAuthTokenConfig();
+const AUTH_TOKEN_TO_IDENTITY = parseAuthTokenConfig();
 
 function getRequestAuthToken(req) {
   const authorization = String(req.headers.authorization || "");
@@ -1434,13 +1458,62 @@ function resolveAuthenticatedUserId(req, source = {}) {
   if (!AUTH_REQUIRED) return resolveUserId(req, source);
   const token = getRequestAuthToken(req);
   if (!token) throw apiError("Authentication token is required.", "AUTH_REQUIRED", 401);
-  const userId = AUTH_TOKEN_TO_USER.get(token);
-  if (!userId) throw apiError("Authentication token is invalid.", "AUTH_INVALID", 401);
+  const identity = AUTH_TOKEN_TO_IDENTITY.get(token);
+  if (!identity) throw apiError("Authentication token is invalid.", "AUTH_INVALID", 401);
   const requestedUserId = source.userId || source.user_id || req.headers["x-user-id"] || req.headers["x-ai-pm-user-id"];
-  if (requestedUserId && normalizeUserId(requestedUserId) !== userId) {
+  if (requestedUserId && normalizeUserId(requestedUserId) !== identity.userId) {
     throw apiError("Authenticated token cannot act as a different user.", "AUTH_USER_MISMATCH", 403);
   }
-  return userId;
+  return identity.userId;
+}
+
+function resolveAuthenticatedIdentity(req, source = {}) {
+  if (!AUTH_REQUIRED) {
+    return {
+      userId: resolveUserId(req, source),
+      role: "local",
+      scopes: [...DEFAULT_AUTH_SCOPES],
+      orgId: null
+    };
+  }
+  const userId = resolveAuthenticatedUserId(req, source);
+  const token = getRequestAuthToken(req);
+  return AUTH_TOKEN_TO_IDENTITY.get(token) || normalizeAuthIdentity(userId);
+}
+
+function hasAuthScope(identity, requiredScope) {
+  if (!requiredScope) return true;
+  const scopes = identity?.scopes || [];
+  return scopes.includes("*") || scopes.includes(requiredScope);
+}
+
+function requiredScopeForRequest(req, pathname) {
+  if (pathname === "/api/health") return null;
+  if (req.method === "GET") return "project:read";
+  if (pathname === "/api/import") return "project:write";
+  if (pathname === "/api/memory/confirm" || pathname === "/api/memory/forget") return "memory:write";
+  if (pathname === "/api/chat" || pathname === "/api/agent-impact" || pathname === "/api/onboarding") return "answer:write";
+  if (pathname === "/api/feedback") return "feedback:write";
+  return "project:read";
+}
+
+function requireAuthScope(req, pathname) {
+  if (!AUTH_REQUIRED || pathname === "/api/health") return null;
+  const identity = resolveAuthenticatedIdentity(req, {});
+  const requiredScope = requiredScopeForRequest(req, pathname);
+  if (!hasAuthScope(identity, requiredScope)) {
+    const error = apiError(`Authenticated token lacks required scope: ${requiredScope}.`, "AUTH_SCOPE_FORBIDDEN", 403);
+    error.required_scope = requiredScope;
+    error.auth = {
+      user_id: identity.userId,
+      role: identity.role,
+      scopes: identity.scopes,
+      org_id: identity.orgId
+    };
+    throw error;
+  }
+  req.auth = identity;
+  return identity;
 }
 
 function resolveUserId(req, source = {}) {
@@ -3857,7 +3930,7 @@ async function handleApi(req, res, pathname) {
 async function handleApiUnlocked(req, res, pathname) {
   try {
     if (AUTH_REQUIRED && pathname !== "/api/health") {
-      resolveAuthenticatedUserId(req, {});
+      requireAuthScope(req, pathname);
     }
     const store = await ensureStore();
 
@@ -4379,8 +4452,9 @@ async function handleApiUnlocked(req, res, pathname) {
         environment: RUNTIME_METADATA.environment,
         auth: {
           required: AUTH_REQUIRED,
-          token_count: AUTH_TOKEN_TO_USER.size,
-          user_binding: "token"
+          token_count: AUTH_TOKEN_TO_IDENTITY.size,
+          user_binding: "token",
+          scopes_enabled: AUTH_REQUIRED
         },
         memory_embedding: {
           provider: resolveMemoryEmbeddingMode().provider,
@@ -4401,7 +4475,9 @@ async function handleApiUnlocked(req, res, pathname) {
   } catch (error) {
     sendJson(res, error.status || 400, {
       error: error.message || "Request failed.",
-      code: error.code || "BAD_REQUEST"
+      code: error.code || "BAD_REQUEST",
+      required_scope: error.required_scope || null,
+      auth: error.auth || null
     });
   }
 }

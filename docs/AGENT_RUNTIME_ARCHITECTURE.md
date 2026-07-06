@@ -66,9 +66,9 @@ Memory API errors return `{ error, code }` so the UI and tests can distinguish u
 
 ## Auth Boundary
 
-Authentication is optional and disabled by default for local demos. When `AI_PM_AUTH_REQUIRED=true`, every API route except `GET /api/health` requires a token from `Authorization: Bearer ...`, `X-API-Key`, or `X-AI-PM-Token`. Tokens are mapped to user ids through `AI_PM_USER_TOKENS`, either as JSON (`{"token-a":"user-a"}`) or comma-separated `token:userId` pairs.
+Authentication is optional and disabled by default for local demos. When `AI_PM_AUTH_REQUIRED=true`, every API route except `GET /api/health` requires a token from `Authorization: Bearer ...`, `X-API-Key`, or `X-AI-PM-Token`. Tokens are mapped to user ids through `AI_PM_USER_TOKENS`, either as JSON (`{"token-a":"user-a"}`), object JSON (`{"token-a":{"userId":"user-a","role":"viewer","scopes":["project:read"]}}`), or comma-separated `token:userId` pairs. String and comma-separated tokens are backward-compatible admin identities with `scopes=["*"]`.
 
-The authenticated token becomes the token-bound user identity for memory, chat, onboarding, and LangGraph Agent Workflow calls. If a request also provides `userId`, `user_id`, `X-User-Id`, or `X-AI-PM-User-Id`, it must match the authenticated user or the request is rejected with `AUTH_USER_MISMATCH`. Missing and invalid tokens return `AUTH_REQUIRED` and `AUTH_INVALID`. `/api/health` reports whether auth is required and how many tokens are configured without exposing token values.
+The authenticated token becomes the token-bound user identity for memory, chat, onboarding, and LangGraph Agent Workflow calls. If a request also provides `userId`, `user_id`, `X-User-Id`, or `X-AI-PM-User-Id`, it must match the authenticated user or the request is rejected with `AUTH_USER_MISMATCH`. When scopes are configured, route authorization checks `project:read`, `project:write`, `memory:write`, `answer:write`, or `feedback:write`; insufficient scope returns `AUTH_SCOPE_FORBIDDEN` with the required scope. Missing and invalid tokens return `AUTH_REQUIRED` and `AUTH_INVALID`. `/api/health` reports whether auth is required and how many tokens are configured without exposing token values.
 
 ## modelAdapter
 

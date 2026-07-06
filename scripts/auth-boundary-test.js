@@ -107,7 +107,12 @@ async function run() {
       AI_PM_AUTH_REQUIRED: "true",
       AI_PM_USER_TOKENS: JSON.stringify({
         "token-a": "user-a",
-        "token-b": "user-b"
+        "token-b": "user-b",
+        "viewer-token": {
+          userId: "viewer",
+          role: "viewer",
+          scopes: ["project:read"]
+        }
       })
     },
     stdio: ["ignore", "pipe", "pipe"]
@@ -122,7 +127,8 @@ async function run() {
     await waitForServer(child, baseUrl);
     const { payload: health } = await request(baseUrl, "/api/health");
     assert(health.auth?.required === true, "health did not report auth required");
-    assert(health.auth?.token_count === 2, "health did not report configured auth tokens");
+    assert(health.auth?.token_count === 3, "health did not report configured auth tokens");
+    assert(health.auth?.scopes_enabled === true, "health did not report auth scopes enabled");
 
     const missingAuth = await request(baseUrl, "/api/projects", { expectOk: false });
     assert(missingAuth.status === 401, "missing auth should return 401");
@@ -131,6 +137,20 @@ async function run() {
     const invalidAuth = await request(baseUrl, "/api/projects", { token: "bad-token", expectOk: false });
     assert(invalidAuth.status === 401, "invalid auth should return 401");
     assert(invalidAuth.payload.code === "AUTH_INVALID", "invalid auth did not return AUTH_INVALID");
+
+    const viewerRead = await request(baseUrl, "/api/projects", { token: "viewer-token" });
+    assert(Array.isArray(viewerRead.payload.projects), "viewer token should be allowed to read projects");
+
+    const viewerWrite = await request(baseUrl, "/api/import", {
+      method: "POST",
+      token: "viewer-token",
+      expectOk: false,
+      body: JSON.stringify({ sample: true })
+    });
+    assert(viewerWrite.status === 403, "viewer token should not import projects");
+    assert(viewerWrite.payload.code === "AUTH_SCOPE_FORBIDDEN", "viewer write did not return AUTH_SCOPE_FORBIDDEN");
+    assert(viewerWrite.payload.required_scope === "project:write", "viewer write did not report required project:write scope");
+    assert(viewerWrite.payload.auth?.role === "viewer", "viewer write did not report auth role");
 
     const { payload: imported } = await request(baseUrl, "/api/import", {
       method: "POST",
