@@ -90,6 +90,8 @@ If no API key is configured, the model adapter reports deterministic offline ret
 
 Agent workflow execution uses `MemorySaver` from `@langchain/langgraph-checkpoint` with `thread_id` set to the harness `run_id`. After execution, checkpoint tuple summaries are persisted into SQLite under `langgraph_checkpoints`. The persisted rows intentionally store metadata and compact state summaries instead of full graph state, so audits can inspect checkpoint lineage, source, node, trace-step count, memory usage, and safety status without duplicating the full answer payload.
 
+`GET /api/langgraph-checkpoint` returns one persisted checkpoint summary by `projectId`, `runId`, and `checkpointId`. This is a read-only time-travel inspection boundary: it exposes the saved checkpoint metadata and compact state summary, but does not replay, resume, or mutate graph state.
+
 `buildChatHarnessReport()` creates the equivalent lightweight payload for `/api/chat`.
 
 `buildOnboardingHarnessReport()` creates the deterministic harness payload for `/api/onboarding`.
@@ -116,7 +118,7 @@ Feedback records preserve `harness_run_id` when the referenced answer payload in
 
 `/api/evaluation` derives `recent_harness_runs` from saved `harnessRuns` snapshots, with answer payloads as a backward-compatible fallback for older stores. Each item includes the run id, answer id, answer kind, runtime, model mode, model provider, schema status, budget status, model adapter summary, duration, fallback status, safety status, risk types, trace tools, and creation time. The payload also reports `harness_run_snapshots` so operators can verify that runs are being indexed independently from answer payloads.
 
-`GET /api/harness-run` returns one persisted harness run audit by `projectId` and `runId`. It is read-only and returns the run snapshot plus the answer's trace, harness, safety, guardrail metadata, and recent `langgraph_checkpoints` rows when the answer is still available.
+`GET /api/harness-run` returns one persisted harness run audit by `projectId` and `runId`. It is read-only and returns the run snapshot plus the answer's trace, harness, safety, guardrail metadata, and recent `langgraph_checkpoints` rows when the answer is still available. `GET /api/langgraph-checkpoint` narrows that audit to a single checkpoint and returns a `time_travel` note that explicitly marks the operation as inspection-only.
 
 `recent_feedback` enriches each feedback record with answer kind, harness run id, and safety status so dashboard feedback can be traced back to the runtime that produced the answer.
 
@@ -180,6 +182,7 @@ The first version intentionally does not include:
 - external database migration framework
 - LangSmith tracing
 - dynamic supervisor routing
+- executable LangGraph resume or replay from historical checkpoints
 - autonomous write tools
 - automatic external browsing tools
 - compliance certification claims

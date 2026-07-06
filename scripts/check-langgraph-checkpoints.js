@@ -17,19 +17,23 @@ const requiredServerSnippets = [
   "CREATE TABLE IF NOT EXISTS langgraph_checkpoints",
   "function persistLangGraphCheckpoints",
   "function listLangGraphCheckpoints",
+  "function findLangGraphCheckpoint",
   "function summarizeCheckpointTuple",
   ".compile({ checkpointer })",
   "new MemorySaver()",
   "thread_id: runId",
   "harness.checkpointing",
   "recent_langgraph_checkpoints",
-  "langgraph_checkpoint_count"
+  "langgraph_checkpoint_count",
+  "GET\" && pathname === \"/api/langgraph-checkpoint\"",
+  "time_travel"
 ];
 
 const requiredSmokeSnippets = [
   "checkpointing?.enabled === true",
   "MemorySaver",
   "agentRunAudit.checkpoints",
+  "langgraphCheckpoint.time_travel",
   "langgraph_checkpoint_count",
   "recent_langgraph_checkpoints"
 ];
@@ -39,7 +43,9 @@ const requiredDocSnippets = [
   "MemorySaver",
   "langgraph_checkpoints",
   "checkpointing",
-  "recent_langgraph_checkpoints"
+  "recent_langgraph_checkpoints",
+  "/api/langgraph-checkpoint",
+  "read-only time-travel"
 ];
 
 const missingServerSnippets = requiredServerSnippets.filter((snippet) => !serverSource.includes(snippet));

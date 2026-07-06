@@ -1080,7 +1080,12 @@ function listLangGraphCheckpoints({ projectId = null, runId = null, limit = 20 }
     ORDER BY created_at DESC
     LIMIT ?
   `).all(...params, limit);
-  return rows.map((row) => ({
+  return rows.map(normalizeLangGraphCheckpointRow).filter(Boolean);
+}
+
+function normalizeLangGraphCheckpointRow(row) {
+  if (!row) return null;
+  return {
     id: row.id,
     run_id: row.run_id,
     projectId: row.project_id,
@@ -1093,7 +1098,19 @@ function listLangGraphCheckpoints({ projectId = null, runId = null, limit = 20 }
     metadata: JSON.parse(row.metadata_json || "{}"),
     state_summary: JSON.parse(row.state_summary_json || "{}"),
     createdAt: row.created_at
-  }));
+  };
+}
+
+function findLangGraphCheckpoint(store, { projectId, runId, checkpointId }) {
+  findProject(store, projectId);
+  if (!runId) throw apiError("Run id is required.", "RUN_ID_REQUIRED");
+  if (!checkpointId) throw apiError("Checkpoint id is required.", "CHECKPOINT_ID_REQUIRED");
+  const row = getMemoryDatabase().prepare(`
+    SELECT * FROM langgraph_checkpoints
+    WHERE project_id = ? AND run_id = ? AND checkpoint_id = ?
+  `).get(projectId, runId, checkpointId);
+  if (!row) throw apiError("LangGraph checkpoint not found.", "LANGGRAPH_CHECKPOINT_NOT_FOUND", 404);
+  return normalizeLangGraphCheckpointRow(row);
 }
 
 function createEmptyPreferences() {
@@ -4224,6 +4241,25 @@ async function handleApiUnlocked(req, res, pathname) {
       const project = findProject(store, url.searchParams.get("projectId"));
       const audit = findHarnessRunAudit(store, project.id, url.searchParams.get("runId"));
       sendJson(res, 200, audit);
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/langgraph-checkpoint") {
+      const url = new URL(req.url, `http://${req.headers.host}`);
+      const project = findProject(store, url.searchParams.get("projectId"));
+      const checkpoint = findLangGraphCheckpoint(store, {
+        projectId: project.id,
+        runId: url.searchParams.get("runId"),
+        checkpointId: url.searchParams.get("checkpointId") || url.searchParams.get("checkpoint_id")
+      });
+      sendJson(res, 200, {
+        checkpoint,
+        time_travel: {
+          mode: "read-only checkpoint audit",
+          resumable: false,
+          note: "This endpoint exposes persisted checkpoint summaries for inspection; it does not replay or mutate graph state."
+        }
+      });
       return;
     }
 

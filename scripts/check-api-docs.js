@@ -55,6 +55,8 @@ const requiredErrorDocSnippets = [
   "ANSWER_NOT_FOUND",
   "RUN_ID_REQUIRED",
   "HARNESS_RUN_NOT_FOUND",
+  "CHECKPOINT_ID_REQUIRED",
+  "LANGGRAPH_CHECKPOINT_NOT_FOUND",
   "INVALID_FEEDBACK_TYPE",
   "ROUTE_NOT_FOUND",
   "Metrics ignore unknown feedback types",
