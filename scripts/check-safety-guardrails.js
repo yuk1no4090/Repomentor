@@ -8,6 +8,9 @@ const [serverSource, architectureDoc, readme] = await Promise.all([
 
 const requiredServerSnippets = [
   "function scanInputSafety",
+  "const SAFETY_POLICY",
+  "function safetyPolicySummary",
+  "function matchesSafetyPolicy",
   "SAFETY_RISK_EXPLANATIONS",
   "function describeSafetyRisks",
   "risk_details: describeSafetyRisks(riskTypes)",
@@ -47,7 +50,8 @@ const requiredServerSnippets = [
   "hasRequiredCitations",
   "does not clearly mark uncertainty",
   "function validateTraceToolUse",
-  "tool_policy_violation"
+  "tool_policy_violation",
+  "safety_policy: safetyPolicySummary()"
 ];
 
 const requiredDocSnippets = [
@@ -59,7 +63,9 @@ const requiredDocSnippets = [
   "import-time `safetyReview`",
   "sensitive-looking values",
   "no-impact-citation overconfidence",
-  "read-only registry"
+  "read-only registry",
+  "safety policy",
+  "red-team"
 ];
 
 const missingServerSnippets = requiredServerSnippets.filter((snippet) => {

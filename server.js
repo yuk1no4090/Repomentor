@@ -136,6 +136,51 @@ const AGENT_TOOL_POLICY = {
   allow_shell_execution: false
 };
 
+const SAFETY_POLICY = Object.freeze({
+  version: "2026-07-06.redteam-v1",
+  input: {
+    prompt_injection: [
+      /(ignore|bypass|override).{0,40}(system|developer|instruction|rules|previous)/i,
+      /(reveal|show|print|dump|leak).{0,40}(system|developer).{0,20}(prompt|message|instruction)/i,
+      /jailbreak/i,
+      /忽略.{0,20}(系统|指令|规则)/i,
+      /绕过.{0,20}(系统|指令|规则)/i,
+      /泄露.{0,20}(系统|开发者|提示|指令)/i
+    ],
+    secret_request: [
+      /(api[_ -]?key|secret|token|password|credential)/i,
+      /泄露|密钥|令牌|密码|凭证/i
+    ],
+    tool_permission: [
+      /(delete|write|commit|push|execute|run shell|rm -rf)/i,
+      /删除|写入|提交|推送|执行命令/i
+    ]
+  },
+  repository: {
+    prompt_injection: [
+      /(ignore previous|disregard (all )?(previous|system)|reveal the (system|developer) prompt|show the system prompt)/i,
+      /(ignore|bypass|override).{0,40}(system|developer|instruction|rules|previous)/i,
+      /(reveal|show|print|dump|leak).{0,40}(system|developer).{0,20}(prompt|message|instruction)/i,
+      /jailbreak/i,
+      /泄露|忽略.{0,20}(系统|指令|规则)/i
+    ]
+  },
+  output: {
+    require_citations: true,
+    redact_sensitive_values: true,
+    flag_overconfidence_without_citations: true
+  }
+});
+
+function safetyPolicySummary() {
+  return {
+    version: SAFETY_POLICY.version,
+    input_rules: Object.fromEntries(Object.entries(SAFETY_POLICY.input).map(([key, rules]) => [key, rules.length])),
+    repository_rules: Object.fromEntries(Object.entries(SAFETY_POLICY.repository).map(([key, rules]) => [key, rules.length])),
+    output: SAFETY_POLICY.output
+  };
+}
+
 const SAMPLE_FILES = [
   {
     path: "README.md",
@@ -1792,6 +1837,10 @@ function validateTraceToolUse(trace = []) {
   };
 }
 
+function matchesSafetyPolicy(text, patterns = []) {
+  return patterns.some((pattern) => pattern.test(String(text || "")));
+}
+
 function scanInputSafety(question) {
   const lower = question.toLowerCase();
   const promptInjectionPattern = /(ignore|bypass|override).{0,40}(system|developer|instruction|rules|previous)|(reveal|show|print|dump|leak).{0,40}(system|developer).{0,20}(prompt|message|instruction)|jailbreak|忽略.{0,20}(系统|指令|规则)|绕过.{0,20}(系统|指令|规则)|泄露.{0,20}(系统|开发者).{0,10}(提示|提示词|指令)/i;
@@ -1801,19 +1850,19 @@ function scanInputSafety(question) {
     {
       name: "Prompt injection",
       risk_type: "prompt_injection",
-      passed: !promptInjectionPattern.test(question),
+      passed: !matchesSafetyPolicy(question, SAFETY_POLICY.input.prompt_injection),
       detail: "Detects attempts to override system or developer instructions."
     },
     {
       name: "Secret request",
       risk_type: "secret_request",
-      passed: !secretRequestPattern.test(question),
+      passed: !matchesSafetyPolicy(question, SAFETY_POLICY.input.secret_request),
       detail: "Detects requests to reveal credentials or hidden configuration."
     },
     {
       name: "Tool permissions",
       risk_type: "tool_permission",
-      passed: !toolPermissionPattern.test(lower),
+      passed: !matchesSafetyPolicy(lower, SAFETY_POLICY.input.tool_permission),
       detail: "Agent tools are restricted to read-only repository analysis."
     }
   ];
@@ -1829,7 +1878,7 @@ function scanInputSafety(question) {
 function scanRetrievedSafety(chunks) {
   const promptInjectionPattern = /(ignore|bypass|override).{0,40}(system|developer|instruction|rules|previous)|(reveal|show|print|dump|leak).{0,40}(system|developer).{0,20}(prompt|message|instruction)|jailbreak|忽略.{0,20}(系统|指令|规则)|绕过.{0,20}(系统|指令|规则)|泄露.{0,20}(系统|开发者).{0,10}(提示|提示词|指令)/i;
   const injectionFiles = chunks.filter((chunk) => {
-    return promptInjectionPattern.test(chunk.content);
+    return matchesSafetyPolicy(chunk.content, SAFETY_POLICY.repository.prompt_injection);
   }).map((chunk) => chunk.file_path);
   const sensitiveFiles = chunks.filter((chunk) => SENSITIVE_VALUE_PATTERN.test(chunk.content)).map((chunk) => chunk.file_path);
   const riskTypes = [
@@ -3580,6 +3629,7 @@ async function handleApiUnlocked(req, res, pathname) {
         commit: RUNTIME_METADATA.commit,
         node: RUNTIME_METADATA.node,
         environment: RUNTIME_METADATA.environment,
+        safety_policy: safetyPolicySummary(),
         uptime_seconds: Math.floor(process.uptime())
       });
       return;

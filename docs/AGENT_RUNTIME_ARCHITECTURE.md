@@ -149,6 +149,10 @@ Safety checks run at four levels:
 
 Repository content is never promoted into system instructions.
 
+The active safety policy is centralized in `SAFETY_POLICY` and summarized on `/api/health` as `safety_policy`. The summary includes the policy version, input rule counts, repository rule counts, and output enforcement switches without exposing full regex internals as a public contract.
+
+`npm run test:safety` runs a red-team suite against a temporary server. It covers direct prompt injection, system/developer prompt leakage requests, secret requests, tool escalation, retrieved-context prompt injection, retrieved sensitive content, and the invariant that unsafe input does not create memory suggestions.
+
 ## Non-Goals
 
 The first version intentionally does not include:
@@ -163,7 +167,7 @@ The first version intentionally does not include:
 
 ## Verification Gates
 
-`npm test` runs static checks and smoke tests.
+`npm test` runs static checks, smoke tests, UI acceptance tests, and safety red-team tests.
 
 Static checks cover:
 
@@ -181,6 +185,7 @@ Smoke tests cover:
 - LangGraph agent execution
 - memory confirm, ignore, selective forget, full forget, post-forget behavior, and unsafe-input learning suppression
 - input prompt injection and secret request guardrails
+- safety policy health metadata and red-team cases
 - retrieved-context prompt injection guardrails
 - retrieved sensitive content guardrails
 - API-key mode with fake OpenAI-compatible schema failure

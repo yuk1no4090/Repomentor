@@ -8,10 +8,11 @@
   "scripts": {
     "dev": "node server.js",
     "start": "node server.js",
-    "test": "npm run test:static && npm run test:smoke && npm run test:ui",
+    "test": "npm run test:static && npm run test:smoke && npm run test:ui && npm run test:safety",
     "test:static": "node scripts/static-checks.js",
     "test:smoke": "node scripts/smoke-test.js",
-    "test:ui": "node scripts/ui-acceptance.js"
+    "test:ui": "node scripts/ui-acceptance.js",
+    "test:safety": "node scripts/safety-redteam.js"
   },
   "engines": {
     "node": ">=24"

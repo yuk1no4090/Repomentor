@@ -16,16 +16,19 @@ Then open `http://localhost:3000`.
 ```bash
 npm run test:static
 npm run test:ui
+npm run test:safety
 npm test
 ```
 
-`npm run test:static` runs `scripts/static-checks.js`, which performs syntax checks, locale-copy consistency checks, frontend agent UI checks, text-quality checks, runtime dependency checks, API documentation sync checks, store-schema checks, smoke reliability checks, UI acceptance wiring checks, safety guardrail contract checks, and agent response contract checks without starting a server. `npm test` runs the static checks, smoke test, and UI acceptance test.
+`npm run test:static` runs `scripts/static-checks.js`, which performs syntax checks, locale-copy consistency checks, frontend agent UI checks, text-quality checks, runtime dependency checks, API documentation sync checks, store-schema checks, smoke reliability checks, UI acceptance wiring checks, safety guardrail contract checks, safety red-team wiring checks, and agent response contract checks without starting a server. `npm test` runs the static checks, smoke test, UI acceptance test, and safety red-team test.
 
 Static check scripts use the `scripts/check-*.js` naming convention. `scripts/static-checks.js` syntax-checks all `scripts/*.js` files and discovers/runs `check-*.js` automatically.
 
 The smoke test starts the server on temporary ports with isolated temporary data stores, then verifies custom `STORE_PATH` creation, corrupt store backup, invalid timeout/context-budget config fallback, sample import, LangGraph agent execution, memory confirmation/forget, Chinese memory suggestions, safety guardrails, Chinese prompt-injection and secret-request guardrails, tool-permission guardrails, retrieved-context prompt-injection handling, retrieved sensitive content handling, Q&A, evaluation metrics, API-key mode fallback when a fake OpenAI-compatible model returns schema-invalid JSON, context token budget fallback before external model calls, missing-citation guardrails when the fake model cites a nonexistent file, and sensitive-output guardrails when the fake model emits secret-like text. Smoke requests use explicit timeouts and wait for spawned servers to exit during cleanup. Use `npm run test:smoke` to run only the server-backed smoke test.
 
 The UI acceptance test starts the server with an isolated data directory, fetches the served frontend assets, imports the sample workspace, runs the Agent Workflow, confirms a memory suggestion when available, then verifies that Memory, Harness, Safety, long-term memory, dashboard metrics, and the harness audit panel all have renderable API data. Use `npm run test:ui` to run only this served frontend assets and UI data-contract check.
+
+The safety red-team test starts the server with an isolated data directory, verifies the health endpoint exposes the active `safety_policy`, runs prompt-injection, secret-request, tool-escalation, retrieved-instruction, and retrieved-secret cases, and confirms unsafe inputs do not create memory suggestions. Use `npm run test:safety` to run only these red-team cases.
 
 GitHub Actions runs `npm ci` and `npm test` on pushes to `main` and pull requests.
 
@@ -89,6 +92,7 @@ Without an API key, the app falls back to a deterministic retrieval-based answer
 - Onboarding plans run through a lightweight deterministic harness with trace, safety, guardrails, citations, and pending memory suggestions.
 - User preference memory suggestions that require explicit confirmation before being saved. Confirmed preferences are global to the local app instance and can shape both impact analysis and ordinary Q&A emphasis; confirmed memory is also written to SQLite long-term memory for searchable reuse across later Agent Workflow and Direct Chat runs. Memory suggestions carry project ownership so confirmation/ignore actions can verify the active project. Ignored suggestions suppress the same key/value suggestion from being repeated. The Copilot inspector includes a lightweight preference and long-term memory manager for viewing, removing one preference value, or clearing all preferences.
 - Application-level AI safety checks for prompt injection, system/developer prompt leakage requests, secret requests, read-only tool boundaries, retrieved sensitive content, citation validation, uncited impact areas, sensitive output, and overconfidence.
+- A centralized safety policy is exposed as `safety_policy` on `/api/health` and covered by red-team tests.
 - Evaluation dashboard with total questions, agent runs, helpful rate, citation coverage, citation status distribution, uncertainty rate, negative feedback, high-risk questions, guardrail hits, memory confirmations, memory status distribution, recent memory events, fallback runs, harness snapshot count, average response time, safety risk and status distribution, import safety risk/status, recent safety events, harness runtime, model mode, tool policy, budget status, schema status, LLM usage, and trace tool distribution, fallback reason distribution, recent harness runs, and recent feedback correlated with harness run ids.
 
 ## Agent Runtime Architecture
