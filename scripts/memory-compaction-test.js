@@ -156,6 +156,9 @@ async function run() {
 
     assert(active.long_term_memories.some((item) => item.key === "role" && item.value === "QA" && item.status === "active"), "active QA role memory missing");
     assert(!active.long_term_memories.some((item) => item.key === "role" && item.value === "Product Manager" && item.status === "active"), "old PM role memory remained active");
+    assert(active.long_term_memory_query.embedding_model === "local-hash-v1", "memory query did not expose embedding model");
+    assert(active.long_term_memory_query.vector_search === true, "memory query did not report vector search");
+    assert(active.long_term_memories.every((item) => item.embedding?.available === true), "active long-term memories missing embedding metadata");
     assert(superseded.long_term_memory_query.status === "superseded", "superseded memory query did not report superseded status");
     assert(superseded.long_term_memories.some((item) => item.key === "role" && item.value === "Product Manager" && item.status === "superseded"), "old PM role memory was not superseded");
     assert(all.long_term_memories.some((item) => item.type === "preference_summary" && item.source === "memory_compaction" && item.value.includes("role=QA")), "compressed preference summary missing active QA role");

@@ -16,12 +16,18 @@ const requiredServerSnippets = [
   "function markLongTermMemoryForgotten",
   "function searchLongTermMemory",
   "function listLongTermMemories",
+  "MEMORY_EMBEDDING_MODEL",
+  "MEMORY_EMBEDDING_DIMS",
+  "embedding_json",
+  "function createLocalMemoryEmbedding",
+  "function rankLongTermMemoryByVector",
   "function normalizeLongTermMemoryStatusFilter",
   "function compactLongTermPreferenceMemories",
   "function refreshLongTermMemorySummary",
   "preference_summary",
   "memory_compaction",
   "long_term_memory_query",
+  "vector_search",
   "long_term_memories",
   "long_term:"
 ];
@@ -40,7 +46,8 @@ const requiredDocSnippets = [
   "long-term memory",
   "long_term_memory_query",
   "superseded",
-  "preference_summary"
+  "preference_summary",
+  "embedding_model"
 ];
 
 const missingServerSnippets = requiredServerSnippets.filter((snippet) => !serverSource.includes(snippet));

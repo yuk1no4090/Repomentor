@@ -85,7 +85,7 @@ Without an API key, the app falls back to a deterministic retrieval-based answer
 - The runtime uses Node.js plus LangGraph packages for the agent workflow and `@langchain/langgraph-checkpoint` for checkpoint-compatible graph execution.
 - GitHub imports use public repository ZIP downloads.
 - ZIP uploads are parsed locally by the server.
-- Runtime data is stored in `data/store.json` by default. Override with `DATA_DIR` or `STORE_PATH` for isolated runs and tests. Confirmed long-term memory is additionally stored in SQLite at `MEMORY_DB_PATH` using a `memory_items` table plus FTS search when available. Non-GET API requests run through a write queue. Store saves write a same-directory temporary file and rename it into place to reduce partial-write corruption. If an existing store contains invalid JSON, it is moved aside with a `.corrupt-` suffix before a fresh normalized store is created.
+- Runtime data is stored in `data/store.json` by default. Override with `DATA_DIR` or `STORE_PATH` for isolated runs and tests. Confirmed long-term memory is additionally stored in SQLite at `MEMORY_DB_PATH` using a `memory_items` table plus FTS search when available and local `embedding_json` vectors for deterministic similarity ranking. Non-GET API requests run through a write queue. Store saves write a same-directory temporary file and rename it into place to reduce partial-write corruption. If an existing store contains invalid JSON, it is moved aside with a `.corrupt-` suffix before a fresh normalized store is created.
 
 ## Current MVP Features
 
@@ -171,7 +171,7 @@ Common API errors include:
 - `harness`: LangGraph runtime, run id, model mode, model adapter, executed steps, duration, fallback status, fallback reason, schema status, budgets, budget status, read-only tool registry, model error codes, and errors.
 - `safety`: aggregate safety status, risk types, and guardrail checks.
 
-`GET /api/memory` returns `long_term_memories` plus `long_term_memory_query` so the UI and tests can verify which query, status filter, and limit produced the memory list.
+`GET /api/memory` returns `long_term_memories` plus `long_term_memory_query` so the UI and tests can verify which query, status filter, limit, `embedding_model`, and `vector_search` setting produced the memory list.
 
 Evaluation metrics are scoped to the requested `projectId`, so safety status, output redaction counts, recent redaction events, memory status, memory event action counts, recent memory events, harness runtime, model mode, tool policy, recent tool policy events, budget status, schema status, LLM usage, trace tool usage, fallback, response-time counts, recent safety events, recent harness runs, recent LangGraph checkpoints, and recent feedback run correlation reflect the currently selected imported repository. Metrics ignore unknown feedback types so old or manually edited store data cannot pollute quality rates and failure-reason counts.
 

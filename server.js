@@ -21,6 +21,8 @@ const MEMORY_DB_PATH = process.env.MEMORY_DB_PATH
   ? path.resolve(process.env.MEMORY_DB_PATH)
   : path.join(DATA_DIR, "memory.sqlite");
 const DEFAULT_USER_ID = "local-user";
+const MEMORY_EMBEDDING_MODEL = "local-hash-v1";
+const MEMORY_EMBEDDING_DIMS = 64;
 
 function readTextFileSafe(filePath) {
   try {
@@ -415,6 +417,9 @@ function getMemoryDatabase() {
       value TEXT,
       label TEXT,
       content TEXT NOT NULL,
+      embedding_json TEXT,
+      embedding_model TEXT,
+      embedding_updated_at TEXT,
       source TEXT,
       confidence TEXT,
       status TEXT NOT NULL DEFAULT 'active',
@@ -445,8 +450,18 @@ function getMemoryDatabase() {
   if (!memoryColumns.includes("user_id")) {
     memoryDb.exec(`ALTER TABLE memory_items ADD COLUMN user_id TEXT;`);
   }
+  if (!memoryColumns.includes("embedding_json")) {
+    memoryDb.exec(`ALTER TABLE memory_items ADD COLUMN embedding_json TEXT;`);
+  }
+  if (!memoryColumns.includes("embedding_model")) {
+    memoryDb.exec(`ALTER TABLE memory_items ADD COLUMN embedding_model TEXT;`);
+  }
+  if (!memoryColumns.includes("embedding_updated_at")) {
+    memoryDb.exec(`ALTER TABLE memory_items ADD COLUMN embedding_updated_at TEXT;`);
+  }
   memoryDb.prepare("UPDATE memory_items SET user_id = ? WHERE user_id IS NULL OR user_id = ''").run(DEFAULT_USER_ID);
   memoryDb.exec(`CREATE INDEX IF NOT EXISTS idx_memory_items_user_status ON memory_items(user_id, status);`);
+  hydrateMissingMemoryEmbeddings(memoryDb);
   try {
     memoryDb.exec(`
       DROP TABLE IF EXISTS memory_items_fts;
@@ -474,6 +489,13 @@ function normalizeLongTermMemoryItem(item) {
     value: item.value || null,
     label: item.label || item.key || "Long-term memory",
     content: item.content || "",
+    embedding: {
+      available: !!item.embedding_json,
+      model: item.embedding_model || null,
+      dims: item.embedding_json ? MEMORY_EMBEDDING_DIMS : 0,
+      updatedAt: item.embedding_updated_at || null,
+      score: Number.isFinite(Number(item.vector_score)) ? Number(item.vector_score) : null
+    },
     source: item.source || "memory",
     confidence: item.confidence || "medium",
     status: item.status || "active",
@@ -481,6 +503,94 @@ function normalizeLongTermMemoryItem(item) {
     updatedAt: item.updated_at || item.updatedAt || null,
     lastUsedAt: item.last_used_at || item.lastUsedAt || null
   };
+}
+
+function tokenizeMemoryEmbeddingText(text) {
+  return [...String(text || "").toLowerCase().matchAll(/[\p{L}\p{N}_]+/gu)]
+    .map((match) => match[0])
+    .filter((token) => token.length >= 2)
+    .slice(0, 120);
+}
+
+function hashEmbeddingToken(token) {
+  const hash = crypto.createHash("sha256").update(token).digest();
+  return {
+    index: hash[0] % MEMORY_EMBEDDING_DIMS,
+    sign: hash[1] % 2 === 0 ? 1 : -1,
+    weight: 1 + (hash[2] % 3) / 10
+  };
+}
+
+function createLocalMemoryEmbedding(text) {
+  const vector = Array.from({ length: MEMORY_EMBEDDING_DIMS }, () => 0);
+  tokenizeMemoryEmbeddingText(text).forEach((token) => {
+    const { index, sign, weight } = hashEmbeddingToken(token);
+    vector[index] += sign * weight;
+  });
+  const norm = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0));
+  if (!norm) return vector;
+  return vector.map((value) => Number((value / norm).toFixed(6)));
+}
+
+function parseMemoryEmbedding(value) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed) || parsed.length !== MEMORY_EMBEDDING_DIMS) return null;
+    return parsed.map((item) => Number(item) || 0);
+  } catch {
+    return null;
+  }
+}
+
+function memoryEmbeddingInput(row) {
+  return [
+    row.type,
+    row.key,
+    row.value,
+    row.label,
+    row.content
+  ].filter(Boolean).join(" ");
+}
+
+function memoryEmbeddingFields(row, now = new Date().toISOString()) {
+  return {
+    embeddingJson: JSON.stringify(createLocalMemoryEmbedding(memoryEmbeddingInput(row))),
+    embeddingModel: MEMORY_EMBEDDING_MODEL,
+    embeddingUpdatedAt: now
+  };
+}
+
+function cosineSimilarity(left, right) {
+  if (!left || !right || left.length !== right.length) return 0;
+  let dot = 0;
+  let leftNorm = 0;
+  let rightNorm = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    dot += left[index] * right[index];
+    leftNorm += left[index] * left[index];
+    rightNorm += right[index] * right[index];
+  }
+  if (!leftNorm || !rightNorm) return 0;
+  return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm));
+}
+
+function hydrateMissingMemoryEmbeddings(db) {
+  const rows = db.prepare(`
+    SELECT id, type, key, value, label, content FROM memory_items
+    WHERE embedding_json IS NULL OR embedding_model IS NULL OR embedding_model != ?
+  `).all(MEMORY_EMBEDDING_MODEL);
+  if (!rows.length) return;
+  const update = db.prepare(`
+    UPDATE memory_items
+    SET embedding_json = ?, embedding_model = ?, embedding_updated_at = ?
+    WHERE id = ?
+  `);
+  const now = new Date().toISOString();
+  rows.forEach((row) => {
+    const embedding = memoryEmbeddingFields(row, now);
+    update.run(embedding.embeddingJson, embedding.embeddingModel, embedding.embeddingUpdatedAt, row.id);
+  });
 }
 
 function syncMemoryFtsRow(db, memoryId) {
@@ -512,10 +622,18 @@ function upsertLongTermMemoryFromSuggestion(suggestion) {
     suggestion.label ? `Label: ${suggestion.label}.` : "",
     suggestion.reason ? `Reason: ${suggestion.reason}` : ""
   ].filter(Boolean).join(" ");
+  const rowForEmbedding = {
+    type: "preference",
+    key: suggestion.key,
+    value: String(suggestion.value),
+    label: suggestion.label || suggestion.key,
+    content
+  };
+  const embedding = memoryEmbeddingFields(rowForEmbedding, now);
   db.prepare(`
     INSERT INTO memory_items (
-      id, user_id, project_id, scope, type, key, value, label, content, source, confidence, status, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, user_id, project_id, scope, type, key, value, label, content, embedding_json, embedding_model, embedding_updated_at, source, confidence, status, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       project_id = excluded.project_id,
       user_id = excluded.user_id,
@@ -525,6 +643,9 @@ function upsertLongTermMemoryFromSuggestion(suggestion) {
       value = excluded.value,
       label = excluded.label,
       content = excluded.content,
+      embedding_json = excluded.embedding_json,
+      embedding_model = excluded.embedding_model,
+      embedding_updated_at = excluded.embedding_updated_at,
       source = excluded.source,
       confidence = excluded.confidence,
       status = excluded.status,
@@ -539,6 +660,9 @@ function upsertLongTermMemoryFromSuggestion(suggestion) {
     String(suggestion.value),
     suggestion.label || suggestion.key,
     content,
+    embedding.embeddingJson,
+    embedding.embeddingModel,
+    embedding.embeddingUpdatedAt,
     `memory_suggestion:${suggestion.id}`,
     suggestion.confidence || "medium",
     "active",
@@ -596,15 +720,26 @@ function refreshLongTermMemorySummary({ userId = DEFAULT_USER_ID, projectId = nu
     .map(([key, values]) => `${key}=${values.join(",")}`)
     .join("; ");
   const content = `Compressed user preference memory. ${summary}`;
+  const rowForEmbedding = {
+    type: "preference_summary",
+    key: "profile",
+    value: summary,
+    label: "Compressed preference summary",
+    content
+  };
+  const embedding = memoryEmbeddingFields(rowForEmbedding, now);
   db.prepare(`
     INSERT INTO memory_items (
-      id, user_id, project_id, scope, type, key, value, label, content, source, confidence, status, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, user_id, project_id, scope, type, key, value, label, content, embedding_json, embedding_model, embedding_updated_at, source, confidence, status, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       project_id = excluded.project_id,
       user_id = excluded.user_id,
       value = excluded.value,
       content = excluded.content,
+      embedding_json = excluded.embedding_json,
+      embedding_model = excluded.embedding_model,
+      embedding_updated_at = excluded.embedding_updated_at,
       status = excluded.status,
       updated_at = excluded.updated_at
   `).run(
@@ -617,6 +752,9 @@ function refreshLongTermMemorySummary({ userId = DEFAULT_USER_ID, projectId = nu
     summary,
     "Compressed preference summary",
     content,
+    embedding.embeddingJson,
+    embedding.embeddingModel,
+    embedding.embeddingUpdatedAt,
     "memory_compaction",
     "high",
     "active",
@@ -704,6 +842,32 @@ function buildLongTermMemoryFilters({ userId = DEFAULT_USER_ID, projectId = null
   };
 }
 
+function rankLongTermMemoryByVector(rows, query, limit) {
+  const queryVector = createLocalMemoryEmbedding(query);
+  return rows
+    .map((row) => ({
+      ...row,
+      vector_score: cosineSimilarity(queryVector, parseMemoryEmbedding(row.embedding_json))
+    }))
+    .filter((row) => row.vector_score > 0.05)
+    .sort((left, right) => {
+      if (right.vector_score !== left.vector_score) return right.vector_score - left.vector_score;
+      return String(right.updated_at || "").localeCompare(String(left.updated_at || ""));
+    })
+    .slice(0, limit);
+}
+
+function mergeMemoryRows(primaryRows, vectorRows, limit) {
+  const seen = new Set();
+  return [...primaryRows, ...vectorRows]
+    .filter((row) => {
+      if (seen.has(row.id)) return false;
+      seen.add(row.id);
+      return true;
+    })
+    .slice(0, limit);
+}
+
 function searchLongTermMemory({ userId = DEFAULT_USER_ID, projectId = null, query = "", limit = 5, status = "active", recordUsage = true } = {}) {
   const db = getMemoryDatabase();
   const tokens = tokenizeMemoryQuery(query);
@@ -730,6 +894,17 @@ function searchLongTermMemory({ userId = DEFAULT_USER_ID, projectId = null, quer
       ORDER BY m.updated_at DESC
       LIMIT ?
     `).all(...filters.params, like, like, like, like, limit);
+  }
+  if (tokens.length) {
+    const vectorCandidates = db.prepare(`
+      SELECT m.* FROM memory_items m
+      WHERE 1 = 1
+        ${filters.sql}
+        AND m.embedding_json IS NOT NULL
+      ORDER BY m.updated_at DESC
+      LIMIT 50
+    `).all(...filters.params);
+    rows = mergeMemoryRows(rows, rankLongTermMemoryByVector(vectorCandidates, query, limit), limit);
   }
   if (!rows.length) {
     rows = db.prepare(`
@@ -3523,6 +3698,8 @@ async function handleApiUnlocked(req, res, pathname) {
           query,
           status,
           limit,
+          embedding_model: MEMORY_EMBEDDING_MODEL,
+          vector_search: !!query,
           result_count: longTermMemories.length
         }
       });
