@@ -13,7 +13,8 @@ const packageLock = JSON.parse(packageLockRaw);
 
 const requiredDependencies = [
   "@langchain/core",
-  "@langchain/langgraph"
+  "@langchain/langgraph",
+  "@langchain/langgraph-checkpoint"
 ];
 
 const missingPackageDeps = requiredDependencies.filter((name) => {
@@ -39,6 +40,7 @@ if (runtimeContract.nvmrc !== "24") runtimeMismatches.push(".nvmrc must target N
 const requiredSourceSnippets = [
   'import { DatabaseSync } from "node:sqlite"',
   'from "@langchain/langgraph"',
+  'from "@langchain/langgraph-checkpoint"',
   "new StateGraph",
   "Annotation.Root"
 ];

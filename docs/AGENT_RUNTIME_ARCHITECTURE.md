@@ -5,6 +5,7 @@ This document records the first production-shaped implementation boundary for th
 ## Scope
 
 - The agent workflow is implemented as a LangGraph `StateGraph`.
+- The LangGraph workflow runs with `MemorySaver` checkpointing and persists checkpoint summaries to SQLite.
 - The first memory module is user preference memory only.
 - The harness is the runtime boundary around model calls, graph execution, tool policy, budgets, trace, schema validation, fallback, and errors.
 - AI safety is application-level guardrails. It is not a compliance certification.
@@ -79,6 +80,8 @@ If no API key is configured, the model adapter reports deterministic offline ret
 
 `buildAgentHarnessReport()` creates the public harness payload for `/api/agent-impact`.
 
+Agent workflow execution uses `MemorySaver` from `@langchain/langgraph-checkpoint` with `thread_id` set to the harness `run_id`. After execution, checkpoint tuple summaries are persisted into SQLite under `langgraph_checkpoints`. The persisted rows intentionally store metadata and compact state summaries instead of full graph state, so audits can inspect checkpoint lineage, source, node, trace-step count, memory usage, and safety status without duplicating the full answer payload.
+
 `buildChatHarnessReport()` creates the equivalent lightweight payload for `/api/chat`.
 
 `buildOnboardingHarnessReport()` creates the deterministic harness payload for `/api/onboarding`.
@@ -105,7 +108,7 @@ Feedback records preserve `harness_run_id` when the referenced answer payload in
 
 `/api/evaluation` derives `recent_harness_runs` from saved `harnessRuns` snapshots, with answer payloads as a backward-compatible fallback for older stores. Each item includes the run id, answer id, answer kind, runtime, model mode, model provider, schema status, budget status, model adapter summary, duration, fallback status, safety status, risk types, trace tools, and creation time. The payload also reports `harness_run_snapshots` so operators can verify that runs are being indexed independently from answer payloads.
 
-`GET /api/harness-run` returns one persisted harness run audit by `projectId` and `runId`. It is read-only and returns the run snapshot plus the answer's trace, harness, safety, and guardrail metadata when the answer is still available.
+`GET /api/harness-run` returns one persisted harness run audit by `projectId` and `runId`. It is read-only and returns the run snapshot plus the answer's trace, harness, safety, guardrail metadata, and recent `langgraph_checkpoints` rows when the answer is still available.
 
 `recent_feedback` enriches each feedback record with answer kind, harness run id, and safety status so dashboard feedback can be traced back to the runtime that produced the answer.
 
@@ -119,7 +122,7 @@ It also derives `memory_event_counts` and `recent_memory_events` from project-ow
 
 The evaluation payload also exposes `safety_status_counts`, `import_safety_status`, `import_safety_risk_counts`, and `memory_status_counts`, so the dashboard can distinguish passed versus review-needed safety outcomes, import-time safety findings, and pending versus confirmed or ignored memory suggestions.
 
-For harness observability, the evaluation payload exposes `harness_runtime_counts`, `model_mode_counts`, `tool_policy_counts`, `recent_tool_policy_events`, `budget_status_counts`, `schema_status_counts`, `llm_usage_counts`, and `trace_tool_counts`, derived from saved harness metadata and trace steps.
+For harness observability, the evaluation payload exposes `harness_runtime_counts`, `model_mode_counts`, `tool_policy_counts`, `recent_tool_policy_events`, `budget_status_counts`, `schema_status_counts`, `llm_usage_counts`, `trace_tool_counts`, `langgraph_checkpoint_count`, and `recent_langgraph_checkpoints`, derived from saved harness metadata, trace steps, and SQLite checkpoint summaries.
 
 Citation observability uses the same validation boundary as the output guardrail. `citation_status_counts` distinguishes valid citations, missing files, uncited impact areas, and answers with no repository citation, using related files, impact-area files, onboarding plan files, and trace citations.
 

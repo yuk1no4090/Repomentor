@@ -5,6 +5,7 @@ import zlib from "node:zlib";
 import crypto from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
+import { MemorySaver } from "@langchain/langgraph-checkpoint";
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -421,6 +422,22 @@ function getMemoryDatabase() {
     );
     CREATE INDEX IF NOT EXISTS idx_memory_items_project_status ON memory_items(project_id, status);
     CREATE INDEX IF NOT EXISTS idx_memory_items_key_status ON memory_items(key, status);
+    CREATE TABLE IF NOT EXISTS langgraph_checkpoints (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      project_id TEXT,
+      thread_id TEXT NOT NULL,
+      checkpoint_id TEXT NOT NULL,
+      parent_checkpoint_id TEXT,
+      source TEXT,
+      step INTEGER,
+      node TEXT,
+      metadata_json TEXT,
+      state_summary_json TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_langgraph_checkpoints_run ON langgraph_checkpoints(run_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_langgraph_checkpoints_project ON langgraph_checkpoints(project_id, created_at);
   `);
   try {
     memoryDb.exec(`
@@ -731,6 +748,109 @@ function summarizeLongTermMemories(items = []) {
   return items.map((item) => `${item.type}:${item.key || "memory"}=${item.value || item.content}`).join("; ");
 }
 
+function summarizeCheckpointTuple(tuple) {
+  const values = tuple?.checkpoint?.channel_values || {};
+  const finalPayload = values.finalPayload || values.synthesize?.finalPayload || null;
+  const trace = values.trace || finalPayload?.trace || [];
+  const memoryUsed = values.memoryUsed || finalPayload?.memory_used || null;
+  const safety = finalPayload?.safety || values.outputSafety || values.inputSafety || null;
+  return {
+    channel_keys: Object.keys(values).sort(),
+    trace_steps: Array.isArray(trace) ? trace.length : 0,
+    memory_used: memoryUsed
+      ? {
+          used: !!memoryUsed.used,
+          summary: typeof memoryUsed.summary === "string" ? memoryUsed.summary.slice(0, 500) : "none",
+          long_term_count: Array.isArray(memoryUsed.long_term) ? memoryUsed.long_term.length : 0
+        }
+      : null,
+    safety_status: safety?.status || "unknown",
+    risk_types: Array.isArray(safety?.risk_types) ? safety.risk_types : [],
+    related_files_count: Array.isArray(finalPayload?.related_files) ? finalPayload.related_files.length : 0
+  };
+}
+
+async function persistLangGraphCheckpoints({ projectId, runId, threadId, checkpointer }) {
+  const db = getMemoryDatabase();
+  const rows = [];
+  for await (const tuple of checkpointer.list({ configurable: { thread_id: threadId } })) {
+    rows.push(tuple);
+  }
+  db.prepare("DELETE FROM langgraph_checkpoints WHERE run_id = ?").run(runId);
+  const insert = db.prepare(`
+    INSERT INTO langgraph_checkpoints (
+      id, run_id, project_id, thread_id, checkpoint_id, parent_checkpoint_id,
+      source, step, node, metadata_json, state_summary_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  rows.forEach((tuple) => {
+    const checkpointId = tuple.checkpoint?.id || tuple.config?.configurable?.checkpoint_id || crypto.randomUUID();
+    const parentCheckpointId = tuple.parentConfig?.configurable?.checkpoint_id || null;
+    const metadata = tuple.metadata || {};
+    const writes = metadata.writes && typeof metadata.writes === "object" ? Object.keys(metadata.writes) : [];
+    const createdAt = tuple.checkpoint?.ts || new Date().toISOString();
+    insert.run(
+      `${runId}:${checkpointId}`,
+      runId,
+      projectId || null,
+      threadId,
+      checkpointId,
+      parentCheckpointId,
+      metadata.source || null,
+      Number.isFinite(Number(metadata.step)) ? Number(metadata.step) : null,
+      writes[0] || null,
+      JSON.stringify(metadata),
+      JSON.stringify(summarizeCheckpointTuple(tuple)),
+      createdAt
+    );
+  });
+  const latest = rows[0];
+  return {
+    enabled: true,
+    saver: "MemorySaver",
+    persisted: true,
+    store: "SQLite langgraph_checkpoints",
+    thread_id: threadId,
+    checkpoint_count: rows.length,
+    latest_checkpoint_id: latest?.checkpoint?.id || null
+  };
+}
+
+function listLangGraphCheckpoints({ projectId = null, runId = null, limit = 20 } = {}) {
+  const db = getMemoryDatabase();
+  const params = [];
+  const clauses = [];
+  if (projectId) {
+    clauses.push("project_id = ?");
+    params.push(projectId);
+  }
+  if (runId) {
+    clauses.push("run_id = ?");
+    params.push(runId);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const rows = db.prepare(`
+    SELECT * FROM langgraph_checkpoints
+    ${where}
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(...params, limit);
+  return rows.map((row) => ({
+    id: row.id,
+    run_id: row.run_id,
+    projectId: row.project_id,
+    thread_id: row.thread_id,
+    checkpoint_id: row.checkpoint_id,
+    parent_checkpoint_id: row.parent_checkpoint_id,
+    source: row.source,
+    step: row.step,
+    node: row.node,
+    metadata: JSON.parse(row.metadata_json || "{}"),
+    state_summary: JSON.parse(row.state_summary_json || "{}"),
+    createdAt: row.created_at
+  }));
+}
+
 function createEmptyPreferences() {
   return {
     role: null,
@@ -846,6 +966,15 @@ function normalizeHarnessRun(item) {
       http_status: item.model_adapter.http_status || null,
       duration_ms: Number.isFinite(Number(item.model_adapter.duration_ms)) ? Number(item.model_adapter.duration_ms) : 0,
       context_budget_exceeded: !!item.model_adapter.context_budget_exceeded
+    } : null,
+    checkpointing: item.checkpointing && typeof item.checkpointing === "object" ? {
+      enabled: !!item.checkpointing.enabled,
+      saver: item.checkpointing.saver || null,
+      persisted: !!item.checkpointing.persisted,
+      store: item.checkpointing.store || null,
+      thread_id: item.checkpointing.thread_id || null,
+      checkpoint_count: Number.isFinite(Number(item.checkpointing.checkpoint_count)) ? Number(item.checkpointing.checkpoint_count) : 0,
+      latest_checkpoint_id: item.checkpointing.latest_checkpoint_id || null
     } : null,
     safety_status: typeof item.safety_status === "string" ? item.safety_status : "not_applicable",
     risk_types: Array.isArray(item.risk_types) ? item.risk_types.filter((value) => typeof value === "string") : [],
@@ -2517,6 +2646,7 @@ function createHarnessRunSnapshot(answerRecord) {
     schema_valid: harness.schema_valid,
     budget_status: harness.budget_status,
     model_adapter: harness.model_adapter,
+    checkpointing: harness.checkpointing || null,
     safety_status: answerRecord.payload?.safety?.status || "not_applicable",
     risk_types: answerRecord.payload?.safety?.risk_types || [],
     risk_details: answerRecord.payload?.safety?.risk_details || describeSafetyRisks(answerRecord.payload?.safety?.risk_types || []),
@@ -2544,6 +2674,7 @@ function findHarnessRunAudit(store, projectId, runId) {
   if (!run) throw apiError("Harness run not found.", "HARNESS_RUN_NOT_FOUND", 404);
   return {
     run,
+    checkpoints: listLangGraphCheckpoints({ projectId, runId, limit: 20 }),
     answer: answer
       ? {
           answer_id: answer.id,
@@ -2603,7 +2734,7 @@ function createGraphStateAnnotation() {
   });
 }
 
-function createAgentGraph() {
+function createAgentGraph(checkpointer = false) {
   const State = createGraphStateAnnotation();
   return new StateGraph(State)
     .addNode("input_safety", async (state) => {
@@ -2845,23 +2976,44 @@ function createAgentGraph() {
     .addEdge("qa_plan", "guardrails")
     .addEdge("guardrails", "synthesize")
     .addEdge("synthesize", END)
-    .compile();
+    .compile({ checkpointer });
 }
 
 async function runAgenticImpactWorkflow(store, project, question) {
   const started = Date.now();
   const runId = createHarnessRunId("agent");
-  const graph = createAgentGraph();
+  const checkpointer = new MemorySaver();
+  const graph = createAgentGraph(checkpointer);
   let state;
   let errors = [];
   let harnessEvents = [];
+  let checkpointing = {
+    enabled: true,
+    saver: "MemorySaver",
+    persisted: false,
+    store: "SQLite langgraph_checkpoints",
+    thread_id: runId,
+    checkpoint_count: 0,
+    latest_checkpoint_id: null
+  };
   try {
     state = await withWorkflowTimeout(graph.invoke({
       store,
       project,
       question,
       preferences: store.userPreferences || createEmptyPreferences()
+    }, {
+      configurable: {
+        thread_id: runId,
+        checkpoint_ns: ""
+      }
     }), AGENT_BUDGETS.timeout_ms);
+    checkpointing = await persistLangGraphCheckpoints({
+      projectId: project.id,
+      runId,
+      threadId: runId,
+      checkpointer
+    });
   } catch (error) {
     errors.push(error.message || "LangGraph workflow failed.");
     if (error.code === "WORKFLOW_TIMEOUT") {
@@ -2913,6 +3065,7 @@ async function runAgenticImpactWorkflow(store, project, question) {
     harnessEvents: state.harnessEvents,
     errors
   });
+  payload.harness.checkpointing = checkpointing;
   payload.llm_used = !!payload.harness.model_adapter.llm_used;
   const redacted = redactSensitivePayloadWithReport(payload);
   payload = attachOutputRedactionReport(redacted.payload, redacted.redaction);
@@ -3114,6 +3267,7 @@ function computeMetrics(store, projectId) {
       .filter(Boolean))
     .slice(-8)
     .reverse();
+  const recentLangGraphCheckpoints = listLangGraphCheckpoints({ projectId, limit: 20 });
   const recentSafetyEvents = answers
     .filter((item) => item.payload?.safety?.status === "needs_review" || item.payload?.safety?.risk_types?.length)
     .slice(-8)
@@ -3180,6 +3334,7 @@ function computeMetrics(store, projectId) {
     memory_confirmations: suggestions.filter((item) => item.status === "confirmed").length,
     fallback_runs: answers.filter((item) => item.payload?.harness?.fallback_used).length,
     harness_run_snapshots: projectHarnessRuns.length,
+    langgraph_checkpoint_count: recentLangGraphCheckpoints.length,
     average_response_time_ms: responseTimes.length
       ? Math.round(responseTimes.reduce((sum, value) => sum + value, 0) / responseTimes.length)
       : 0,
@@ -3203,6 +3358,7 @@ function computeMetrics(store, projectId) {
     import_prompt_risk_files: importSafety.prompt_injection_files || [],
     import_sensitive_files: importSafety.sensitive_files || [],
     recent_harness_runs: recentHarnessRuns,
+    recent_langgraph_checkpoints: recentLangGraphCheckpoints.slice(0, 8),
     recent_safety_events: recentSafetyEvents,
     recent_tool_policy_events: recentToolPolicyEvents,
     recent_redaction_events: outputRedactionEvents.slice(-8).reverse(),

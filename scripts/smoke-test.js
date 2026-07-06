@@ -810,6 +810,10 @@ async function main() {
     assert(/^agent_[0-9a-f-]{36}$/.test(agent.payload?.harness?.run_id || ""), "agent harness did not report a stable run_id");
     assert(agent.payload?.harness?.runtime === "LangGraph StateGraph", "agent did not use LangGraph runtime");
     assert(agent.payload?.harness?.steps_executed >= 9, "agent trace did not include all graph steps");
+    assert(agent.payload?.harness?.checkpointing?.enabled === true, "agent harness did not enable LangGraph checkpointing");
+    assert(agent.payload.harness.checkpointing.saver === "MemorySaver", "agent harness did not report MemorySaver checkpointer");
+    assert(agent.payload.harness.checkpointing.persisted === true, "agent harness did not persist LangGraph checkpoint summaries");
+    assert(agent.payload.harness.checkpointing.checkpoint_count > 0, "agent harness did not report checkpoint count");
     assert(agent.payload?.harness?.model_mode === "offline retrieval", "offline smoke test should use retrieval mode");
     assert(agent.payload?.harness?.model_adapter?.name === "openai-compatible-chat-completions", "harness did not report model adapter name");
     assert(agent.payload.harness.model_adapter.provider === "deterministic", "offline model adapter provider should be deterministic");
@@ -850,6 +854,9 @@ async function main() {
     assert(agentRunAudit.run.run_id === agent.payload.harness.run_id, "harness run audit returned wrong run id");
     assert(agentRunAudit.run.answer_id === agent.answerId, "harness run audit did not link answer id");
     assert(agentRunAudit.run.runtime === "LangGraph StateGraph", "harness run audit did not preserve runtime");
+    assert(agentRunAudit.run.checkpointing?.checkpoint_count > 0, "harness run audit did not preserve checkpointing summary");
+    assert(Array.isArray(agentRunAudit.checkpoints) && agentRunAudit.checkpoints.length > 0, "harness run audit did not expose LangGraph checkpoints");
+    assert(agentRunAudit.checkpoints.some((item) => item.run_id === agent.payload.harness.run_id && item.state_summary), "harness run audit checkpoints missing state summary");
     assert(agentRunAudit.answer.harness.run_id === agent.payload.harness.run_id, "harness run audit missing answer harness");
     assert(agentRunAudit.answer.trace.some((step) => step.tool === "safety_guardrail_agent.validate_output"), "harness run audit missing answer trace");
     assert(agentRunAudit.answer.safety.status === "passed", "harness run audit missing safety status");
@@ -1316,6 +1323,9 @@ async function main() {
     assert(evaluation.metrics.citation_status_counts.some((item) => item.type === "citation_valid"), "evaluation did not count valid citation status");
     assert(Array.isArray(evaluation.metrics.fallback_reasons), "evaluation did not report fallback reasons");
     assert(Array.isArray(evaluation.metrics.recent_harness_runs), "evaluation did not report recent harness runs");
+    assert(evaluation.metrics.langgraph_checkpoint_count >= 1, "evaluation did not report LangGraph checkpoint count");
+    assert(Array.isArray(evaluation.metrics.recent_langgraph_checkpoints), "evaluation did not expose recent LangGraph checkpoints");
+    assert(evaluation.metrics.recent_harness_runs.some((item) => item.checkpointing?.checkpoint_count > 0), "recent harness runs did not include checkpointing metadata");
     assert(evaluation.metrics.recent_harness_runs.some((item) => /^agent_[0-9a-f-]{36}$/.test(item.run_id || "")), "recent harness runs did not include an agent run id");
     assert(evaluation.metrics.recent_harness_runs.some((item) => /^chat_[0-9a-f-]{36}$/.test(item.run_id || "")), "recent harness runs did not include a chat run id");
     assert(evaluation.metrics.recent_harness_runs.some((item) => Array.isArray(item.trace_tools) && item.trace_tools.length > 0), "recent harness run snapshots did not include trace tools");
