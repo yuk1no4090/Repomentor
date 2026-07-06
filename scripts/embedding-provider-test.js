@@ -101,7 +101,9 @@ async function startFakeVectorIndexServer() {
     const isGenericRoute = req.method === "POST" && ["/upsert", "/query"].includes(req.url);
     const isQdrantUpsert = req.method === "PUT" && /^\/collections\/[^/]+\/points\?wait=true$/.test(req.url || "");
     const isQdrantSearch = req.method === "POST" && /^\/collections\/[^/]+\/points\/search$/.test(req.url || "");
-    if (!isGenericRoute && !isQdrantUpsert && !isQdrantSearch) {
+    const isPineconeUpsert = req.method === "POST" && req.url === "/vectors/upsert";
+    const isPineconeQuery = req.method === "POST" && req.url === "/query";
+    if (!isGenericRoute && !isQdrantUpsert && !isQdrantSearch && !isPineconeUpsert && !isPineconeQuery) {
       res.writeHead(404, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "not found" }));
       return;
@@ -109,7 +111,7 @@ async function startFakeVectorIndexServer() {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
-    if (req.url === "/upsert" || isQdrantUpsert) {
+    if (req.url === "/upsert" || isQdrantUpsert || isPineconeUpsert) {
       upsertCount += 1;
       const incomingVectors = isQdrantUpsert
         ? (body.points || []).map((point) => ({
@@ -128,6 +130,8 @@ async function startFakeVectorIndexServer() {
     queryCount += 1;
     const filter = isQdrantSearch
       ? Object.fromEntries((body.filter?.must || []).map((item) => [item.key, item.match?.value]))
+      : isPineconeQuery
+        ? Object.fromEntries(Object.entries(body.filter || {}).map(([key, value]) => [key, value?.$eq]))
       : (body.filter || {});
     const matches = [...vectors.values()]
       .filter((vector) => !filter.user_id || vector.metadata?.user_id === filter.user_id)
@@ -194,10 +198,10 @@ async function waitForServer(child, baseUrl) {
   throw new Error(`server did not become healthy: ${lastError?.message || "timeout"}`);
 }
 
-async function run() {
+async function runVectorScenario({ provider, expectedProvider }) {
   const fakeEmbedding = await startFakeEmbeddingServer();
   const fakeVectorIndex = await startFakeVectorIndexServer();
-  const dataDir = await mkdtemp(path.join(tmpdir(), "ai-pm-embedding-"));
+  const dataDir = await mkdtemp(path.join(tmpdir(), `ai-pm-${provider}-`));
   const port = await getFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const child = spawn(process.execPath, ["server.js"], {
@@ -212,7 +216,7 @@ async function run() {
       OPENAI_EMBEDDING_API_KEY: "fake-embedding-key",
       OPENAI_EMBEDDING_BASE_URL: fakeEmbedding.baseUrl,
       OPENAI_EMBEDDING_MODEL: "fake-embedding-model",
-      MEMORY_VECTOR_INDEX_PROVIDER: "qdrant",
+      MEMORY_VECTOR_INDEX_PROVIDER: provider,
       MEMORY_VECTOR_INDEX_URL: fakeVectorIndex.baseUrl,
       MEMORY_VECTOR_INDEX_API_KEY: "fake-vector-key",
       MEMORY_VECTOR_INDEX_NAMESPACE: "fake-memory"
@@ -227,10 +231,10 @@ async function run() {
 
   try {
     const health = await waitForServer(child, baseUrl);
-    assert(health.memory_embedding.provider === "openai-compatible", "health did not report external embedding provider");
-    assert(health.memory_embedding.model === "fake-embedding-model", "health did not report fake embedding model");
-    assert(health.memory_vector_index.provider === "qdrant", "health did not report qdrant vector index provider");
-    assert(health.memory_vector_index.namespace === "fake-memory", "health did not report vector index namespace");
+    assert(health.memory_embedding.provider === "openai-compatible", `${provider} health did not report external embedding provider`);
+    assert(health.memory_embedding.model === "fake-embedding-model", `${provider} health did not report fake embedding model`);
+    assert(health.memory_vector_index.provider === expectedProvider, `${provider} health did not report expected vector index provider`);
+    assert(health.memory_vector_index.namespace === "fake-memory", `${provider} health did not report vector index namespace`);
 
     const imported = await request(baseUrl, "/api/import", {
       method: "POST",
@@ -245,33 +249,34 @@ async function run() {
       })
     });
     const qaRole = agent.payload.memory_suggestions.find((item) => item.key === "role" && item.value === "QA");
-    assert(qaRole, "QA role suggestion was not generated");
+    assert(qaRole, `${provider} QA role suggestion was not generated`);
     const confirmed = await request(baseUrl, "/api/memory/confirm", {
       method: "POST",
       body: JSON.stringify({ projectId, suggestionId: qaRole.id })
     });
-    assert(confirmed.long_term_memory.embedding.model === "fake-embedding-model", "confirmed memory did not use external embedding model");
-    assert(confirmed.long_term_memory.embedding.dims === 64, "confirmed memory embedding dims were not preserved");
+    assert(confirmed.long_term_memory.embedding.model === "fake-embedding-model", `${provider} confirmed memory did not use external embedding model`);
+    assert(confirmed.long_term_memory.embedding.dims === 64, `${provider} confirmed memory embedding dims were not preserved`);
 
     const memory = await request(baseUrl, `/api/memory?projectId=${encodeURIComponent(projectId)}&q=${encodeURIComponent("testing QA checkout")}`);
-    assert(memory.long_term_memory_query.embedding_provider === "openai-compatible", "memory query did not report external embedding provider");
-    assert(memory.long_term_memory_query.embedding_model === "fake-embedding-model", "memory query did not report external embedding model");
-    assert(memory.long_term_memory_query.vector_index_provider === "qdrant", "memory query did not report qdrant vector index provider");
-    assert(memory.long_term_memories.some((item) => item.embedding?.model === "fake-embedding-model"), "external embedding memory was not retrieved");
-    assert(fakeEmbedding.getRequestCount() >= 3, "fake embedding server was not called for write and query paths");
-    assert(fakeEmbedding.getSeenModels().every((model) => model === "fake-embedding-model"), "fake embedding server received wrong model");
-    assert(fakeVectorIndex.getUpsertCount() >= 1, "fake vector index did not receive memory upserts");
-    assert(fakeVectorIndex.getQueryCount() >= 1, "fake vector index did not receive memory query");
-    assert(fakeVectorIndex.getVectorCount() >= 1, "fake vector index did not store vectors");
+    assert(memory.long_term_memory_query.embedding_provider === "openai-compatible", `${provider} memory query did not report external embedding provider`);
+    assert(memory.long_term_memory_query.embedding_model === "fake-embedding-model", `${provider} memory query did not report external embedding model`);
+    assert(memory.long_term_memory_query.vector_index_provider === expectedProvider, `${provider} memory query did not report expected vector index provider`);
+    assert(memory.long_term_memories.some((item) => item.embedding?.model === "fake-embedding-model"), `${provider} external embedding memory was not retrieved`);
+    assert(fakeEmbedding.getRequestCount() >= 3, `${provider} fake embedding server was not called for write and query paths`);
+    assert(fakeEmbedding.getSeenModels().every((model) => model === "fake-embedding-model"), `${provider} fake embedding server received wrong model`);
+    assert(fakeVectorIndex.getUpsertCount() >= 1, `${provider} fake vector index did not receive memory upserts`);
+    assert(fakeVectorIndex.getQueryCount() >= 1, `${provider} fake vector index did not receive memory query`);
+    assert(fakeVectorIndex.getVectorCount() >= 1, `${provider} fake vector index did not store vectors`);
 
-    console.log(JSON.stringify({
-      ok: true,
+    return {
+      provider,
+      expectedProvider,
       projectId,
       embeddingRequests: fakeEmbedding.getRequestCount(),
       embeddingModel: memory.long_term_memory_query.embedding_model,
       vectorIndexUpserts: fakeVectorIndex.getUpsertCount(),
       vectorIndexQueries: fakeVectorIndex.getQueryCount()
-    }, null, 2));
+    };
   } catch (error) {
     if (stderr) console.error(stderr);
     throw error;
@@ -281,6 +286,14 @@ async function run() {
     await closeServer(fakeVectorIndex.server);
     await rm(dataDir, { recursive: true, force: true });
   }
+}
+
+async function run() {
+  const scenarios = [
+    await runVectorScenario({ provider: "qdrant", expectedProvider: "qdrant" }),
+    await runVectorScenario({ provider: "pinecone", expectedProvider: "pinecone" })
+  ];
+  console.log(JSON.stringify({ ok: true, scenarios }, null, 2));
 }
 
 await run();

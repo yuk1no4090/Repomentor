@@ -805,6 +805,14 @@ function resolveMemoryVectorIndexMode() {
       namespace: process.env.MEMORY_VECTOR_INDEX_NAMESPACE || "ai_pm_memory"
     };
   }
+  if (MEMORY_VECTOR_INDEX_PROVIDER === "pinecone" && endpoint) {
+    return {
+      provider: "pinecone",
+      endpoint,
+      apiKey,
+      namespace: process.env.MEMORY_VECTOR_INDEX_NAMESPACE || "ai-pm-memory"
+    };
+  }
   return {
     provider: "local-sqlite",
     endpoint: null,
@@ -886,7 +894,7 @@ async function createMemoryQueryEmbedding(query) {
 }
 
 async function requestMemoryVectorIndex(pathname, body, mode = resolveMemoryVectorIndexMode()) {
-  if (!["http-compatible", "qdrant"].includes(mode.provider)) return null;
+  if (!["http-compatible", "qdrant", "pinecone"].includes(mode.provider)) return null;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), LLM_REQUEST_TIMEOUT_MS);
   try {
@@ -895,7 +903,8 @@ async function requestMemoryVectorIndex(pathname, body, mode = resolveMemoryVect
       headers: {
         "content-type": "application/json",
         ...(mode.apiKey && mode.provider === "qdrant" ? { "api-key": mode.apiKey } : {}),
-        ...(mode.apiKey && mode.provider !== "qdrant" ? { authorization: `Bearer ${mode.apiKey}` } : {})
+        ...(mode.apiKey && mode.provider === "pinecone" ? { "Api-Key": mode.apiKey } : {}),
+        ...(mode.apiKey && mode.provider === "http-compatible" ? { authorization: `Bearer ${mode.apiKey}` } : {})
       },
       body: JSON.stringify(body),
       signal: controller.signal
@@ -921,6 +930,17 @@ function qdrantFilter({ userId = DEFAULT_USER_ID, projectId = null, status = "ac
   return { must };
 }
 
+function pineconeFilter({ userId = DEFAULT_USER_ID, projectId = null, status = "active" } = {}) {
+  const filter = {
+    user_id: { $eq: userId },
+    status: { $eq: status }
+  };
+  if (projectId) {
+    filter.project_id = { $eq: projectId };
+  }
+  return filter;
+}
+
 function memoryVectorMetadata(memoryRow) {
   return {
     user_id: memoryRow.user_id || DEFAULT_USER_ID,
@@ -938,7 +958,7 @@ function memoryVectorMetadata(memoryRow) {
 
 async function upsertMemoryVectorIndex(memoryRow) {
   const mode = resolveMemoryVectorIndexMode();
-  if (!["http-compatible", "qdrant"].includes(mode.provider) || !memoryRow) {
+  if (!["http-compatible", "qdrant", "pinecone"].includes(mode.provider) || !memoryRow) {
     return { attempted: false, provider: mode.provider };
   }
   const vector = parseMemoryEmbedding(memoryRow.embedding_json);
@@ -952,6 +972,15 @@ async function upsertMemoryVectorIndex(memoryRow) {
           id: memoryRow.id,
           vector,
           payload: memoryVectorMetadata(memoryRow)
+        }]
+      }, mode);
+    } else if (mode.provider === "pinecone") {
+      await requestMemoryVectorIndex("/vectors/upsert", {
+        namespace: mode.namespace,
+        vectors: [{
+          id: memoryRow.id,
+          values: vector,
+          metadata: memoryVectorMetadata(memoryRow)
         }]
       }, mode);
     } else {
@@ -973,7 +1002,7 @@ async function upsertMemoryVectorIndex(memoryRow) {
 
 async function queryMemoryVectorIndex({ userId = DEFAULT_USER_ID, projectId = null, query = "", status = "active", limit = 5 } = {}) {
   const mode = resolveMemoryVectorIndexMode();
-  if (!["http-compatible", "qdrant"].includes(mode.provider) || !query) {
+  if (!["http-compatible", "qdrant", "pinecone"].includes(mode.provider) || !query) {
     return { attempted: false, provider: mode.provider, rows: [] };
   }
   try {
@@ -985,6 +1014,15 @@ async function queryMemoryVectorIndex({ userId = DEFAULT_USER_ID, projectId = nu
         with_payload: false,
         filter: qdrantFilter({ userId, projectId, status })
       }, mode)
+      : mode.provider === "pinecone"
+        ? await requestMemoryVectorIndex("/query", {
+          namespace: mode.namespace,
+          vector: queryEmbedding.vector,
+          topK: Math.max(limit, 10),
+          includeValues: false,
+          includeMetadata: false,
+          filter: pineconeFilter({ userId, projectId, status })
+        }, mode)
       : await requestMemoryVectorIndex("/query", {
         namespace: mode.namespace,
         vector: queryEmbedding.vector,
