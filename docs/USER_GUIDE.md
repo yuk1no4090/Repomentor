@@ -192,6 +192,7 @@ npm run dev
 | GET | `/api/evaluation` | 获取评估指标 |
 | GET | `/api/harness-run` | 按 projectId 和 runId 查看单次 harness 执行快照 |
 | GET | `/api/langgraph-checkpoint` | 按 projectId、runId 和 checkpointId 查看单个 LangGraph checkpoint 摘要 |
+| GET | `/api/langgraph-replay` | 按 projectId 和 runId 查看 LangGraph checkpoint summary replay |
 | GET | `/api/memory` | 获取已确认偏好和最近记忆建议 |
 | POST | `/api/memory/confirm` | 确认待保存的记忆建议 |
 | POST | `/api/memory/forget` | 忽略建议、清除单项偏好或清空偏好 |

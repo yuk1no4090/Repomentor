@@ -870,6 +870,17 @@ async function main() {
     assert(langgraphCheckpoint.checkpoint.state_summary, "single checkpoint audit missing state summary");
     assert(langgraphCheckpoint.time_travel?.mode === "read-only checkpoint audit", "single checkpoint audit missing read-only time-travel mode");
     assert(langgraphCheckpoint.time_travel.resumable === false, "single checkpoint audit should not claim executable resume");
+    const langgraphReplay = await request(`/api/langgraph-replay?projectId=${encodeURIComponent(projectId)}&runId=${encodeURIComponent(agent.payload.harness.run_id)}`);
+    assert(langgraphReplay.run.run_id === agent.payload.harness.run_id, "LangGraph replay returned wrong run id");
+    assert(langgraphReplay.replay?.mode === "checkpoint summary replay", "LangGraph replay returned wrong mode");
+    assert(langgraphReplay.replay.executable === false, "LangGraph replay should not claim executable resume");
+    assert(langgraphReplay.replay.checkpoint_count === agentRunAudit.checkpoints.length, "LangGraph replay checkpoint count mismatch");
+    assert(Array.isArray(langgraphReplay.steps) && langgraphReplay.steps.length === agentRunAudit.checkpoints.length, "LangGraph replay missing steps");
+    assert(langgraphReplay.steps.every((item) => item.checkpoint_id && item.state_summary), "LangGraph replay steps missing checkpoint summaries");
+    assert(langgraphReplay.answer?.trace_steps === agent.payload.trace.length, "LangGraph replay did not summarize answer trace");
+    const missingReplayRun = await requestError(`/api/langgraph-replay?projectId=${encodeURIComponent(projectId)}`);
+    assert(missingReplayRun.status === 400, "missing replay run id should return 400");
+    assert(missingReplayRun.payload.code === "RUN_ID_REQUIRED", "missing replay run id returned wrong error code");
     const missingCheckpointId = await requestError(`/api/langgraph-checkpoint?projectId=${encodeURIComponent(projectId)}&runId=${encodeURIComponent(agent.payload.harness.run_id)}`);
     assert(missingCheckpointId.status === 400, "missing checkpoint id should return 400");
     assert(missingCheckpointId.payload.code === "CHECKPOINT_ID_REQUIRED", "missing checkpoint id returned wrong error code");

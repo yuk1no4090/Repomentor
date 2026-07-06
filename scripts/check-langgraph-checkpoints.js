@@ -26,6 +26,9 @@ const requiredServerSnippets = [
   "recent_langgraph_checkpoints",
   "langgraph_checkpoint_count",
   "GET\" && pathname === \"/api/langgraph-checkpoint\"",
+  "GET\" && pathname === \"/api/langgraph-replay\"",
+  "function buildLangGraphReplay",
+  "LANGGRAPH_REPLAY_UNAVAILABLE",
   "time_travel"
 ];
 
@@ -34,6 +37,7 @@ const requiredSmokeSnippets = [
   "MemorySaver",
   "agentRunAudit.checkpoints",
   "langgraphCheckpoint.time_travel",
+  "langgraphReplay.replay",
   "langgraph_checkpoint_count",
   "recent_langgraph_checkpoints"
 ];
@@ -45,6 +49,8 @@ const requiredDocSnippets = [
   "checkpointing",
   "recent_langgraph_checkpoints",
   "/api/langgraph-checkpoint",
+  "/api/langgraph-replay",
+  "checkpoint summary replay",
   "read-only time-travel"
 ];
 

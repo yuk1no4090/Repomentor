@@ -1207,6 +1207,56 @@ function findLangGraphCheckpoint(store, { projectId, runId, checkpointId }) {
   return normalizeLangGraphCheckpointRow(row);
 }
 
+function buildLangGraphReplay(store, { projectId, runId }) {
+  if (!runId) throw apiError("Run id is required.", "RUN_ID_REQUIRED");
+  const audit = findHarnessRunAudit(store, projectId, runId);
+  if (audit.run.runtime !== "LangGraph StateGraph") {
+    throw apiError("Harness run is not a LangGraph workflow.", "LANGGRAPH_REPLAY_UNSUPPORTED", 400);
+  }
+  const checkpoints = listLangGraphCheckpoints({ projectId, runId, limit: 100 })
+    .sort((left, right) => {
+      const leftStep = Number.isFinite(Number(left.step)) ? Number(left.step) : Number.MAX_SAFE_INTEGER;
+      const rightStep = Number.isFinite(Number(right.step)) ? Number(right.step) : Number.MAX_SAFE_INTEGER;
+      if (leftStep !== rightStep) return leftStep - rightStep;
+      return String(left.createdAt || "").localeCompare(String(right.createdAt || ""));
+    });
+  if (!checkpoints.length) {
+    throw apiError("LangGraph checkpoints are not available for this run.", "LANGGRAPH_REPLAY_UNAVAILABLE", 404);
+  }
+  const replaySteps = checkpoints.map((checkpoint, index) => ({
+    index,
+    checkpoint_id: checkpoint.checkpoint_id,
+    parent_checkpoint_id: checkpoint.parent_checkpoint_id,
+    step: checkpoint.step,
+    node: checkpoint.node || checkpoint.metadata?.source || "unknown",
+    source: checkpoint.source,
+    createdAt: checkpoint.createdAt,
+    state_summary: checkpoint.state_summary
+  }));
+  return {
+    run: audit.run,
+    replay: {
+      mode: "checkpoint summary replay",
+      executable: false,
+      deterministic: true,
+      checkpoint_count: checkpoints.length,
+      first_checkpoint_id: replaySteps[0]?.checkpoint_id || null,
+      latest_checkpoint_id: replaySteps[replaySteps.length - 1]?.checkpoint_id || null,
+      note: "Replay reconstructs the persisted checkpoint timeline for audit only; it does not invoke the graph, tools, model, or mutate state."
+    },
+    steps: replaySteps,
+    answer: audit.answer
+      ? {
+          answer_id: audit.answer.answer_id,
+          kind: audit.answer.kind,
+          trace_steps: Array.isArray(audit.answer.trace) ? audit.answer.trace.length : 0,
+          safety_status: audit.answer.safety?.status || "unknown",
+          harness_run_id: audit.answer.harness?.run_id || runId
+        }
+      : null
+  };
+}
+
 function createEmptyPreferences() {
   return {
     role: null,
@@ -4428,6 +4478,17 @@ async function handleApiUnlocked(req, res, pathname) {
           note: "This endpoint exposes persisted checkpoint summaries for inspection; it does not replay or mutate graph state."
         }
       });
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/langgraph-replay") {
+      const url = new URL(req.url, `http://${req.headers.host}`);
+      const project = findProject(store, url.searchParams.get("projectId"));
+      const replay = buildLangGraphReplay(store, {
+        projectId: project.id,
+        runId: url.searchParams.get("runId")
+      });
+      sendJson(res, 200, replay);
       return;
     }
 
