@@ -797,6 +797,14 @@ function resolveMemoryVectorIndexMode() {
       namespace: process.env.MEMORY_VECTOR_INDEX_NAMESPACE || "ai-pm-memory"
     };
   }
+  if ((MEMORY_VECTOR_INDEX_PROVIDER === "qdrant" || MEMORY_VECTOR_INDEX_PROVIDER === "qdrant-cloud") && endpoint) {
+    return {
+      provider: "qdrant",
+      endpoint,
+      apiKey,
+      namespace: process.env.MEMORY_VECTOR_INDEX_NAMESPACE || "ai_pm_memory"
+    };
+  }
   return {
     provider: "local-sqlite",
     endpoint: null,
@@ -878,15 +886,16 @@ async function createMemoryQueryEmbedding(query) {
 }
 
 async function requestMemoryVectorIndex(pathname, body, mode = resolveMemoryVectorIndexMode()) {
-  if (mode.provider !== "http-compatible") return null;
+  if (!["http-compatible", "qdrant"].includes(mode.provider)) return null;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), LLM_REQUEST_TIMEOUT_MS);
   try {
     const response = await fetch(`${mode.endpoint}${pathname}`, {
-      method: "POST",
+      method: mode.provider === "qdrant" && pathname.includes("/points?") ? "PUT" : "POST",
       headers: {
         "content-type": "application/json",
-        ...(mode.apiKey ? { authorization: `Bearer ${mode.apiKey}` } : {})
+        ...(mode.apiKey && mode.provider === "qdrant" ? { "api-key": mode.apiKey } : {}),
+        ...(mode.apiKey && mode.provider !== "qdrant" ? { authorization: `Bearer ${mode.apiKey}` } : {})
       },
       body: JSON.stringify(body),
       signal: controller.signal
@@ -901,9 +910,35 @@ async function requestMemoryVectorIndex(pathname, body, mode = resolveMemoryVect
   }
 }
 
+function qdrantFilter({ userId = DEFAULT_USER_ID, projectId = null, status = "active" } = {}) {
+  const must = [
+    { key: "user_id", match: { value: userId } },
+    { key: "status", match: { value: status } }
+  ];
+  if (projectId) {
+    must.push({ key: "project_id", match: { value: projectId } });
+  }
+  return { must };
+}
+
+function memoryVectorMetadata(memoryRow) {
+  return {
+    user_id: memoryRow.user_id || DEFAULT_USER_ID,
+    project_id: memoryRow.project_id || null,
+    status: memoryRow.status || "active",
+    type: memoryRow.type || "memory",
+    key: memoryRow.key || null,
+    value: memoryRow.value || null,
+    label: memoryRow.label || null,
+    content: memoryRow.content || "",
+    embedding_model: memoryRow.embedding_model || null,
+    updated_at: memoryRow.updated_at || null
+  };
+}
+
 async function upsertMemoryVectorIndex(memoryRow) {
   const mode = resolveMemoryVectorIndexMode();
-  if (mode.provider !== "http-compatible" || !memoryRow) {
+  if (!["http-compatible", "qdrant"].includes(mode.provider) || !memoryRow) {
     return { attempted: false, provider: mode.provider };
   }
   const vector = parseMemoryEmbedding(memoryRow.embedding_json);
@@ -911,25 +946,24 @@ async function upsertMemoryVectorIndex(memoryRow) {
     return { attempted: false, provider: mode.provider, reason: "missing_embedding" };
   }
   try {
-    await requestMemoryVectorIndex("/upsert", {
-      namespace: mode.namespace,
-      vectors: [{
-        id: memoryRow.id,
-        values: vector,
-        metadata: {
-          user_id: memoryRow.user_id || DEFAULT_USER_ID,
-          project_id: memoryRow.project_id || null,
-          status: memoryRow.status || "active",
-          type: memoryRow.type || "memory",
-          key: memoryRow.key || null,
-          value: memoryRow.value || null,
-          label: memoryRow.label || null,
-          content: memoryRow.content || "",
-          embedding_model: memoryRow.embedding_model || null,
-          updated_at: memoryRow.updated_at || null
-        }
-      }]
-    }, mode);
+    if (mode.provider === "qdrant") {
+      await requestMemoryVectorIndex(`/collections/${encodeURIComponent(mode.namespace)}/points?wait=true`, {
+        points: [{
+          id: memoryRow.id,
+          vector,
+          payload: memoryVectorMetadata(memoryRow)
+        }]
+      }, mode);
+    } else {
+      await requestMemoryVectorIndex("/upsert", {
+        namespace: mode.namespace,
+        vectors: [{
+          id: memoryRow.id,
+          values: vector,
+          metadata: memoryVectorMetadata(memoryRow)
+        }]
+      }, mode);
+    }
     return { attempted: true, provider: mode.provider, ok: true };
   } catch (error) {
     console.warn(`[memory] Remote vector upsert failed; local SQLite retrieval remains active. ${error.message}`);
@@ -939,22 +973,30 @@ async function upsertMemoryVectorIndex(memoryRow) {
 
 async function queryMemoryVectorIndex({ userId = DEFAULT_USER_ID, projectId = null, query = "", status = "active", limit = 5 } = {}) {
   const mode = resolveMemoryVectorIndexMode();
-  if (mode.provider !== "http-compatible" || !query) {
+  if (!["http-compatible", "qdrant"].includes(mode.provider) || !query) {
     return { attempted: false, provider: mode.provider, rows: [] };
   }
   try {
     const queryEmbedding = await createMemoryQueryEmbedding(query);
-    const payload = await requestMemoryVectorIndex("/query", {
-      namespace: mode.namespace,
-      vector: queryEmbedding.vector,
-      topK: Math.max(limit, 10),
-      filter: {
-        user_id: userId,
-        project_id: projectId,
-        status
-      }
-    }, mode);
-    const ids = (payload?.matches || [])
+    const payload = mode.provider === "qdrant"
+      ? await requestMemoryVectorIndex(`/collections/${encodeURIComponent(mode.namespace)}/points/search`, {
+        vector: queryEmbedding.vector,
+        limit: Math.max(limit, 10),
+        with_payload: false,
+        filter: qdrantFilter({ userId, projectId, status })
+      }, mode)
+      : await requestMemoryVectorIndex("/query", {
+        namespace: mode.namespace,
+        vector: queryEmbedding.vector,
+        topK: Math.max(limit, 10),
+        filter: {
+          user_id: userId,
+          project_id: projectId,
+          status
+        }
+      }, mode);
+    const matches = mode.provider === "qdrant" ? (payload?.result || []) : (payload?.matches || []);
+    const ids = matches
       .map((match) => String(match.id || "").trim())
       .filter(Boolean)
       .slice(0, 50);
@@ -962,7 +1004,7 @@ async function queryMemoryVectorIndex({ userId = DEFAULT_USER_ID, projectId = nu
     const db = getMemoryDatabase();
     const filters = buildLongTermMemoryFilters({ userId, projectId, status });
     const placeholders = ids.map(() => "?").join(", ");
-    const scoreById = new Map((payload.matches || []).map((match) => [String(match.id), Number(match.score) || 0]));
+    const scoreById = new Map(matches.map((match) => [String(match.id), Number(match.score) || 0]));
     const rows = db.prepare(`
       SELECT m.* FROM memory_items m
       WHERE m.id IN (${placeholders})
