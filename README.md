@@ -26,7 +26,7 @@ The smoke test starts the server on temporary ports with isolated temporary data
 
 GitHub Actions runs `npm ci` and `npm test` on pushes to `main` and pull requests.
 
-The project targets Node.js 20. Local Node version managers can read `.nvmrc`; CI uses the same file.
+The project targets Node.js 24 because the long-term memory store uses the built-in `node:sqlite` module. Local Node version managers can read `.nvmrc`; CI uses the same file.
 
 ## Runtime Configuration
 
