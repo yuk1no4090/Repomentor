@@ -120,6 +120,7 @@ function parsePositiveIntegerEnv(name, fallback) {
 
 const LLM_REQUEST_TIMEOUT_MS = parsePositiveIntegerEnv("LLM_REQUEST_TIMEOUT_MS", AGENT_BUDGETS.timeout_ms);
 const LLM_CONTEXT_TOKEN_BUDGET = parsePositiveIntegerEnv("LLM_CONTEXT_TOKEN_BUDGET", AGENT_BUDGETS.max_context_tokens);
+const MEMORY_EMBEDDING_PROVIDER = String(process.env.MEMORY_EMBEDDING_PROVIDER || "").toLowerCase();
 
 const AGENT_TOOL_REGISTRY = [
   { name: "safety.scan_input", capability: "input_guardrail", access: "read-only", external_network: false },
@@ -542,7 +543,7 @@ function normalizeLongTermMemoryItem(item) {
     embedding: {
       available: !!item.embedding_json,
       model: item.embedding_model || null,
-      dims: item.embedding_json ? MEMORY_EMBEDDING_DIMS : 0,
+      dims: parseMemoryEmbedding(item.embedding_json)?.length || 0,
       updatedAt: item.embedding_updated_at || null,
       score: Number.isFinite(Number(item.vector_score)) ? Number(item.vector_score) : null
     },
@@ -586,7 +587,7 @@ function parseMemoryEmbedding(value) {
   if (!value) return null;
   try {
     const parsed = JSON.parse(value);
-    if (!Array.isArray(parsed) || parsed.length !== MEMORY_EMBEDDING_DIMS) return null;
+    if (!Array.isArray(parsed) || !parsed.length) return null;
     return parsed.map((item) => Number(item) || 0);
   } catch {
     return null;
@@ -608,6 +609,97 @@ function memoryEmbeddingFields(row, now = new Date().toISOString()) {
     embeddingJson: JSON.stringify(createLocalMemoryEmbedding(memoryEmbeddingInput(row))),
     embeddingModel: MEMORY_EMBEDDING_MODEL,
     embeddingUpdatedAt: now
+  };
+}
+
+function resolveMemoryEmbeddingMode() {
+  const provider = MEMORY_EMBEDDING_PROVIDER || (process.env.OPENAI_EMBEDDING_MODEL ? "openai" : "local");
+  const apiKey = process.env.OPENAI_EMBEDDING_API_KEY || process.env.OPENAI_API_KEY || "";
+  if ((provider === "openai" || provider === "openai-compatible") && apiKey) {
+    return {
+      provider: "openai-compatible",
+      model: process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small",
+      endpoint: `${(process.env.OPENAI_EMBEDDING_BASE_URL || process.env.OPENAI_BASE_URL || "https://api.openai.com").replace(/\/+$/, "")}/v1/embeddings`,
+      apiKey
+    };
+  }
+  return {
+    provider: "local",
+    model: MEMORY_EMBEDDING_MODEL,
+    endpoint: null,
+    apiKey: null
+  };
+}
+
+function normalizeEmbeddingVector(vector) {
+  const numeric = Array.isArray(vector)
+    ? vector.map((value) => Number(value) || 0)
+    : [];
+  const norm = Math.sqrt(numeric.reduce((sum, value) => sum + value * value, 0));
+  if (!numeric.length || !norm) return null;
+  return numeric.map((value) => Number((value / norm).toFixed(6)));
+}
+
+async function createExternalMemoryEmbedding(text, mode = resolveMemoryEmbeddingMode()) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), LLM_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(mode.endpoint, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${mode.apiKey}`
+      },
+      body: JSON.stringify({
+        model: mode.model,
+        input: String(text || "").slice(0, 8000)
+      }),
+      signal: controller.signal
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(`embedding request failed: ${response.status}`);
+    }
+    const vector = normalizeEmbeddingVector(payload?.data?.[0]?.embedding);
+    if (!vector) throw new Error("embedding response did not contain a numeric vector");
+    return vector;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function memoryEmbeddingFieldsAsync(row, now = new Date().toISOString()) {
+  const input = memoryEmbeddingInput(row);
+  const mode = resolveMemoryEmbeddingMode();
+  if (mode.provider === "openai-compatible") {
+    try {
+      return {
+        embeddingJson: JSON.stringify(await createExternalMemoryEmbedding(input, mode)),
+        embeddingModel: mode.model,
+        embeddingUpdatedAt: now
+      };
+    } catch (error) {
+      console.warn(`[memory] External embedding failed; falling back to ${MEMORY_EMBEDDING_MODEL}. ${error.message}`);
+    }
+  }
+  return memoryEmbeddingFields(row, now);
+}
+
+async function createMemoryQueryEmbedding(query) {
+  const mode = resolveMemoryEmbeddingMode();
+  if (mode.provider === "openai-compatible") {
+    try {
+      return {
+        vector: await createExternalMemoryEmbedding(query, mode),
+        model: mode.model
+      };
+    } catch (error) {
+      console.warn(`[memory] External query embedding failed; falling back to ${MEMORY_EMBEDDING_MODEL}. ${error.message}`);
+    }
+  }
+  return {
+    vector: createLocalMemoryEmbedding(query),
+    model: MEMORY_EMBEDDING_MODEL
   };
 }
 
@@ -663,7 +755,7 @@ function rebuildMemoryFtsIndex(db) {
   });
 }
 
-function upsertLongTermMemoryFromSuggestion(suggestion) {
+async function upsertLongTermMemoryFromSuggestion(suggestion) {
   if (!suggestion) return null;
   const db = getMemoryDatabase();
   const now = new Date().toISOString();
@@ -680,7 +772,7 @@ function upsertLongTermMemoryFromSuggestion(suggestion) {
     label: suggestion.label || suggestion.key,
     content
   };
-  const embedding = memoryEmbeddingFields(rowForEmbedding, now);
+  const embedding = await memoryEmbeddingFieldsAsync(rowForEmbedding, now);
   db.prepare(`
     INSERT INTO memory_items (
       id, user_id, project_id, scope, type, key, value, label, content, embedding_json, embedding_model, embedding_updated_at, source, confidence, status, created_at, updated_at
@@ -722,7 +814,7 @@ function upsertLongTermMemoryFromSuggestion(suggestion) {
   );
   compactLongTermPreferenceMemories({ userId: suggestion.userId || DEFAULT_USER_ID, projectId: suggestion.projectId || null, changedKey: suggestion.key, activeValue: String(suggestion.value) });
   syncMemoryFtsRow(db, id);
-  refreshLongTermMemorySummary({ userId: suggestion.userId || DEFAULT_USER_ID, projectId: suggestion.projectId || null });
+  await refreshLongTermMemorySummary({ userId: suggestion.userId || DEFAULT_USER_ID, projectId: suggestion.projectId || null });
   return getLongTermMemoryById(id);
 }
 
@@ -745,7 +837,7 @@ function compactLongTermPreferenceMemories({ userId = DEFAULT_USER_ID, projectId
   return { superseded: result.changes || 0 };
 }
 
-function refreshLongTermMemorySummary({ userId = DEFAULT_USER_ID, projectId = null } = {}) {
+async function refreshLongTermMemorySummary({ userId = DEFAULT_USER_ID, projectId = null } = {}) {
   const db = getMemoryDatabase();
   const now = new Date().toISOString();
   const active = db.prepare(`
@@ -778,7 +870,7 @@ function refreshLongTermMemorySummary({ userId = DEFAULT_USER_ID, projectId = nu
     label: "Compressed preference summary",
     content
   };
-  const embedding = memoryEmbeddingFields(rowForEmbedding, now);
+  const embedding = await memoryEmbeddingFieldsAsync(rowForEmbedding, now);
   db.prepare(`
     INSERT INTO memory_items (
       id, user_id, project_id, scope, type, key, value, label, content, embedding_json, embedding_model, embedding_updated_at, source, confidence, status, created_at, updated_at
@@ -816,7 +908,7 @@ function refreshLongTermMemorySummary({ userId = DEFAULT_USER_ID, projectId = nu
   return getLongTermMemoryById(summaryId);
 }
 
-function markLongTermMemoryForgotten({ userId = DEFAULT_USER_ID, projectId = null, key = null, value = null, reason = "forgotten" }) {
+async function markLongTermMemoryForgotten({ userId = DEFAULT_USER_ID, projectId = null, key = null, value = null, reason = "forgotten" }) {
   const db = getMemoryDatabase();
   const now = new Date().toISOString();
   let sql = "UPDATE memory_items SET status = ?, updated_at = ? WHERE status = 'active'";
@@ -836,7 +928,7 @@ function markLongTermMemoryForgotten({ userId = DEFAULT_USER_ID, projectId = nul
     params.push(String(value));
   }
   const result = db.prepare(sql).run(...params);
-  refreshLongTermMemorySummary({ userId, projectId });
+  await refreshLongTermMemorySummary({ userId, projectId });
   return result.changes || 0;
 }
 
@@ -893,12 +985,14 @@ function buildLongTermMemoryFilters({ userId = DEFAULT_USER_ID, projectId = null
   };
 }
 
-function rankLongTermMemoryByVector(rows, query, limit) {
-  const queryVector = createLocalMemoryEmbedding(query);
+async function rankLongTermMemoryByVector(rows, query, limit) {
+  const queryEmbedding = await createMemoryQueryEmbedding(query);
   return rows
     .map((row) => ({
       ...row,
-      vector_score: cosineSimilarity(queryVector, parseMemoryEmbedding(row.embedding_json))
+      vector_score: row.embedding_model === queryEmbedding.model
+        ? cosineSimilarity(queryEmbedding.vector, parseMemoryEmbedding(row.embedding_json))
+        : 0
     }))
     .filter((row) => row.vector_score > 0.05)
     .sort((left, right) => {
@@ -919,7 +1013,7 @@ function mergeMemoryRows(primaryRows, vectorRows, limit) {
     .slice(0, limit);
 }
 
-function searchLongTermMemory({ userId = DEFAULT_USER_ID, projectId = null, query = "", limit = 5, status = "active", recordUsage = true } = {}) {
+async function searchLongTermMemory({ userId = DEFAULT_USER_ID, projectId = null, query = "", limit = 5, status = "active", recordUsage = true } = {}) {
   const db = getMemoryDatabase();
   const tokens = tokenizeMemoryQuery(query);
   const filters = buildLongTermMemoryFilters({ userId, projectId, status });
@@ -955,7 +1049,7 @@ function searchLongTermMemory({ userId = DEFAULT_USER_ID, projectId = null, quer
       ORDER BY m.updated_at DESC
       LIMIT 50
     `).all(...filters.params);
-    rows = mergeMemoryRows(rows, rankLongTermMemoryByVector(vectorCandidates, query, limit), limit);
+    rows = mergeMemoryRows(rows, await rankLongTermMemoryByVector(vectorCandidates, query, limit), limit);
   }
   if (!rows.length) {
     rows = db.prepare(`
@@ -3121,7 +3215,7 @@ function createAgentGraph(checkpointer = false) {
     .addNode("memory", async (state) => {
       const userId = normalizeUserId(state.userId);
       const preferences = getUserPreferences(state.store, userId);
-      const longTermMemories = searchLongTermMemory({ userId, projectId: state.project.id, query: state.question, limit: 5 });
+      const longTermMemories = await searchLongTermMemory({ userId, projectId: state.project.id, query: state.question, limit: 5 });
       const memoryLearningAllowed = state.inputSafety.status === "passed";
       const suggestions = memoryLearningAllowed
         ? createMemorySuggestions(state.store, state.project.id, state.question, userId)
@@ -3802,7 +3896,7 @@ async function handleApiUnlocked(req, res, pathname) {
         .slice(-20)
         .reverse();
       const longTermMemories = query
-        ? searchLongTermMemory({ userId, projectId, query, status, limit, recordUsage: false })
+        ? await searchLongTermMemory({ userId, projectId, query, status, limit, recordUsage: false })
         : listLongTermMemories({ userId, projectId, status, limit });
       sendJson(res, 200, {
         user_id: userId,
@@ -3814,7 +3908,8 @@ async function handleApiUnlocked(req, res, pathname) {
           query,
           status,
           limit,
-          embedding_model: MEMORY_EMBEDDING_MODEL,
+          embedding_model: resolveMemoryEmbeddingMode().model,
+          embedding_provider: resolveMemoryEmbeddingMode().provider,
           vector_search: !!query,
           result_count: longTermMemories.length
         }
@@ -3840,7 +3935,7 @@ async function handleApiUnlocked(req, res, pathname) {
         action: "confirmed",
         status: "confirmed"
       }));
-      const longTermMemory = upsertLongTermMemoryFromSuggestion(suggestion);
+      const longTermMemory = await upsertLongTermMemoryFromSuggestion(suggestion);
       await saveStore(store);
       sendJson(res, 200, {
         user_id: userId,
@@ -3892,7 +3987,7 @@ async function handleApiUnlocked(req, res, pathname) {
           label: body.value ? `Forgot ${body.key}: ${body.value}` : `Forgot ${body.key}`,
           status: "forgotten"
         }));
-        markLongTermMemoryForgotten({
+        await markLongTermMemoryForgotten({
           userId,
           projectId: body.projectId || null,
           key: body.key,
@@ -3909,7 +4004,7 @@ async function handleApiUnlocked(req, res, pathname) {
           label: "Cleared all user preferences",
           status: "cleared"
         }));
-        markLongTermMemoryForgotten({
+        await markLongTermMemoryForgotten({
           userId,
           projectId: body.projectId || null,
           reason: "forgotten"
@@ -3980,7 +4075,7 @@ async function handleApiUnlocked(req, res, pathname) {
       const retrievedSafety = scanRetrievedSafety(chunks);
       const preferences = getUserPreferences(store, userId);
       const memorySummary = summarizePreferences(preferences);
-      const longTermMemories = searchLongTermMemory({ userId, projectId: project.id, query: question, limit: 5 });
+      const longTermMemories = await searchLongTermMemory({ userId, projectId: project.id, query: question, limit: 5 });
       const longTermSummary = summarizeLongTermMemories(longTermMemories);
       const combinedMemorySummary = [
         memorySummary !== "none" ? memorySummary : null,
@@ -4286,6 +4381,11 @@ async function handleApiUnlocked(req, res, pathname) {
           required: AUTH_REQUIRED,
           token_count: AUTH_TOKEN_TO_USER.size,
           user_binding: "token"
+        },
+        memory_embedding: {
+          provider: resolveMemoryEmbeddingMode().provider,
+          model: resolveMemoryEmbeddingMode().model,
+          external_configured: resolveMemoryEmbeddingMode().provider !== "local"
         },
         schema_migrations: {
           store: "SQLite schema_migrations",

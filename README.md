@@ -20,10 +20,11 @@ npm run test:safety
 npm run test:memory
 npm run test:user-memory
 npm run test:auth
+npm run test:embedding
 npm test
 ```
 
-`npm run test:static` runs `scripts/static-checks.js`, which performs syntax checks, locale-copy consistency checks, frontend agent UI checks, text-quality checks, runtime dependency checks, API documentation sync checks, store-schema checks, smoke reliability checks, UI acceptance wiring checks, safety guardrail contract checks, safety red-team wiring checks, memory compaction checks, user memory isolation checks, auth boundary checks, and agent response contract checks without starting a server. `npm test` runs the static checks, smoke test, UI acceptance test, safety red-team test, memory compaction test, user memory isolation test, and auth boundary test.
+`npm run test:static` runs `scripts/static-checks.js`, which performs syntax checks, locale-copy consistency checks, frontend agent UI checks, text-quality checks, runtime dependency checks, API documentation sync checks, store-schema checks, smoke reliability checks, UI acceptance wiring checks, safety guardrail contract checks, safety red-team wiring checks, memory compaction checks, user memory isolation checks, auth boundary checks, embedding provider checks, and agent response contract checks without starting a server. `npm test` runs the static checks, smoke test, UI acceptance test, safety red-team test, memory compaction test, user memory isolation test, auth boundary test, and embedding provider test.
 
 Static check scripts use the `scripts/check-*.js` naming convention. `scripts/static-checks.js` syntax-checks all `scripts/*.js` files and discovers/runs `check-*.js` automatically.
 
@@ -38,6 +39,8 @@ The memory compaction test starts the server with an isolated data directory, co
 The user memory isolation test starts the server with an isolated data directory, runs two users through separate memory suggestions using `X-User-Id`, verifies cross-user confirmation returns `MEMORY_USER_MISMATCH`, and checks that preferences plus SQLite long-term memory stay isolated. Use `npm run test:user-memory` to run only this boundary check.
 
 The auth boundary test starts the server with `AI_PM_AUTH_REQUIRED=true`, verifies `/api/health` remains public, rejects missing or invalid tokens, blocks token/user mismatch with `AUTH_USER_MISMATCH`, and confirms memory suggestions are bound to the authenticated user. Use `npm run test:auth` to run only this boundary check.
+
+The embedding provider test starts a fake OpenAI-compatible `/v1/embeddings` server, configures the app with `MEMORY_EMBEDDING_PROVIDER=openai`, confirms memory, and verifies external embedding write and query paths use the configured model. Use `npm run test:embedding` to run only this boundary check.
 
 GitHub Actions runs `npm ci` and `npm test` on pushes to `main` and pull requests.
 
@@ -54,6 +57,10 @@ The project targets Node.js 24 because the long-term memory store uses the built
 | `MEMORY_DB_PATH` | `DATA_DIR/memory.sqlite` | SQLite database path for confirmed long-term memory items. |
 | `AI_PM_AUTH_REQUIRED` | unset | Set to `true` to require token authentication for API routes except `/api/health`. |
 | `AI_PM_USER_TOKENS` | unset | Token-to-user mapping, either JSON such as `{"token-a":"user-a"}` or comma-separated `token:userId` pairs. |
+| `MEMORY_EMBEDDING_PROVIDER` | unset | Set to `openai` to use an OpenAI-compatible embeddings endpoint for long-term memory vectors. |
+| `OPENAI_EMBEDDING_API_KEY` | `OPENAI_API_KEY` | API key for the embeddings endpoint when external memory embeddings are enabled. |
+| `OPENAI_EMBEDDING_BASE_URL` | `OPENAI_BASE_URL` or `https://api.openai.com` | Base URL for the embeddings endpoint; the app calls `/v1/embeddings`. |
+| `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model name used when external memory embeddings are enabled. |
 | `OPENAI_API_KEY` | unset | Enables AI-enhanced model calls when set. |
 | `OPENAI_BASE_URL` | `https://api.openai.com` | OpenAI-compatible API base URL. |
 | `OPENAI_MODEL` | `gpt-4o-mini` | Chat completion model name. |
@@ -90,7 +97,7 @@ Without an API key, the app falls back to a deterministic retrieval-based answer
 - The runtime uses Node.js plus LangGraph packages for the agent workflow and `@langchain/langgraph-checkpoint` for checkpoint-compatible graph execution.
 - GitHub imports use public repository ZIP downloads.
 - ZIP uploads are parsed locally by the server.
-- Runtime data is stored in `data/store.json` by default. Override with `DATA_DIR` or `STORE_PATH` for isolated runs and tests. Confirmed long-term memory is additionally stored in SQLite at `MEMORY_DB_PATH` using a `memory_items` table plus FTS search when available and local `embedding_json` vectors for deterministic similarity ranking. SQLite schema and data backfills are audited in `schema_migrations`. Non-GET API requests run through a write queue. Store saves write a same-directory temporary file and rename it into place to reduce partial-write corruption. If an existing store contains invalid JSON, it is moved aside with a `.corrupt-` suffix before a fresh normalized store is created.
+- Runtime data is stored in `data/store.json` by default. Override with `DATA_DIR` or `STORE_PATH` for isolated runs and tests. Confirmed long-term memory is additionally stored in SQLite at `MEMORY_DB_PATH` using a `memory_items` table plus FTS search when available and `embedding_json` vectors for similarity ranking. By default embeddings are deterministic local `local-hash-v1`; setting `MEMORY_EMBEDDING_PROVIDER=openai` switches memory write/query paths to an OpenAI-compatible `/v1/embeddings` endpoint with local fallback on provider failure. SQLite schema and data backfills are audited in `schema_migrations`. Non-GET API requests run through a write queue. Store saves write a same-directory temporary file and rename it into place to reduce partial-write corruption. If an existing store contains invalid JSON, it is moved aside with a `.corrupt-` suffix before a fresh normalized store is created.
 
 ## Current MVP Features
 

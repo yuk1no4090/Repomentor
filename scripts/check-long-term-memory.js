@@ -23,6 +23,11 @@ const requiredServerSnippets = [
   "recent_schema_migrations",
   "MEMORY_EMBEDDING_MODEL",
   "MEMORY_EMBEDDING_DIMS",
+  "MEMORY_EMBEDDING_PROVIDER",
+  "OPENAI_EMBEDDING_MODEL",
+  "OPENAI_EMBEDDING_BASE_URL",
+  "function createExternalMemoryEmbedding",
+  "function memoryEmbeddingFieldsAsync",
   "embedding_json",
   "function createLocalMemoryEmbedding",
   "function rankLongTermMemoryByVector",
@@ -55,6 +60,11 @@ const requiredDocSnippets = [
   "embedding_model",
   "schema_migrations"
 ];
+
+const packageJson = JSON.parse(await readFile("package.json", "utf8"));
+if (packageJson.scripts["test:embedding"] !== "node scripts/embedding-provider-test.js") {
+  throw new Error("package.json is missing test:embedding script");
+}
 
 const missingServerSnippets = requiredServerSnippets.filter((snippet) => !serverSource.includes(snippet));
 const missingAppSnippets = requiredAppSnippets.filter((snippet) => !appSource.includes(snippet));

@@ -34,7 +34,7 @@ Each node appends trace metadata so the UI can show the agent path instead of hi
 
 ## Memory Boundary
 
-Confirmed preference memory is stored in `data/store.json` under `userPreferencesByUser`, with legacy `userPreferences` retained for the default `local-user` profile. API clients can pass `userId` in JSON bodies or `X-User-Id` / `X-AI-PM-User-Id` headers; missing values resolve to `local-user` for local/backward-compatible use. Confirmed long-term memory items are also stored in SQLite at `MEMORY_DB_PATH` under the `memory_items` table, with `memory_items.user_id` for user isolation, an FTS5 index when available, and local `embedding_json` vectors for deterministic similarity ranking. The local embedding model is reported as `embedding_model=local-hash-v1`; it is an offline lexical vector for recall ranking, not an external semantic embedding service. Each long-term memory item keeps its source `projectId` for filtering and audit. Memory suggestions carry `userId` and `projectId` so the UI and API can verify which user and project produced the suggestion before confirmation or ignore actions.
+Confirmed preference memory is stored in `data/store.json` under `userPreferencesByUser`, with legacy `userPreferences` retained for the default `local-user` profile. API clients can pass `userId` in JSON bodies or `X-User-Id` / `X-AI-PM-User-Id` headers; missing values resolve to `local-user` for local/backward-compatible use. Confirmed long-term memory items are also stored in SQLite at `MEMORY_DB_PATH` under the `memory_items` table, with `memory_items.user_id` for user isolation, an FTS5 index when available, and `embedding_json` vectors for similarity ranking. By default the embedding model is `local-hash-v1`, an offline lexical vector for deterministic recall ranking. When `MEMORY_EMBEDDING_PROVIDER=openai` and an embedding API key are configured, memory write and query paths call an OpenAI-compatible `/v1/embeddings` endpoint using `OPENAI_EMBEDDING_MODEL`, with local fallback if the provider fails. Each long-term memory item keeps its source `projectId` for filtering and audit. Memory suggestions carry `userId` and `projectId` so the UI and API can verify which user and project produced the suggestion before confirmation or ignore actions.
 
 SQLite schema and data backfills are recorded in `schema_migrations`. Current audited migrations cover base memory/checkpoint tables, user-scoped memory columns, local embedding columns, legacy user backfill, user/status indexing, embedding backfill, and FTS rebuilds. `/api/health` returns the recent migration audit without exposing application data.
 
@@ -56,7 +56,7 @@ Memory mutations are also recorded under `memoryEvents`. Confirming, ignoring, s
 
 The Copilot inspector uses `GET /api/memory` plus `POST /api/memory/forget` as a lightweight memory manager. It shows confirmed preferences, recent long-term memory items, and audit events, and lets the user remove one key/value pair or clear all preferences without creating a separate page. `GET /api/memory` also supports `userId`, `q`/`query`, `status=active|forgotten|superseded|all`, and `limit`; the response includes `long_term_memory_query` so UI and tests can verify the exact memory inspection filter, `embedding_model`, and whether `vector_search` was active.
 
-Confirmed scalar preferences (`role`, `language`, and `detailLevel`) compact older conflicting long-term memory items by marking the previous active value as `superseded`. The runtime also maintains a `preference_summary` memory item with source `memory_compaction`, so later retrieval can use one compressed profile record instead of only raw suggestion records. Preference and summary memories are embedded when written, and older rows missing embeddings are backfilled on SQLite startup.
+Confirmed scalar preferences (`role`, `language`, and `detailLevel`) compact older conflicting long-term memory items by marking the previous active value as `superseded`. The runtime also maintains a `preference_summary` memory item with source `memory_compaction`, so later retrieval can use one compressed profile record instead of only raw suggestion records. Preference and summary memories are embedded when written, and older rows missing embeddings are backfilled on SQLite startup with the local embedding model.
 
 Confirmed preferences are applied to both impact analysis and ordinary Q&A. Retrieved long-term memory is also reported to both flows. Product Manager, QA, focus-area, language, and detail-level preferences can change answer emphasis, suggested next questions, and concise/detailed shaping after schema validation and before safety checks.
 
@@ -177,7 +177,7 @@ The active safety policy is centralized in `SAFETY_POLICY` and summarized on `/a
 The first version intentionally does not include:
 
 - external database persistence beyond local JSON and SQLite files
-- external semantic embedding provider integration
+- managed vector database integration
 - full account management, password login, sessions, roles, and org authorization
 - external database migration framework
 - LangSmith tracing
