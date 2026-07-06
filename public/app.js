@@ -912,6 +912,7 @@ function renderMemoryManager() {
   const remove = state.lang === "zh" ? "删除" : "Remove";
   const preferences = state.memory?.preferences || {};
   const events = (state.memory?.events || []).slice(0, 5);
+  const longTermMemories = (state.memory?.long_term_memories || []).slice(0, 5);
   const rows = memoryPreferenceRows(preferences);
   return html`
     <div class="inspector-section memory-manager">
@@ -941,6 +942,18 @@ function renderMemoryManager() {
             }).join("")}
           </div>
         ` : `<p class="muted">No memory events yet.</p>`}
+      </div>
+      <div class="memory-events">
+        <h4>Long-term memory</h4>
+        ${longTermMemories.length ? `
+          <div class="feedback-log">
+            ${longTermMemories.map((item) => `<div>
+              <code>${escapeHtml(item.type || "memory")}</code>
+              <span>${escapeHtml([item.key, item.value].filter(Boolean).join(": ") || item.content || "memory")}</span>
+              <span>${escapeHtml(item.confidence || "medium")}</span>
+            </div>`).join("")}
+          </div>
+        ` : `<p class="muted">No long-term memories yet.</p>`}
       </div>
     </div>
   `;
@@ -1898,7 +1911,8 @@ async function forgetMemoryPreference(key, value) {
     state.memory = {
       preferences: payload.preferences,
       suggestions: payload.suggestions || state.memory?.suggestions || [],
-      events: payload.events || state.memory?.events || []
+      events: payload.events || state.memory?.events || [],
+      long_term_memories: payload.long_term_memories || state.memory?.long_term_memories || []
     };
     await refreshMetrics(false);
     await refreshMemory(false);

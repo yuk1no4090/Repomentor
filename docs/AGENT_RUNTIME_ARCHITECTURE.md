@@ -33,7 +33,7 @@ Each node appends trace metadata so the UI can show the agent path instead of hi
 
 ## Memory Boundary
 
-Confirmed memory is stored in `data/store.json` under `userPreferences`. Confirmed preference memory is global for the local app instance, not project-scoped. Memory suggestions carry `projectId` so the UI and API can verify which project produced the suggestion before confirmation or ignore actions.
+Confirmed preference memory is stored in `data/store.json` under `userPreferences`. Confirmed preference memory is global for the local app instance, not project-scoped. Confirmed long-term memory items are also stored in SQLite at `MEMORY_DB_PATH` under the `memory_items` table, with an FTS5 index when available. Each long-term memory item keeps its source `projectId` for filtering and audit. Memory suggestions carry `projectId` so the UI and API can verify which project produced the suggestion before confirmation or ignore actions.
 
 Non-GET API requests run through an in-process write queue before reading and saving the store. Store saves use a same-directory temporary file followed by rename, so preference, feedback, and trace metadata writes are less likely to lose concurrent updates or leave a partial JSON file if the process is interrupted.
 
@@ -47,13 +47,13 @@ Supported preference fields:
 - `focusAreas`
 - `taskTypes`
 
-Memory suggestions are stored separately under `memorySuggestions`. The system may suggest memory from recent Agent Workflow or Direct Chat usage, but only `POST /api/memory/confirm` writes the value into long-lived preferences. `POST /api/memory/forget` can ignore one pending suggestion, clear one known preference key, or clear all preferences.
+Memory suggestions are stored separately under `memorySuggestions`. The system may suggest memory from recent Agent Workflow or Direct Chat usage, but only `POST /api/memory/confirm` writes the value into long-lived preferences and the SQLite long-term memory store. `POST /api/memory/forget` can ignore one pending suggestion, clear one known preference key, or clear all preferences, and active matching long-term memory items are marked forgotten.
 
 Memory mutations are also recorded under `memoryEvents`. Confirming, ignoring, selectively forgetting, or clearing preferences creates a lightweight audit event with project id, suggestion id when available, action, preference key/value, status, and timestamp. `GET /api/memory` returns recent events alongside preferences and suggestions.
 
-The Copilot inspector uses `GET /api/memory` plus `POST /api/memory/forget` as a lightweight memory manager. It shows confirmed preferences and lets the user remove one key/value pair or clear all preferences without creating a separate page.
+The Copilot inspector uses `GET /api/memory` plus `POST /api/memory/forget` as a lightweight memory manager. It shows confirmed preferences, recent long-term memory items, and audit events, and lets the user remove one key/value pair or clear all preferences without creating a separate page.
 
-Confirmed preferences are applied to both impact analysis and ordinary Q&A. Product Manager, QA, focus-area, language, and detail-level preferences can change answer emphasis, suggested next questions, and concise/detailed shaping after schema validation and before safety checks.
+Confirmed preferences are applied to both impact analysis and ordinary Q&A. Retrieved long-term memory is also reported to both flows. Product Manager, QA, focus-area, language, and detail-level preferences can change answer emphasis, suggested next questions, and concise/detailed shaping after schema validation and before safety checks.
 
 Suggestion records are normalized on store load/save so missing ids, timestamps, confidence values, and invalid statuses cannot destabilize the UI or metrics. Only pending suggestions can be confirmed or ignored. Confirm and forget requests may include `projectId`; when supplied, the suggestion must belong to that project or the request is rejected. Unknown preference keys are rejected instead of falling back to full memory deletion. Unknown preference values are rejected instead of writing arbitrary values into long-lived preferences. Ignored suggestions suppress the same key/value suggestion from being repeated. Selective forget clears one preference key while preserving the rest of the confirmed preference memory. Unsafe input does not create new memory suggestions; existing confirmed preferences may still be applied.
 

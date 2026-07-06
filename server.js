@@ -1,8 +1,9 @@
 import http from "node:http";
-import { promises as fs, readFileSync } from "node:fs";
+import { promises as fs, readFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
 import crypto from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 
 const PORT = Number(process.env.PORT || 3000);
@@ -15,6 +16,9 @@ const DATA_DIR = process.env.DATA_DIR
 const STORE_PATH = process.env.STORE_PATH
   ? path.resolve(process.env.STORE_PATH)
   : path.join(DATA_DIR, "store.json");
+const MEMORY_DB_PATH = process.env.MEMORY_DB_PATH
+  ? path.resolve(process.env.MEMORY_DB_PATH)
+  : path.join(DATA_DIR, "memory.sqlite");
 
 function readTextFileSafe(filePath) {
   try {
@@ -343,6 +347,234 @@ async function saveStore(store) {
     await fs.unlink(tempPath).catch(() => {});
     throw error;
   }
+}
+
+let memoryDb = null;
+let memoryDbFtsEnabled = false;
+
+function getMemoryDatabase() {
+  if (memoryDb) return memoryDb;
+  mkdirSync(path.dirname(MEMORY_DB_PATH), { recursive: true });
+  memoryDb = new DatabaseSync(MEMORY_DB_PATH);
+  memoryDb.exec(`
+    PRAGMA journal_mode = WAL;
+    CREATE TABLE IF NOT EXISTS memory_items (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      scope TEXT NOT NULL,
+      type TEXT NOT NULL,
+      key TEXT,
+      value TEXT,
+      label TEXT,
+      content TEXT NOT NULL,
+      source TEXT,
+      confidence TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      last_used_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_memory_items_project_status ON memory_items(project_id, status);
+    CREATE INDEX IF NOT EXISTS idx_memory_items_key_status ON memory_items(key, status);
+  `);
+  try {
+    memoryDb.exec(`
+      DROP TABLE IF EXISTS memory_items_fts;
+      CREATE VIRTUAL TABLE memory_items_fts
+      USING fts5(memory_id UNINDEXED, content, key, value, label);
+    `);
+    memoryDbFtsEnabled = true;
+    rebuildMemoryFtsIndex(memoryDb);
+  } catch (error) {
+    memoryDbFtsEnabled = false;
+    console.warn(`[memory] FTS5 unavailable for ${MEMORY_DB_PATH}; falling back to LIKE search. ${error.message}`);
+  }
+  return memoryDb;
+}
+
+function normalizeLongTermMemoryItem(item) {
+  if (!item || typeof item !== "object") return null;
+  return {
+    id: String(item.id || crypto.randomUUID()),
+    projectId: item.project_id || item.projectId || null,
+    scope: item.scope || "user",
+    type: item.type || "preference",
+    key: item.key || null,
+    value: item.value || null,
+    label: item.label || item.key || "Long-term memory",
+    content: item.content || "",
+    source: item.source || "memory",
+    confidence: item.confidence || "medium",
+    status: item.status || "active",
+    createdAt: item.created_at || item.createdAt || null,
+    updatedAt: item.updated_at || item.updatedAt || null,
+    lastUsedAt: item.last_used_at || item.lastUsedAt || null
+  };
+}
+
+function syncMemoryFtsRow(db, memoryId) {
+  if (!memoryDbFtsEnabled) return;
+  const row = db.prepare("SELECT id, content, key, value, label FROM memory_items WHERE id = ?").get(memoryId);
+  if (!row) return;
+  db.prepare("DELETE FROM memory_items_fts WHERE memory_id = ?").run(row.id);
+  db.prepare("INSERT INTO memory_items_fts(memory_id, content, key, value, label) VALUES (?, ?, ?, ?, ?)")
+    .run(row.id, row.content || "", row.key || "", row.value || "", row.label || "");
+}
+
+function rebuildMemoryFtsIndex(db) {
+  if (!memoryDbFtsEnabled) return;
+  db.prepare("DELETE FROM memory_items_fts").run();
+  const rows = db.prepare("SELECT id, content, key, value, label FROM memory_items").all();
+  const insert = db.prepare("INSERT INTO memory_items_fts(memory_id, content, key, value, label) VALUES (?, ?, ?, ?, ?)");
+  rows.forEach((row) => {
+    insert.run(row.id, row.content || "", row.key || "", row.value || "", row.label || "");
+  });
+}
+
+function upsertLongTermMemoryFromSuggestion(suggestion) {
+  if (!suggestion) return null;
+  const db = getMemoryDatabase();
+  const now = new Date().toISOString();
+  const id = `suggestion_${suggestion.id}`;
+  const content = [
+    `User preference ${suggestion.key}: ${suggestion.value}.`,
+    suggestion.label ? `Label: ${suggestion.label}.` : "",
+    suggestion.reason ? `Reason: ${suggestion.reason}` : ""
+  ].filter(Boolean).join(" ");
+  db.prepare(`
+    INSERT INTO memory_items (
+      id, project_id, scope, type, key, value, label, content, source, confidence, status, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      project_id = excluded.project_id,
+      scope = excluded.scope,
+      type = excluded.type,
+      key = excluded.key,
+      value = excluded.value,
+      label = excluded.label,
+      content = excluded.content,
+      source = excluded.source,
+      confidence = excluded.confidence,
+      status = excluded.status,
+      updated_at = excluded.updated_at
+  `).run(
+    id,
+    suggestion.projectId || null,
+    "user",
+    "preference",
+    suggestion.key,
+    String(suggestion.value),
+    suggestion.label || suggestion.key,
+    content,
+    `memory_suggestion:${suggestion.id}`,
+    suggestion.confidence || "medium",
+    "active",
+    suggestion.createdAt || now,
+    now
+  );
+  syncMemoryFtsRow(db, id);
+  return getLongTermMemoryById(id);
+}
+
+function markLongTermMemoryForgotten({ projectId = null, key = null, value = null, reason = "forgotten" }) {
+  const db = getMemoryDatabase();
+  const now = new Date().toISOString();
+  let sql = "UPDATE memory_items SET status = ?, updated_at = ? WHERE status = 'active'";
+  const params = [reason, now];
+  if (projectId) {
+    sql += " AND (project_id = ? OR project_id IS NULL)";
+    params.push(projectId);
+  }
+  if (key) {
+    sql += " AND key = ?";
+    params.push(key);
+  }
+  if (value) {
+    sql += " AND value = ?";
+    params.push(String(value));
+  }
+  const result = db.prepare(sql).run(...params);
+  return result.changes || 0;
+}
+
+function getLongTermMemoryById(id) {
+  const item = getMemoryDatabase().prepare("SELECT * FROM memory_items WHERE id = ?").get(id);
+  return normalizeLongTermMemoryItem(item);
+}
+
+function tokenizeMemoryQuery(text) {
+  return [...String(text || "").matchAll(/[\p{L}\p{N}_]+/gu)]
+    .map((match) => match[0].toLowerCase())
+    .filter((token) => token.length >= 2)
+    .slice(0, 8);
+}
+
+function searchLongTermMemory({ projectId = null, query = "", limit = 5 } = {}) {
+  const db = getMemoryDatabase();
+  const tokens = tokenizeMemoryQuery(query);
+  const scopedParams = projectId ? [projectId] : [];
+  const scopeSql = projectId ? "AND (m.project_id = ? OR m.project_id IS NULL)" : "";
+  let rows = [];
+  if (tokens.length && memoryDbFtsEnabled) {
+    const ftsQuery = tokens.map((token) => `${token.replaceAll('"', "")}*`).join(" OR ");
+    rows = db.prepare(`
+      SELECT m.* FROM memory_items_fts f
+      JOIN memory_items m ON m.id = f.memory_id
+      WHERE memory_items_fts MATCH ?
+        AND m.status = 'active'
+        ${scopeSql}
+      ORDER BY rank
+      LIMIT ?
+    `).all(ftsQuery, ...scopedParams, limit);
+  }
+  if (!rows.length && tokens.length) {
+    const like = `%${tokens[0]}%`;
+    rows = db.prepare(`
+      SELECT m.* FROM memory_items m
+      WHERE m.status = 'active'
+        ${scopeSql}
+        AND (lower(m.content) LIKE ? OR lower(m.key) LIKE ? OR lower(m.value) LIKE ? OR lower(m.label) LIKE ?)
+      ORDER BY m.updated_at DESC
+      LIMIT ?
+    `).all(...scopedParams, like, like, like, like, limit);
+  }
+  if (!rows.length) {
+    rows = db.prepare(`
+      SELECT m.* FROM memory_items m
+      WHERE m.status = 'active'
+        ${scopeSql}
+      ORDER BY m.updated_at DESC
+      LIMIT ?
+    `).all(...scopedParams, limit);
+  }
+  const now = new Date().toISOString();
+  rows.forEach((row) => {
+    db.prepare("UPDATE memory_items SET last_used_at = ? WHERE id = ?").run(now, row.id);
+  });
+  return rows.map(normalizeLongTermMemoryItem).filter(Boolean);
+}
+
+function listLongTermMemories({ projectId = null, limit = 20 } = {}) {
+  const db = getMemoryDatabase();
+  const rows = projectId
+    ? db.prepare(`
+      SELECT * FROM memory_items
+      WHERE status = 'active' AND (project_id = ? OR project_id IS NULL)
+      ORDER BY updated_at DESC
+      LIMIT ?
+    `).all(projectId, limit)
+    : db.prepare(`
+      SELECT * FROM memory_items
+      WHERE status = 'active'
+      ORDER BY updated_at DESC
+      LIMIT ?
+    `).all(limit);
+  return rows.map(normalizeLongTermMemoryItem).filter(Boolean);
+}
+
+function summarizeLongTermMemories(items = []) {
+  if (!items.length) return "none";
+  return items.map((item) => `${item.type}:${item.key || "memory"}=${item.value || item.content}`).join("; ");
 }
 
 function createEmptyPreferences() {
@@ -2231,22 +2463,32 @@ function createAgentGraph() {
     })
     .addNode("memory", async (state) => {
       const preferences = state.store.userPreferences || createEmptyPreferences();
+      const longTermMemories = searchLongTermMemory({ projectId: state.project.id, query: state.question, limit: 5 });
       const memoryLearningAllowed = state.inputSafety.status === "passed";
       const suggestions = memoryLearningAllowed
         ? createMemorySuggestions(state.store, state.project.id, state.question)
         : [];
       const summary = summarizePreferences(preferences);
+      const longTermSummary = summarizeLongTermMemories(longTermMemories);
+      const combinedSummary = [summary !== "none" ? summary : null, longTermSummary !== "none" ? `long_term=${longTermSummary}` : null]
+        .filter(Boolean)
+        .join("; ") || "none";
       return {
         preferences,
         memorySuggestions: suggestions,
-        memoryUsed: { used: summary !== "none", summary },
+        memoryUsed: {
+          used: combinedSummary !== "none",
+          summary: combinedSummary,
+          long_term: longTermMemories
+        },
         trace: [makeTraceStep({
-          step: "2. Load user preference memory",
+          step: "2. Load user preference and long-term memory",
           tool: "memory.load_preferences",
-          purpose: "Apply confirmed user preferences and create explicit suggestions for unconfirmed memory.",
+          purpose: "Apply confirmed user preferences, retrieve long-term memory, and create explicit suggestions for unconfirmed memory.",
           input: { project_id: state.project.id },
           output: {
-            memory_used: summary,
+            memory_used: combinedSummary,
+            long_term_memories: longTermMemories.length,
             suggestions: suggestions.length,
             learning_skipped: !memoryLearningAllowed,
             skip_reason: memoryLearningAllowed ? null : "input_safety_needs_review"
@@ -2863,10 +3105,12 @@ async function handleApiUnlocked(req, res, pathname) {
         .filter((item) => !projectId || item.projectId === projectId || item.projectId == null)
         .slice(-20)
         .reverse();
+      const longTermMemories = listLongTermMemories({ projectId, limit: 20 });
       sendJson(res, 200, {
         preferences: store.userPreferences,
         suggestions,
-        events
+        events,
+        long_term_memories: longTermMemories
       });
       return;
     }
@@ -2886,11 +3130,13 @@ async function handleApiUnlocked(req, res, pathname) {
         action: "confirmed",
         status: "confirmed"
       }));
+      const longTermMemory = upsertLongTermMemoryFromSuggestion(suggestion);
       await saveStore(store);
       sendJson(res, 200, {
         preferences: store.userPreferences,
         suggestion,
-        event: store.memoryEvents.at(-1)
+        event: store.memoryEvents.at(-1),
+        long_term_memory: longTermMemory
       });
       return;
     }
@@ -2929,6 +3175,12 @@ async function handleApiUnlocked(req, res, pathname) {
           label: body.value ? `Forgot ${body.key}: ${body.value}` : `Forgot ${body.key}`,
           status: "forgotten"
         }));
+        markLongTermMemoryForgotten({
+          projectId: body.projectId || null,
+          key: body.key,
+          value: body.value || null,
+          reason: "forgotten"
+        });
       } else {
         if (body.projectId) findProject(store, body.projectId);
         store.userPreferences = createEmptyPreferences();
@@ -2938,12 +3190,17 @@ async function handleApiUnlocked(req, res, pathname) {
           label: "Cleared all user preferences",
           status: "cleared"
         }));
+        markLongTermMemoryForgotten({
+          projectId: body.projectId || null,
+          reason: "forgotten"
+        });
       }
       await saveStore(store);
       sendJson(res, 200, {
         preferences: store.userPreferences,
         suggestions: store.memorySuggestions.slice(-20).reverse(),
-        events: store.memoryEvents.slice(-20).reverse()
+        events: store.memoryEvents.slice(-20).reverse(),
+        long_term_memories: listLongTermMemories({ projectId: body.projectId || null, limit: 20 })
       });
       return;
     }
@@ -3001,6 +3258,12 @@ async function handleApiUnlocked(req, res, pathname) {
       const retrievedSafety = scanRetrievedSafety(chunks);
       const preferences = store.userPreferences || createEmptyPreferences();
       const memorySummary = summarizePreferences(preferences);
+      const longTermMemories = searchLongTermMemory({ projectId: project.id, query: question, limit: 5 });
+      const longTermSummary = summarizeLongTermMemories(longTermMemories);
+      const combinedMemorySummary = [
+        memorySummary !== "none" ? memorySummary : null,
+        longTermSummary !== "none" ? `long_term=${longTermSummary}` : null
+      ].filter(Boolean).join("; ") || "none";
       const memoryLearningAllowed = inputSafety.status === "passed";
       const memorySuggestions = memoryLearningAllowed
         ? createMemorySuggestions(store, project.id, question)
@@ -3015,7 +3278,11 @@ async function handleApiUnlocked(req, res, pathname) {
       } else {
         payload = applyPreferencesToQa(payload, preferences);
       }
-      payload.memory_used = { used: memorySummary !== "none", summary: memorySummary };
+      payload.memory_used = {
+        used: combinedMemorySummary !== "none",
+        summary: combinedMemorySummary,
+        long_term: longTermMemories
+      };
       payload.memory_suggestions = memorySuggestions;
       payload.llm_used = !!modelResult.event.llm_used;
       // Normalize uncertainty to string for consistent frontend + metrics

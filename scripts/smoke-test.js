@@ -957,6 +957,10 @@ async function main() {
     assert(Array.isArray(memory.events), "memory API did not expose memory events");
     assert(memory.events.some((item) => item.action === "confirmed" && item.status === "confirmed" && suggestionIds.includes(item.suggestionId)), "confirmed memory event not visible");
     assert(memory.preferences.role || memory.preferences.detailLevel || memory.preferences.focusAreas.length, "confirmed memory did not update preferences");
+    assert(Array.isArray(memory.long_term_memories), "memory API did not expose long-term memories");
+    assert(memory.long_term_memories.some((item) => item.type === "preference" && item.status === "active" && suggestionIds.includes(String(item.source || "").replace("memory_suggestion:", ""))), "confirmed memory was not written to long-term memory store");
+    const memoryDbPath = path.join(dataDir, "memory.sqlite");
+    await readFile(memoryDbPath);
 
     const remembered = await request("/api/agent-impact", {
       method: "POST",
@@ -967,6 +971,8 @@ async function main() {
     });
     assert(remembered.payload?.memory_used?.used === true, "confirmed memory was not applied to the next agent run");
     assert(remembered.payload.memory_used.summary.includes("Product Manager"), "product manager preference was not used");
+    assert(remembered.payload.memory_used.summary.includes("long_term="), "agent run did not report retrieved long-term memory");
+    assert(Array.isArray(remembered.payload.memory_used.long_term) && remembered.payload.memory_used.long_term.length > 0, "agent run did not include long-term memory records");
     assert(remembered.payload.memory_used.summary.includes("detail=concise"), "concise detail preference was not used");
     assert(remembered.payload.open_questions.some((item) => item.includes("user-facing requirement")), "product manager preference did not influence open questions");
     assert(!remembered.payload.memory_suggestions.some((item) => item.key === "role" && item.value === "Product Manager"), "confirmed role preference was suggested again");
@@ -980,6 +986,7 @@ async function main() {
     });
     assert(rememberedChatImpact.payload?.memory_used?.used === true, "confirmed memory was not reported by direct chat harness");
     assert(rememberedChatImpact.payload.memory_used.summary.includes("Product Manager"), "direct chat harness did not report role memory");
+    assert(rememberedChatImpact.payload.memory_used.summary.includes("long_term="), "direct chat harness did not report long-term memory");
     assert(rememberedChatImpact.payload.open_questions.some((item) => item.includes("user-facing requirement")), "direct chat impact did not apply product manager memory");
     assert(/^chat_[0-9a-f-]{36}$/.test(rememberedChatImpact.payload?.harness?.run_id || ""), "direct chat harness did not report a stable run_id");
     assert(rememberedChatImpact.payload.harness.runtime === "Direct Chat Harness", "direct chat impact did not report chat harness");
@@ -1029,6 +1036,7 @@ async function main() {
     assert(forgotDetail.preferences.role === "Product Manager", "selective forget should preserve role preference");
     assert(!forgotDetail.preferences.detailLevel, "selective forget did not clear detailLevel preference");
     assert(forgotDetail.events.some((item) => item.action === "forgot_preference" && item.key === "detailLevel" && item.status === "forgotten"), "selective forget did not create memory audit event");
+    assert(!forgotDetail.long_term_memories.some((item) => item.key === "detailLevel" && item.status === "active"), "selective forget did not remove active long-term detail memory");
     const afterSelectiveForget = await request("/api/agent-impact", {
       method: "POST",
       body: JSON.stringify({

@@ -36,6 +36,7 @@ The project targets Node.js 20. Local Node version managers can read `.nvmrc`; C
 | `HOST` | `127.0.0.1` | HTTP server host. |
 | `DATA_DIR` | `data` | Directory for runtime JSON storage. |
 | `STORE_PATH` | `DATA_DIR/store.json` | Exact runtime store file path. |
+| `MEMORY_DB_PATH` | `DATA_DIR/memory.sqlite` | SQLite database path for confirmed long-term memory items. |
 | `OPENAI_API_KEY` | unset | Enables AI-enhanced model calls when set. |
 | `OPENAI_BASE_URL` | `https://api.openai.com` | OpenAI-compatible API base URL. |
 | `OPENAI_MODEL` | `gpt-4o-mini` | Chat completion model name. |
@@ -72,7 +73,7 @@ Without an API key, the app falls back to a deterministic retrieval-based answer
 - The runtime uses Node.js plus LangGraph packages for the agent workflow.
 - GitHub imports use public repository ZIP downloads.
 - ZIP uploads are parsed locally by the server.
-- Runtime data is stored in `data/store.json` by default. Override with `DATA_DIR` or `STORE_PATH` for isolated runs and tests. Non-GET API requests run through a write queue. Store saves write a same-directory temporary file and rename it into place to reduce partial-write corruption. If an existing store contains invalid JSON, it is moved aside with a `.corrupt-` suffix before a fresh normalized store is created.
+- Runtime data is stored in `data/store.json` by default. Override with `DATA_DIR` or `STORE_PATH` for isolated runs and tests. Confirmed long-term memory is additionally stored in SQLite at `MEMORY_DB_PATH` using a `memory_items` table plus FTS search when available. Non-GET API requests run through a write queue. Store saves write a same-directory temporary file and rename it into place to reduce partial-write corruption. If an existing store contains invalid JSON, it is moved aside with a `.corrupt-` suffix before a fresh normalized store is created.
 
 ## Current MVP Features
 
@@ -83,7 +84,7 @@ Without an API key, the app falls back to a deterministic retrieval-based answer
 - Impact analysis with impacted modules, risk level, testing suggestions, and open questions.
 - Agent Workflow tab backed by a LangGraph StateGraph with classifier, retriever, context expansion, impact analysis, QA planning, memory, safety guardrails, and structured synthesis.
 - Onboarding plans run through a lightweight deterministic harness with trace, safety, guardrails, citations, and pending memory suggestions.
-- User preference memory suggestions that require explicit confirmation before being saved. Confirmed preferences are global to the local app instance and can shape both impact analysis and ordinary Q&A emphasis; suggestions carry project ownership so confirmation/ignore actions can verify the active project. Ignored suggestions suppress the same key/value suggestion from being repeated. The Copilot inspector includes a lightweight preference memory manager for viewing, removing one preference value, or clearing all preferences.
+- User preference memory suggestions that require explicit confirmation before being saved. Confirmed preferences are global to the local app instance and can shape both impact analysis and ordinary Q&A emphasis; confirmed memory is also written to SQLite long-term memory for searchable reuse across later Agent Workflow and Direct Chat runs. Memory suggestions carry project ownership so confirmation/ignore actions can verify the active project. Ignored suggestions suppress the same key/value suggestion from being repeated. The Copilot inspector includes a lightweight preference and long-term memory manager for viewing, removing one preference value, or clearing all preferences.
 - Application-level AI safety checks for prompt injection, system/developer prompt leakage requests, secret requests, read-only tool boundaries, retrieved sensitive content, citation validation, uncited impact areas, sensitive output, and overconfidence.
 - Evaluation dashboard with total questions, agent runs, helpful rate, citation coverage, citation status distribution, uncertainty rate, negative feedback, high-risk questions, guardrail hits, memory confirmations, memory status distribution, recent memory events, fallback runs, harness snapshot count, average response time, safety risk and status distribution, import safety risk/status, recent safety events, harness runtime, model mode, tool policy, budget status, schema status, LLM usage, and trace tool distribution, fallback reason distribution, recent harness runs, and recent feedback correlated with harness run ids.
 
