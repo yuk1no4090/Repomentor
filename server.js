@@ -528,6 +528,78 @@ function getMemoryDatabase() {
   return memoryDb;
 }
 
+function getMemoryDatabaseStatus() {
+  const db = getMemoryDatabase();
+  const memoryCounts = db.prepare(`
+    SELECT status, COUNT(*) AS count
+    FROM memory_items
+    GROUP BY status
+    ORDER BY status
+  `).all().map((row) => ({
+    status: row.status || "unknown",
+    count: Number(row.count || 0)
+  }));
+  const memoryTypeCounts = db.prepare(`
+    SELECT type, COUNT(*) AS count
+    FROM memory_items
+    GROUP BY type
+    ORDER BY type
+  `).all().map((row) => ({
+    type: row.type || "unknown",
+    count: Number(row.count || 0)
+  }));
+  const embeddingRows = db.prepare(`
+    SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN embedding_json IS NOT NULL AND embedding_json != '' THEN 1 ELSE 0 END) AS embedded
+    FROM memory_items
+  `).get();
+  const checkpointCount = db.prepare("SELECT COUNT(*) AS count FROM langgraph_checkpoints").get();
+  const migrationCount = db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get();
+  const latestMemory = db.prepare("SELECT MAX(updated_at) AS updated_at FROM memory_items").get();
+  let sizeBytes = 0;
+  try {
+    sizeBytes = readFileSync(MEMORY_DB_PATH).byteLength;
+  } catch {
+    sizeBytes = 0;
+  }
+  return {
+    store: "SQLite memory database",
+    path_basename: path.basename(MEMORY_DB_PATH),
+    directory_basename: path.basename(path.dirname(MEMORY_DB_PATH)),
+    size_bytes: sizeBytes,
+    fts_enabled: memoryDbFtsEnabled,
+    embedding_model: resolveMemoryEmbeddingMode().model,
+    embedding_provider: resolveMemoryEmbeddingMode().provider,
+    vector_search: true,
+    memory_counts: memoryCounts,
+    memory_type_counts: memoryTypeCounts,
+    embedded_memory_items: Number(embeddingRows?.embedded || 0),
+    total_memory_items: Number(embeddingRows?.total || 0),
+    langgraph_checkpoint_count: Number(checkpointCount?.count || 0),
+    schema_migration_count: Number(migrationCount?.count || 0),
+    latest_memory_updated_at: latestMemory?.updated_at || null
+  };
+}
+
+async function createMemoryDatabaseBackup() {
+  const db = getMemoryDatabase();
+  db.exec("PRAGMA wal_checkpoint(FULL);");
+  await fs.mkdir(path.dirname(MEMORY_DB_PATH), { recursive: true });
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupPath = path.join(path.dirname(MEMORY_DB_PATH), `memory-${timestamp}.sqlite.bak`);
+  await fs.copyFile(MEMORY_DB_PATH, backupPath);
+  const bytes = readFileSync(backupPath);
+  return {
+    store: "SQLite memory database",
+    path_basename: path.basename(backupPath),
+    directory_basename: path.basename(path.dirname(backupPath)),
+    size_bytes: bytes.byteLength,
+    sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+    createdAt: new Date().toISOString()
+  };
+}
+
 function normalizeLongTermMemoryItem(item) {
   if (!item || typeof item !== "object") return null;
   return {
@@ -1541,7 +1613,7 @@ function requiredScopeForRequest(req, pathname) {
   if (pathname === "/api/health") return null;
   if (req.method === "GET") return "project:read";
   if (pathname === "/api/import") return "project:write";
-  if (pathname === "/api/memory/confirm" || pathname === "/api/memory/forget") return "memory:write";
+  if (pathname === "/api/memory/confirm" || pathname === "/api/memory/forget" || pathname === "/api/memory/backup") return "memory:write";
   if (pathname === "/api/chat" || pathname === "/api/agent-impact" || pathname === "/api/onboarding") return "answer:write";
   if (pathname === "/api/feedback") return "feedback:write";
   return "project:read";
@@ -4037,6 +4109,17 @@ async function handleApiUnlocked(req, res, pathname) {
           result_count: longTermMemories.length
         }
       });
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/memory/status") {
+      sendJson(res, 200, { memory_database: getMemoryDatabaseStatus() });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/memory/backup") {
+      const backup = await createMemoryDatabaseBackup();
+      sendJson(res, 200, { backup });
       return;
     }
 

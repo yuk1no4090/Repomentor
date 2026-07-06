@@ -147,6 +147,8 @@ The `modelAdapter` boundary uses an OpenAI-compatible chat completions call when
 | `GET` | `/api/langgraph-checkpoint` | Return one persisted LangGraph checkpoint summary by `projectId`, `runId`, and `checkpointId` for read-only time-travel inspection. |
 | `GET` | `/api/langgraph-replay` | Return a read-only checkpoint summary replay for one LangGraph run by `projectId` and `runId`. |
 | `GET` | `/api/memory` | Return confirmed preferences, recent memory suggestions, memory audit events, and long-term memories for the resolved user. Supports `X-User-Id` or `userId`, plus `projectId`, `q`/`query`, `status=active|forgotten|superseded|all`, and `limit` for memory inspection. |
+| `GET` | `/api/memory/status` | Return SQLite long-term memory database health, counts, migration count, FTS status, and embedding mode without exposing memory content. |
+| `POST` | `/api/memory/backup` | Create a same-directory SQLite memory database backup and return its basename, size, and SHA-256 checksum. |
 | `POST` | `/api/memory/confirm` | Confirm a pending memory suggestion for the resolved user and update preferences. |
 | `POST` | `/api/memory/forget` | Ignore a suggestion, clear one preference, or clear all preferences for the resolved user. |
 
@@ -193,7 +195,7 @@ Common API errors include:
 - `harness`: LangGraph runtime, run id, model mode, model adapter, executed steps, duration, fallback status, fallback reason, schema status, budgets, budget status, read-only tool registry, model error codes, and errors.
 - `safety`: aggregate safety status, risk types, and guardrail checks.
 
-`GET /api/memory` returns `long_term_memories` plus `long_term_memory_query` so the UI and tests can verify which query, status filter, limit, `embedding_model`, and `vector_search` setting produced the memory list.
+`GET /api/memory` returns `long_term_memories` plus `long_term_memory_query` so the UI and tests can verify which query, status filter, limit, `embedding_model`, and `vector_search` setting produced the memory list. `GET /api/memory/status` exposes operational database counts and migration health without returning memory content. `POST /api/memory/backup` checkpoints WAL state, writes a same-directory `.sqlite.bak` copy, and returns a SHA-256 checksum so operators can verify backup integrity.
 
 Evaluation metrics are scoped to the requested `projectId`, so safety status, output redaction counts, recent redaction events, memory status, memory event action counts, recent memory events, harness runtime, model mode, tool policy, recent tool policy events, budget status, schema status, LLM usage, trace tool usage, fallback, response-time counts, recent safety events, recent harness runs, recent LangGraph checkpoints, recent schema migrations, and recent feedback run correlation reflect the currently selected imported repository. Metrics ignore unknown feedback types so old or manually edited store data cannot pollute quality rates and failure-reason counts.
 

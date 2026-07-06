@@ -1001,6 +1001,18 @@ async function main() {
     assert(searchedMemory.long_term_memories.some((item) => item.value === "Product Manager"), "memory search did not find Product Manager preference");
     const memoryDbPath = path.join(dataDir, "memory.sqlite");
     await readFile(memoryDbPath);
+    const memoryStatus = await request("/api/memory/status");
+    assert(memoryStatus.memory_database?.store === "SQLite memory database", "memory status did not report SQLite store");
+    assert(memoryStatus.memory_database.path_basename === "memory.sqlite", "memory status exposed wrong database basename");
+    assert(memoryStatus.memory_database.total_memory_items >= memory.long_term_memories.length, "memory status item count was too low");
+    assert(memoryStatus.memory_database.schema_migration_count >= 1, "memory status did not expose migration count");
+    assert(memoryStatus.memory_database.fts_enabled === true, "memory status did not expose FTS availability");
+    const memoryBackup = await request("/api/memory/backup", { method: "POST" });
+    assert(memoryBackup.backup?.store === "SQLite memory database", "memory backup did not report SQLite store");
+    assert(/\.sqlite\.bak$/.test(memoryBackup.backup.path_basename || ""), "memory backup returned wrong file basename");
+    assert(/^[a-f0-9]{64}$/.test(memoryBackup.backup.sha256 || ""), "memory backup did not return sha256 checksum");
+    const dataFilesAfterBackup = await readdir(dataDir);
+    assert(dataFilesAfterBackup.includes(memoryBackup.backup.path_basename), "memory backup file was not created in data directory");
 
     const remembered = await request("/api/agent-impact", {
       method: "POST",

@@ -34,9 +34,14 @@ const requiredServerSnippets = [
   "function normalizeLongTermMemoryStatusFilter",
   "function compactLongTermPreferenceMemories",
   "function refreshLongTermMemorySummary",
+  "function getMemoryDatabaseStatus",
+  "function createMemoryDatabaseBackup",
   "preference_summary",
   "memory_compaction",
   "long_term_memory_query",
+  "memory_database",
+  "\"/api/memory/status\"",
+  "\"/api/memory/backup\"",
   "vector_search",
   "long_term_memories",
   "long_term:"
@@ -58,7 +63,10 @@ const requiredDocSnippets = [
   "superseded",
   "preference_summary",
   "embedding_model",
-  "schema_migrations"
+  "schema_migrations",
+  "/api/memory/status",
+  "/api/memory/backup",
+  "SHA-256 checksum"
 ];
 
 const packageJson = JSON.parse(await readFile("package.json", "utf8"));

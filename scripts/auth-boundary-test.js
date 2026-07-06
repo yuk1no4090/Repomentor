@@ -192,6 +192,15 @@ async function run() {
     assert(crossUserConfirm.status === 409, "cross-user confirm should return 409");
     assert(crossUserConfirm.payload.code === "MEMORY_USER_MISMATCH", "cross-user confirm did not return MEMORY_USER_MISMATCH");
 
+    const viewerBackup = await request(baseUrl, "/api/memory/backup", {
+      method: "POST",
+      token: "viewer-token",
+      expectOk: false
+    });
+    assert(viewerBackup.status === 403, "viewer token should not be allowed to create memory backups");
+    assert(viewerBackup.payload.code === "AUTH_SCOPE_FORBIDDEN", "viewer backup did not return AUTH_SCOPE_FORBIDDEN");
+    assert(viewerBackup.payload.required_scope === "memory:write", "viewer backup required wrong scope");
+
     const { payload: confirmed } = await request(baseUrl, "/api/memory/confirm", {
       method: "POST",
       token: "token-a",
