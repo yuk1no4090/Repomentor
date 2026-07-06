@@ -129,14 +129,31 @@ async function run() {
     assert(health.auth?.required === true, "health did not report auth required");
     assert(health.auth?.token_count === 3, "health did not report configured auth tokens");
     assert(health.auth?.scopes_enabled === true, "health did not report auth scopes enabled");
+    assert(health.auth?.users_indexed === 3, "health did not report indexed auth users");
 
     const missingAuth = await request(baseUrl, "/api/projects", { expectOk: false });
     assert(missingAuth.status === 401, "missing auth should return 401");
     assert(missingAuth.payload.code === "AUTH_REQUIRED", "missing auth did not return AUTH_REQUIRED");
 
+    const missingMe = await request(baseUrl, "/api/auth/me", { expectOk: false });
+    assert(missingMe.status === 401, "missing auth me should return 401");
+    assert(missingMe.payload.code === "AUTH_REQUIRED", "missing auth me did not return AUTH_REQUIRED");
+
     const invalidAuth = await request(baseUrl, "/api/projects", { token: "bad-token", expectOk: false });
     assert(invalidAuth.status === 401, "invalid auth should return 401");
     assert(invalidAuth.payload.code === "AUTH_INVALID", "invalid auth did not return AUTH_INVALID");
+
+    const { payload: viewerMe } = await request(baseUrl, "/api/auth/me", { token: "viewer-token" });
+    assert(viewerMe.identity?.user_id === "viewer", "auth me did not return viewer user id");
+    assert(viewerMe.identity?.role === "viewer", "auth me did not return viewer role");
+    assert(viewerMe.identity?.scopes?.includes("project:read"), "auth me did not return viewer scopes");
+
+    const { payload: authUsers } = await request(baseUrl, "/api/auth/users", { token: "token-a" });
+    assert(authUsers.users.length === 3, "auth users did not include configured users");
+    assert(authUsers.users.some((user) => user.id === "user-a" && user.role === "admin"), "auth users missing user-a admin");
+    assert(authUsers.users.some((user) => user.id === "viewer" && user.role === "viewer"), "auth users missing viewer role");
+    assert(!JSON.stringify(authUsers).includes("token-a"), "auth users should not expose token values");
+    assert(!JSON.stringify(authUsers).includes("viewer-token"), "auth users should not expose viewer token value");
 
     const viewerRead = await request(baseUrl, "/api/projects", { token: "viewer-token" });
     assert(Array.isArray(viewerRead.payload.projects), "viewer token should be allowed to read projects");

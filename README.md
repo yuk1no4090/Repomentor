@@ -115,6 +115,7 @@ Without an API key, the app falls back to a deterministic retrieval-based answer
 - Impact analysis with impacted modules, risk level, testing suggestions, and open questions.
 - Agent Workflow tab backed by a LangGraph StateGraph with classifier, retriever, context expansion, impact analysis, QA planning, memory, safety guardrails, structured synthesis, and MemorySaver checkpointing.
 - Onboarding plans run through a lightweight deterministic harness with trace, safety, guardrails, citations, and pending memory suggestions.
+- Optional token-bound auth with user, role, and scope metadata. `/api/auth/me` returns the current resolved identity, while `/api/auth/users` lists configured users for audit without exposing token values. This is not a password-login or session-management system.
 - User preference memory suggestions that require explicit confirmation before being saved. Confirmed preferences are scoped by `userId`, defaulting to `local-user` for local/backward-compatible use. API clients can pass `userId` in JSON bodies or the `X-User-Id` header. Confirmed preferences can shape both impact analysis and ordinary Q&A emphasis; confirmed memory is also written to SQLite long-term memory for searchable reuse across later Agent Workflow and Direct Chat runs. Memory suggestions carry user and project ownership so confirmation/ignore actions can verify the active boundary. Ignored suggestions suppress the same key/value suggestion from being repeated for that user. The Copilot inspector includes a lightweight preference and long-term memory manager for viewing, removing one preference value, or clearing all preferences.
 - Application-level AI safety checks for prompt injection, system/developer prompt leakage requests, secret requests, read-only tool boundaries, retrieved sensitive content, citation validation, uncited impact areas, sensitive output, and overconfidence.
 - A centralized safety policy is exposed as `safety_policy` on `/api/health` and covered by red-team tests.
@@ -143,6 +144,8 @@ The `modelAdapter` boundary uses an OpenAI-compatible chat completions call when
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/health` | Server, package version, git commit, Node runtime, environment, uptime, LLM configuration status, and effective request timeout. |
+| `GET` | `/api/auth/me` | Return the resolved auth identity, role, scopes, and org id for the current request. |
+| `GET` | `/api/auth/users` | Return configured auth users for audit without exposing token values. |
 | `GET` | `/api/projects` | List imported projects without chunk bodies. |
 | `POST` | `/api/import` | Import sample, public GitHub repository, or ZIP upload. |
 | `POST` | `/api/chat` | Repository Q&A or standard impact analysis with lightweight harness and safety metadata. |

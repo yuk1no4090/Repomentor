@@ -72,6 +72,8 @@ Authentication is optional and disabled by default for local demos. When `AI_PM_
 
 The authenticated token becomes the token-bound user identity for memory, chat, onboarding, and LangGraph Agent Workflow calls. If a request also provides `userId`, `user_id`, `X-User-Id`, or `X-AI-PM-User-Id`, it must match the authenticated user or the request is rejected with `AUTH_USER_MISMATCH`. When scopes are configured, route authorization checks `project:read`, `project:write`, `memory:write`, `answer:write`, or `feedback:write`; insufficient scope returns `AUTH_SCOPE_FORBIDDEN` with the required scope. Missing and invalid tokens return `AUTH_REQUIRED` and `AUTH_INVALID`. `/api/health` reports whether auth is required and how many tokens are configured without exposing token values.
 
+The normalized JSON store includes `authUsers`, derived from configured token identities and the local default identity when auth is disabled. `GET /api/auth/me` returns the resolved token-bound user identity for the current request. `GET /api/auth/users` returns the configured users, roles, scopes, org ids, status, and source for audit without returning token strings. This is an account-audit boundary, not a full account product: it does not implement password login, session cookies, OAuth, self-service user creation, or an admin UI.
+
 ## modelAdapter
 
 `runModelAdapter()` is the only agent model boundary.

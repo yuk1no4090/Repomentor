@@ -183,6 +183,8 @@ npm run dev
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/health` | LLM 状态 + 服务运行时间 |
+| GET | `/api/auth/me` | 当前请求的认证用户、角色和 scopes |
+| GET | `/api/auth/users` | 已配置认证用户审计列表，不返回 token |
 | GET | `/api/projects` | 获取所有项目 |
 | POST | `/api/import` | 导入仓库（sample / repoUrl / zipBase64） |
 | POST | `/api/chat` | 问答 / 影响分析（kind: "qa" / "impact"） |

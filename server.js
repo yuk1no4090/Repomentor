@@ -1721,6 +1721,9 @@ function normalizeStore(store) {
   normalized.questions ||= [];
   normalized.answers ||= [];
   normalized.feedback ||= [];
+  normalized.authUsers = Array.isArray(normalized.authUsers)
+    ? normalized.authUsers.map(normalizeAuthUserRecord).filter(Boolean)
+    : [];
   normalized.harnessRuns = Array.isArray(normalized.harnessRuns)
     ? normalized.harnessRuns.map(normalizeHarnessRun).filter(Boolean)
     : [];
@@ -1746,6 +1749,7 @@ function normalizeStore(store) {
   normalized.memoryEvents = Array.isArray(normalized.memoryEvents)
     ? normalized.memoryEvents.map(normalizeMemoryEvent).filter(Boolean)
     : [];
+  normalized.authUsers = mergeAuthUsersWithConfiguredTokens(normalized.authUsers);
   return normalized;
 }
 
@@ -1816,6 +1820,94 @@ function parseAuthTokenConfig(raw = AUTH_TOKEN_CONFIG) {
 }
 
 const AUTH_TOKEN_TO_IDENTITY = parseAuthTokenConfig();
+
+function normalizeAuthScopes(scopes) {
+  return Array.isArray(scopes)
+    ? [...new Set(scopes.map((scope) => String(scope || "").trim()).filter(Boolean))]
+    : [...DEFAULT_AUTH_SCOPES];
+}
+
+function normalizeAuthRole(value, fallback = "user") {
+  const role = String(value || fallback).trim().toLowerCase();
+  return role || fallback;
+}
+
+function authUserFromIdentity(identity, source = "token-config") {
+  if (!identity?.userId) return null;
+  const now = new Date().toISOString();
+  return {
+    id: normalizeUserId(identity.userId),
+    role: normalizeAuthRole(identity.role, "user"),
+    scopes: normalizeAuthScopes(identity.scopes),
+    orgId: identity.orgId || null,
+    source,
+    status: "active",
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+function normalizeAuthUserRecord(user) {
+  if (!user || typeof user !== "object") return null;
+  const now = new Date().toISOString();
+  const id = normalizeUserId(user.id || user.userId || user.user_id);
+  return {
+    id,
+    role: normalizeAuthRole(user.role, id === DEFAULT_USER_ID ? "local" : "user"),
+    scopes: normalizeAuthScopes(user.scopes),
+    orgId: user.orgId || user.org_id || null,
+    source: String(user.source || "store").trim() || "store",
+    status: String(user.status || "active").trim() || "active",
+    createdAt: user.createdAt || now,
+    updatedAt: user.updatedAt || now
+  };
+}
+
+function mergeAuthUsersWithConfiguredTokens(existingUsers = []) {
+  const usersById = new Map(existingUsers.map((user) => [user.id, user]));
+  for (const identity of AUTH_TOKEN_TO_IDENTITY.values()) {
+    const tokenUser = authUserFromIdentity(identity, "token-config");
+    if (!tokenUser) continue;
+    const existing = usersById.get(tokenUser.id);
+    usersById.set(tokenUser.id, {
+      ...tokenUser,
+      createdAt: existing?.createdAt || tokenUser.createdAt,
+      updatedAt: tokenUser.updatedAt
+    });
+  }
+  if (!AUTH_REQUIRED && !usersById.has(DEFAULT_USER_ID)) {
+    const localUser = authUserFromIdentity({
+      userId: DEFAULT_USER_ID,
+      role: "local",
+      scopes: [...DEFAULT_AUTH_SCOPES],
+      orgId: null
+    }, "local");
+    usersById.set(localUser.id, localUser);
+  }
+  return [...usersById.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function authIdentityResponse(identity) {
+  return {
+    user_id: identity.userId,
+    role: identity.role,
+    scopes: normalizeAuthScopes(identity.scopes),
+    org_id: identity.orgId || null
+  };
+}
+
+function listAuthUsers(store) {
+  return mergeAuthUsersWithConfiguredTokens(store.authUsers || []).map((user) => ({
+    id: user.id,
+    role: user.role,
+    scopes: user.scopes,
+    org_id: user.orgId,
+    source: user.source,
+    status: user.status,
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt
+  }));
+}
 
 function getRequestAuthToken(req) {
   const authorization = String(req.headers.authorization || "");
@@ -4320,6 +4412,23 @@ async function handleApiUnlocked(req, res, pathname) {
     }
     const store = await ensureStore();
 
+    if (req.method === "GET" && pathname === "/api/auth/me") {
+      const identity = resolveAuthenticatedIdentity(req, {});
+      sendJson(res, 200, {
+        auth_required: AUTH_REQUIRED,
+        identity: authIdentityResponse(identity)
+      });
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/auth/users") {
+      sendJson(res, 200, {
+        auth_required: AUTH_REQUIRED,
+        users: listAuthUsers(store)
+      });
+      return;
+    }
+
     if (req.method === "GET" && pathname === "/api/projects") {
       sendJson(res, 200, {
         projects: store.projects.map((project) => ({
@@ -4929,6 +5038,7 @@ async function handleApiUnlocked(req, res, pathname) {
         auth: {
           required: AUTH_REQUIRED,
           token_count: AUTH_TOKEN_TO_IDENTITY.size,
+          users_indexed: listAuthUsers(store).length,
           user_binding: "token",
           scopes_enabled: AUTH_REQUIRED
         },
