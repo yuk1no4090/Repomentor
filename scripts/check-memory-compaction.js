@@ -11,13 +11,16 @@ const [packageJsonRaw, serverSource, testSource, readme, architectureDoc] = awai
 const packageJson = JSON.parse(packageJsonRaw);
 
 const requiredPackageScripts = {
-  "test:memory": "node scripts/memory-compaction-test.js",
-  test: "npm run test:static && npm run test:smoke && npm run test:ui && npm run test:safety && npm run test:memory && npm run test:user-memory && npm run test:auth && npm run test:embedding"
+  "test:memory": "node scripts/memory-compaction-test.js"
 };
 
 const missingPackageScripts = Object.entries(requiredPackageScripts)
   .filter(([name, value]) => packageJson.scripts?.[name] !== value)
   .map(([name]) => name);
+
+if (!String(packageJson.scripts?.test || "").includes("npm run test:memory")) {
+  missingPackageScripts.push("test");
+}
 
 const requiredServerSnippets = [
   "function compactLongTermPreferenceMemories",

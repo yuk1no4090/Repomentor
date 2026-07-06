@@ -193,7 +193,7 @@ The first version intentionally does not include:
 
 ## Verification Gates
 
-`npm test` runs static checks, smoke tests, UI acceptance tests, safety red-team tests, memory compaction tests, and user memory isolation tests.
+`npm test` runs static checks, smoke tests, UI acceptance tests, safety red-team tests, memory compaction tests, user memory isolation tests, auth boundary tests, embedding provider tests, and the agent benchmark.
 
 Static checks cover:
 
@@ -204,6 +204,7 @@ Static checks cover:
 - frontend agent UI contract
 - locale key sync
 - text quality
+- agent benchmark contract
 
 Smoke tests cover:
 
@@ -220,3 +221,5 @@ Smoke tests cover:
 - valid schema with nonexistent citation
 - valid schema with uncited impact area
 - Q&A and evaluation regressions, including average response time, safety risk type counts, and fallback reason counts
+
+The agent benchmark uses `npm run test:benchmark` to run a fixed offline matrix for safe impact analysis, prompt injection, safe Q&A, and tool escalation. It reports pass rate and checks safety, trace, harness, citation, and memory behavior, then verifies evaluation metrics such as guardrail hits, persisted harness runs, schema-valid runs, and trace tool counts.

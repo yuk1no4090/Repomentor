@@ -21,10 +21,11 @@ npm run test:memory
 npm run test:user-memory
 npm run test:auth
 npm run test:embedding
+npm run test:benchmark
 npm test
 ```
 
-`npm run test:static` runs `scripts/static-checks.js`, which performs syntax checks, locale-copy consistency checks, frontend agent UI checks, text-quality checks, runtime dependency checks, API documentation sync checks, store-schema checks, smoke reliability checks, UI acceptance wiring checks, safety guardrail contract checks, safety red-team wiring checks, memory compaction checks, user memory isolation checks, auth boundary checks, embedding provider checks, and agent response contract checks without starting a server. `npm test` runs the static checks, smoke test, UI acceptance test, safety red-team test, memory compaction test, user memory isolation test, auth boundary test, and embedding provider test.
+`npm run test:static` runs `scripts/static-checks.js`, which performs syntax checks, locale-copy consistency checks, frontend agent UI checks, text-quality checks, runtime dependency checks, API documentation sync checks, store-schema checks, smoke reliability checks, UI acceptance wiring checks, safety guardrail contract checks, safety red-team wiring checks, memory compaction checks, user memory isolation checks, auth boundary checks, embedding provider checks, agent benchmark contract checks, and agent response contract checks without starting a server. `npm test` runs the static checks, smoke test, UI acceptance test, safety red-team test, memory compaction test, user memory isolation test, auth boundary test, embedding provider test, and agent benchmark.
 
 Static check scripts use the `scripts/check-*.js` naming convention. `scripts/static-checks.js` syntax-checks all `scripts/*.js` files and discovers/runs `check-*.js` automatically.
 
@@ -41,6 +42,8 @@ The user memory isolation test starts the server with an isolated data directory
 The auth boundary test starts the server with `AI_PM_AUTH_REQUIRED=true`, verifies `/api/health` remains public, rejects missing or invalid tokens, blocks token/user mismatch with `AUTH_USER_MISMATCH`, and confirms memory suggestions are bound to the authenticated user. Use `npm run test:auth` to run only this boundary check.
 
 The embedding provider test starts a fake OpenAI-compatible `/v1/embeddings` server, configures the app with `MEMORY_EMBEDDING_PROVIDER=openai`, confirms memory, and verifies external embedding write and query paths use the configured model. Use `npm run test:embedding` to run only this boundary check.
+
+The agent benchmark starts the server with an isolated data directory, imports the sample repository, and runs a fixed offline benchmark matrix across safe impact analysis, prompt injection, safe Q&A, and tool escalation. It reports pass rate plus safety, trace, harness, citation, and memory checks, then verifies evaluation metrics such as guardrail hits, persisted harness runs, schema-valid runs, and trace tool counts. Use `npm run test:benchmark` to run only this benchmark.
 
 GitHub Actions runs `npm ci` and `npm test` on pushes to `main` and pull requests.
 

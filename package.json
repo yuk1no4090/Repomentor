@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "node server.js",
     "start": "node server.js",
-    "test": "npm run test:static && npm run test:smoke && npm run test:ui && npm run test:safety && npm run test:memory && npm run test:user-memory && npm run test:auth && npm run test:embedding",
+    "test": "npm run test:static && npm run test:smoke && npm run test:ui && npm run test:safety && npm run test:memory && npm run test:user-memory && npm run test:auth && npm run test:embedding && npm run test:benchmark",
     "test:static": "node scripts/static-checks.js",
     "test:smoke": "node scripts/smoke-test.js",
     "test:ui": "node scripts/ui-acceptance.js",
@@ -16,7 +16,8 @@
     "test:memory": "node scripts/memory-compaction-test.js",
     "test:user-memory": "node scripts/user-memory-isolation-test.js",
     "test:auth": "node scripts/auth-boundary-test.js",
-    "test:embedding": "node scripts/embedding-provider-test.js"
+    "test:embedding": "node scripts/embedding-provider-test.js",
+    "test:benchmark": "node scripts/agent-benchmark.js"
   },
   "engines": {
     "node": ">=24"

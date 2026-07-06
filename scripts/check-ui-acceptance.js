@@ -9,13 +9,16 @@ const [packageJsonRaw, readme, uiAcceptanceSource] = await Promise.all([
 const packageJson = JSON.parse(packageJsonRaw);
 
 const requiredPackageScripts = {
-  "test:ui": "node scripts/ui-acceptance.js",
-  test: "npm run test:static && npm run test:smoke && npm run test:ui && npm run test:safety && npm run test:memory && npm run test:user-memory && npm run test:auth && npm run test:embedding"
+  "test:ui": "node scripts/ui-acceptance.js"
 };
 
 const missingPackageScripts = Object.entries(requiredPackageScripts)
   .filter(([name, value]) => packageJson.scripts?.[name] !== value)
   .map(([name]) => name);
+
+if (!String(packageJson.scripts?.test || "").includes("npm run test:ui")) {
+  missingPackageScripts.push("test");
+}
 
 const requiredReadmeSnippets = [
   "npm run test:ui",
