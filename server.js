@@ -480,6 +480,7 @@ function getMemoryDatabase() {
       node TEXT,
       metadata_json TEXT,
       state_summary_json TEXT,
+      resume_input_json TEXT,
       created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_langgraph_checkpoints_run ON langgraph_checkpoints(run_id, created_at);
@@ -487,6 +488,7 @@ function getMemoryDatabase() {
   `);
   recordSchemaMigration(memoryDb, "001_base_memory_and_checkpoints", "Create memory_items and langgraph_checkpoints base tables.");
   const memoryColumns = memoryDb.prepare("PRAGMA table_info(memory_items)").all().map((column) => column.name);
+  const checkpointColumns = memoryDb.prepare("PRAGMA table_info(langgraph_checkpoints)").all().map((column) => column.name);
   if (!memoryColumns.includes("user_id")) {
     memoryDb.exec(`ALTER TABLE memory_items ADD COLUMN user_id TEXT;`);
   }
@@ -509,6 +511,10 @@ function getMemoryDatabase() {
   }
   memoryDb.exec(`CREATE INDEX IF NOT EXISTS idx_memory_items_user_status ON memory_items(user_id, status);`);
   recordSchemaMigration(memoryDb, "007_memory_items_user_status_index", "Create user/status index for memory_items.");
+  if (!checkpointColumns.includes("resume_input_json")) {
+    memoryDb.exec(`ALTER TABLE langgraph_checkpoints ADD COLUMN resume_input_json TEXT;`);
+  }
+  recordSchemaMigration(memoryDb, "010_langgraph_checkpoint_resume_input", "Add replayable resume input snapshots to LangGraph checkpoints.");
   const embeddingBackfill = hydrateMissingMemoryEmbeddings(memoryDb);
   if (embeddingBackfill) {
     recordSchemaMigration(memoryDb, "008_backfill_memory_embeddings", "Backfill local embeddings for existing memory rows.");
@@ -1385,7 +1391,7 @@ function summarizeCheckpointTuple(tuple) {
   };
 }
 
-async function persistLangGraphCheckpoints({ projectId, runId, threadId, checkpointer }) {
+async function persistLangGraphCheckpoints({ projectId, runId, threadId, checkpointer, resumeInput = null }) {
   const db = getMemoryDatabase();
   const rows = [];
   for await (const tuple of checkpointer.list({ configurable: { thread_id: threadId } })) {
@@ -1395,8 +1401,8 @@ async function persistLangGraphCheckpoints({ projectId, runId, threadId, checkpo
   const insert = db.prepare(`
     INSERT INTO langgraph_checkpoints (
       id, run_id, project_id, thread_id, checkpoint_id, parent_checkpoint_id,
-      source, step, node, metadata_json, state_summary_json, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      source, step, node, metadata_json, state_summary_json, resume_input_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   rows.forEach((tuple) => {
     const checkpointId = tuple.checkpoint?.id || tuple.config?.configurable?.checkpoint_id || crypto.randomUUID();
@@ -1416,6 +1422,7 @@ async function persistLangGraphCheckpoints({ projectId, runId, threadId, checkpo
       writes[0] || null,
       JSON.stringify(metadata),
       JSON.stringify(summarizeCheckpointTuple(tuple)),
+      resumeInput ? JSON.stringify(resumeInput) : null,
       createdAt
     );
   });
@@ -1467,6 +1474,8 @@ function normalizeLangGraphCheckpointRow(row) {
     node: row.node,
     metadata: JSON.parse(row.metadata_json || "{}"),
     state_summary: JSON.parse(row.state_summary_json || "{}"),
+    resume_input: row.resume_input_json ? JSON.parse(row.resume_input_json) : null,
+    resumable: !!row.resume_input_json,
     createdAt: row.created_at
   };
 }
@@ -1530,6 +1539,41 @@ function buildLangGraphReplay(store, { projectId, runId }) {
           harness_run_id: audit.answer.harness?.run_id || runId
         }
       : null
+  };
+}
+
+async function runLangGraphResumeFromCheckpoint(store, { projectId, runId, checkpointId = null, userId = DEFAULT_USER_ID } = {}) {
+  if (!runId) throw apiError("Run id is required.", "RUN_ID_REQUIRED");
+  findProject(store, projectId);
+  const checkpoint = checkpointId
+    ? findLangGraphCheckpoint(store, { projectId, runId, checkpointId })
+    : listLangGraphCheckpoints({ projectId, runId, limit: 1 })[0];
+  if (!checkpoint) throw apiError("LangGraph checkpoint not found.", "LANGGRAPH_CHECKPOINT_NOT_FOUND", 404);
+  const resumeInput = checkpoint.resume_input;
+  if (!resumeInput?.projectId || !resumeInput?.question) {
+    throw apiError("LangGraph checkpoint does not include a resumable input snapshot.", "LANGGRAPH_RESUME_UNAVAILABLE", 409);
+  }
+  const normalizedUserId = normalizeUserId(userId);
+  const resumeUserId = normalizeUserId(resumeInput.userId || DEFAULT_USER_ID);
+  if (resumeUserId !== normalizedUserId) {
+    throw apiError("LangGraph checkpoint belongs to a different user.", "LANGGRAPH_RESUME_USER_MISMATCH", 403);
+  }
+  const project = findProject(store, resumeInput.projectId);
+  const payload = await runAgenticImpactWorkflow(
+    store,
+    project,
+    String(resumeInput.question || ""),
+    normalizedUserId,
+    {
+      sourceRunId: runId,
+      sourceCheckpointId: checkpoint.checkpoint_id
+    }
+  );
+  return {
+    project,
+    checkpoint,
+    question: String(resumeInput.question || ""),
+    payload
   };
 }
 
@@ -1818,7 +1862,7 @@ function requiredScopeForRequest(req, pathname) {
   if (req.method === "GET") return "project:read";
   if (pathname === "/api/import") return "project:write";
   if (pathname === "/api/memory/confirm" || pathname === "/api/memory/forget" || pathname === "/api/memory/backup" || pathname === "/api/memory/restore-plan") return "memory:write";
-  if (pathname === "/api/chat" || pathname === "/api/agent-impact" || pathname === "/api/onboarding") return "answer:write";
+  if (pathname === "/api/chat" || pathname === "/api/agent-impact" || pathname === "/api/onboarding" || pathname === "/api/langgraph-resume") return "answer:write";
   if (pathname === "/api/feedback") return "feedback:write";
   return "project:read";
 }
@@ -3841,9 +3885,10 @@ function createAgentGraph(checkpointer = false) {
     .compile({ checkpointer });
 }
 
-async function runAgenticImpactWorkflow(store, project, question, userId = DEFAULT_USER_ID) {
+async function runAgenticImpactWorkflow(store, project, question, userId = DEFAULT_USER_ID, resumeMetadata = null) {
   const started = Date.now();
   const runId = createHarnessRunId("agent");
+  const normalizedUserId = normalizeUserId(userId);
   const checkpointer = new MemorySaver();
   const graph = createAgentGraph(checkpointer);
   let state;
@@ -3862,7 +3907,7 @@ async function runAgenticImpactWorkflow(store, project, question, userId = DEFAU
     state = await withWorkflowTimeout(graph.invoke({
       store,
       project,
-      userId: normalizeUserId(userId),
+      userId: normalizedUserId,
       question,
       preferences: getUserPreferences(store, userId)
     }, {
@@ -3875,7 +3920,13 @@ async function runAgenticImpactWorkflow(store, project, question, userId = DEFAU
       projectId: project.id,
       runId,
       threadId: runId,
-      checkpointer
+      checkpointer,
+      resumeInput: {
+        projectId: project.id,
+        question,
+        userId: normalizedUserId,
+        source_run_id: runId
+      }
     });
   } catch (error) {
     errors.push(error.message || "LangGraph workflow failed.");
@@ -3929,6 +3980,15 @@ async function runAgenticImpactWorkflow(store, project, question, userId = DEFAU
     errors
   });
   payload.harness.checkpointing = checkpointing;
+  if (resumeMetadata) {
+    payload.harness.resume = {
+      mode: "input_snapshot_reexecution",
+      executable: true,
+      source_run_id: resumeMetadata.sourceRunId || null,
+      source_checkpoint_id: resumeMetadata.sourceCheckpointId || null,
+      note: "This run re-executes the saved LangGraph input snapshot associated with the source checkpoint."
+    };
+  }
   payload.llm_used = !!payload.harness.model_adapter.llm_used;
   const redacted = redactSensitivePayloadWithReport(payload);
   payload = attachOutputRedactionReport(redacted.payload, redacted.redaction);
@@ -4797,6 +4857,53 @@ async function handleApiUnlocked(req, res, pathname) {
         runId: url.searchParams.get("runId")
       });
       sendJson(res, 200, replay);
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/langgraph-resume") {
+      const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
+      const userId = resolveAuthenticatedUserId(req, body);
+      const project = findProject(store, body.projectId);
+      const started = Date.now();
+      const resumed = await runLangGraphResumeFromCheckpoint(store, {
+        projectId: project.id,
+        runId: body.runId || body.run_id,
+        checkpointId: body.checkpointId || body.checkpoint_id || null,
+        userId
+      });
+      if (resumed.payload.memory_suggestions?.length) {
+        store.memorySuggestions.push(...resumed.payload.memory_suggestions);
+      }
+      const questionRecord = {
+        id: crypto.randomUUID(),
+        projectId: resumed.project.id,
+        question: resumed.question,
+        kind: "agent_impact_resume",
+        createdAt: new Date().toISOString()
+      };
+      const answerRecord = {
+        id: crypto.randomUUID(),
+        questionId: questionRecord.id,
+        projectId: resumed.project.id,
+        kind: "agent_impact",
+        payload: resumed.payload,
+        responseTimeMs: Date.now() - started,
+        createdAt: new Date().toISOString()
+      };
+      store.questions.push(questionRecord);
+      store.answers.push(answerRecord);
+      recordHarnessRun(store, answerRecord);
+      await saveStore(store);
+      sendJson(res, 200, {
+        answerId: answerRecord.id,
+        kind: "agent_impact",
+        resumed_from: {
+          run_id: body.runId || body.run_id,
+          checkpoint_id: resumed.checkpoint.checkpoint_id,
+          mode: "input_snapshot_reexecution"
+        },
+        payload: resumed.payload
+      });
       return;
     }
 

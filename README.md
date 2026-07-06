@@ -153,6 +153,7 @@ The `modelAdapter` boundary uses an OpenAI-compatible chat completions call when
 | `GET` | `/api/harness-run` | Return one persisted harness run audit by `projectId` and `runId`. |
 | `GET` | `/api/langgraph-checkpoint` | Return one persisted LangGraph checkpoint summary by `projectId`, `runId`, and `checkpointId` for read-only time-travel inspection. |
 | `GET` | `/api/langgraph-replay` | Return a read-only checkpoint summary replay for one LangGraph run by `projectId` and `runId`. |
+| `POST` | `/api/langgraph-resume` | Re-execute a LangGraph run from a persisted checkpoint input snapshot and create a new harness run. |
 | `GET` | `/api/memory` | Return confirmed preferences, recent memory suggestions, memory audit events, and long-term memories for the resolved user. Supports `X-User-Id` or `userId`, plus `projectId`, `q`/`query`, `status=active|forgotten|superseded|all`, and `limit` for memory inspection. |
 | `GET` | `/api/memory/status` | Return SQLite long-term memory database health, counts, migration count, FTS status, and embedding mode without exposing memory content. |
 | `GET` | `/api/memory/backups` | List same-directory SQLite memory database backup files without returning memory content. |
@@ -198,6 +199,8 @@ Common API errors include:
 - `LANGGRAPH_CHECKPOINT_NOT_FOUND`
 - `LANGGRAPH_REPLAY_UNAVAILABLE`
 - `LANGGRAPH_REPLAY_UNSUPPORTED`
+- `LANGGRAPH_RESUME_UNAVAILABLE`
+- `LANGGRAPH_RESUME_USER_MISMATCH`
 - `INVALID_FEEDBACK_TYPE`
 - `ROUTE_NOT_FOUND`
 
@@ -214,7 +217,7 @@ Evaluation metrics are scoped to the requested `projectId`, so safety status, ou
 
 Memory confirmations, ignored suggestions, selective forgets, and full preference clears are recorded under `memoryEvents` so preference changes remain auditable without writing unconfirmed suggestions into long-lived memory.
 
-`GET /api/harness-run` returns a persisted harness run audit for one `projectId` and `runId`, including the stored run snapshot plus answer trace, harness, safety, guardrail metadata, and persisted LangGraph checkpoint summaries. `GET /api/langgraph-checkpoint` returns one checkpoint summary plus a read-only `time_travel` note. `GET /api/langgraph-replay` returns the ordered checkpoint summary replay for the run. Both checkpoint endpoints are audit-only and do not execute, resume, or mutate graph state.
+`GET /api/harness-run` returns a persisted harness run audit for one `projectId` and `runId`, including the stored run snapshot plus answer trace, harness, safety, guardrail metadata, and persisted LangGraph checkpoint summaries. `GET /api/langgraph-checkpoint` returns one checkpoint summary plus a read-only `time_travel` note. `GET /api/langgraph-replay` returns the ordered checkpoint summary replay for the run. `POST /api/langgraph-resume` uses a persisted checkpoint input snapshot to re-execute the Agent Workflow as a new harness run, with `harness.resume.mode=input_snapshot_reexecution`. Checkpoint audit and replay endpoints remain read-only.
 
 Safety payloads include `risk_details`, a normalized explanation list for each risk type so review screens can show why guardrails were triggered. Output guardrails scan the raw generated payload first, then redact credential-like strings before the payload is stored or returned. When redaction occurs, `safety.output_redaction` records whether redaction was applied and how many credential-like matches were replaced, without storing the raw values.
 
