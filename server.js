@@ -1874,6 +1874,9 @@ function normalizeStore(store) {
   normalized.authUsers = Array.isArray(normalized.authUsers)
     ? normalized.authUsers.map(normalizeAuthUserRecord).filter(Boolean)
     : [];
+  normalized.authTokens = Array.isArray(normalized.authTokens)
+    ? normalized.authTokens.map(normalizeAuthTokenRecord).filter(Boolean)
+    : [];
   normalized.authEvents = Array.isArray(normalized.authEvents)
     ? normalized.authEvents.map(normalizeAuthEvent).filter(Boolean).slice(-200)
     : [];
@@ -2000,6 +2003,37 @@ function authUserFromIdentity(identity, source = "token-config") {
   };
 }
 
+function hashAuthToken(token) {
+  return crypto.createHash("sha256").update(String(token || "")).digest("hex");
+}
+
+function createLocalAuthTokenValue() {
+  return `ai_pm_${crypto.randomBytes(24).toString("base64url")}`;
+}
+
+function normalizeAuthTokenRecord(token) {
+  if (!token || typeof token !== "object") return null;
+  const tokenHash = typeof token.tokenHash === "string"
+    ? token.tokenHash
+    : typeof token.token_hash === "string"
+      ? token.token_hash
+      : null;
+  if (!tokenHash) return null;
+  const userId = normalizeUserId(token.userId || token.user_id);
+  return {
+    id: String(token.id || crypto.randomUUID()),
+    userId,
+    tokenHash,
+    tokenPrefix: typeof token.tokenPrefix === "string" ? token.tokenPrefix : (typeof token.token_prefix === "string" ? token.token_prefix : null),
+    scopes: normalizeAuthScopes(token.scopes),
+    status: String(token.status || "active").trim() || "active",
+    source: String(token.source || "store-token").trim() || "store-token",
+    createdAt: token.createdAt || new Date().toISOString(),
+    updatedAt: token.updatedAt || new Date().toISOString(),
+    lastUsedAt: token.lastUsedAt || token.last_used_at || null
+  };
+}
+
 function normalizeAuthUserRecord(user) {
   if (!user || typeof user !== "object") return null;
   const now = new Date().toISOString();
@@ -2040,6 +2074,23 @@ function mergeAuthUsersWithConfiguredTokens(existingUsers = []) {
   return [...usersById.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
+function findStoreAuthTokenIdentity(store, token) {
+  if (!store || !token) return null;
+  const tokenHash = hashAuthToken(token);
+  const tokenRecord = (store.authTokens || []).find((item) => item.tokenHash === tokenHash && item.status === "active");
+  if (!tokenRecord) return null;
+  const user = mergeAuthUsersWithConfiguredTokens(store.authUsers || []).find((item) => item.id === tokenRecord.userId);
+  if (!user || user.status !== "active") return null;
+  tokenRecord.lastUsedAt = new Date().toISOString();
+  return {
+    userId: user.id,
+    role: user.role,
+    scopes: normalizeAuthScopes(tokenRecord.scopes?.length ? tokenRecord.scopes : user.scopes),
+    orgId: user.orgId || null,
+    source: "store-token"
+  };
+}
+
 function authIdentityResponse(identity) {
   return {
     user_id: identity.userId,
@@ -2060,6 +2111,100 @@ function listAuthUsers(store) {
     createdAt: user.createdAt,
     updatedAt: user.updatedAt
   }));
+}
+
+function listAuthTokenSummaries(store, userId = null) {
+  return (store.authTokens || [])
+    .filter((token) => !userId || token.userId === userId)
+    .map((token) => ({
+      id: token.id,
+      user_id: token.userId,
+      token_prefix: token.tokenPrefix,
+      scopes: token.scopes,
+      status: token.status,
+      source: token.source,
+      createdAt: token.createdAt,
+      updatedAt: token.updatedAt,
+      lastUsedAt: token.lastUsedAt || null
+    }));
+}
+
+function upsertLocalAuthUser(store, { userId, role = "user", scopes = ["project:read"], orgId = null, issueToken = true } = {}) {
+  const normalizedUserId = normalizeUserId(userId);
+  if (!normalizedUserId || normalizedUserId === DEFAULT_USER_ID) {
+    throw apiError("A non-local user id is required.", "AUTH_USER_ID_REQUIRED", 400);
+  }
+  const now = new Date().toISOString();
+  store.authUsers ||= [];
+  const normalized = normalizeAuthUserRecord({
+    id: normalizedUserId,
+    role,
+    scopes: normalizeAuthScopes(scopes),
+    orgId,
+    source: "store",
+    status: "active",
+    createdAt: now,
+    updatedAt: now
+  });
+  const index = store.authUsers.findIndex((user) => user.id === normalizedUserId);
+  if (index >= 0) {
+    if (store.authUsers[index].source === "token-config") {
+      throw apiError("Configured token users cannot be overwritten from the local store.", "AUTH_USER_CONFIG_MANAGED", 409);
+    }
+    store.authUsers[index] = {
+      ...store.authUsers[index],
+      ...normalized,
+      createdAt: store.authUsers[index].createdAt || normalized.createdAt,
+      updatedAt: now
+    };
+  } else {
+    store.authUsers.push(normalized);
+  }
+  let issuedToken = null;
+  let tokenRecord = null;
+  if (issueToken) {
+    issuedToken = createLocalAuthTokenValue();
+    tokenRecord = normalizeAuthTokenRecord({
+      id: crypto.randomUUID(),
+      userId: normalizedUserId,
+      tokenHash: hashAuthToken(issuedToken),
+      tokenPrefix: issuedToken.slice(0, 12),
+      scopes: normalized.scopes,
+      status: "active",
+      source: "store-token",
+      createdAt: now,
+      updatedAt: now
+    });
+    store.authTokens ||= [];
+    store.authTokens.push(tokenRecord);
+  }
+  return {
+    user: listAuthUsers(store).find((user) => user.id === normalizedUserId),
+    token: issuedToken,
+    token_record: tokenRecord ? listAuthTokenSummaries({ authTokens: [tokenRecord] })[0] : null
+  };
+}
+
+function disableLocalAuthUser(store, userId) {
+  const normalizedUserId = normalizeUserId(userId);
+  const user = (store.authUsers || []).find((item) => item.id === normalizedUserId);
+  if (!user) throw apiError("Auth user not found.", "AUTH_USER_NOT_FOUND", 404);
+  if (user.source === "token-config") {
+    throw apiError("Configured token users cannot be disabled from the local store.", "AUTH_USER_CONFIG_MANAGED", 409);
+  }
+  const now = new Date().toISOString();
+  user.status = "disabled";
+  user.updatedAt = now;
+  (store.authTokens || []).forEach((token) => {
+    if (token.userId === normalizedUserId) {
+      token.status = "disabled";
+      token.updatedAt = now;
+    }
+  });
+  return {
+    user: listAuthUsers(store).find((item) => item.id === normalizedUserId),
+    tokens: listAuthTokenSummaries(store, normalizedUserId)
+  };
 }
 
 function createAuthEvent({ identity = null, req, pathname, requiredScope = null, status, reason = null }) {
@@ -2105,11 +2250,11 @@ function getRequestAuthToken(req) {
   return String(req.headers["x-api-key"] || req.headers["x-ai-pm-token"] || "").trim();
 }
 
-function resolveAuthenticatedUserId(req, source = {}) {
+function resolveAuthenticatedUserId(req, source = {}, store = null) {
   if (!AUTH_REQUIRED) return resolveUserId(req, source);
   const token = getRequestAuthToken(req);
   if (!token) throw apiError("Authentication token is required.", "AUTH_REQUIRED", 401);
-  const identity = AUTH_TOKEN_TO_IDENTITY.get(token);
+  const identity = AUTH_TOKEN_TO_IDENTITY.get(token) || findStoreAuthTokenIdentity(store, token);
   if (!identity) throw apiError("Authentication token is invalid.", "AUTH_INVALID", 401);
   const requestedUserId = source.userId || source.user_id || req.headers["x-user-id"] || req.headers["x-ai-pm-user-id"];
   if (requestedUserId && normalizeUserId(requestedUserId) !== identity.userId) {
@@ -2118,7 +2263,7 @@ function resolveAuthenticatedUserId(req, source = {}) {
   return identity.userId;
 }
 
-function resolveAuthenticatedIdentity(req, source = {}) {
+function resolveAuthenticatedIdentity(req, source = {}, store = null) {
   if (!AUTH_REQUIRED) {
     return {
       userId: resolveUserId(req, source),
@@ -2127,9 +2272,9 @@ function resolveAuthenticatedIdentity(req, source = {}) {
       orgId: null
     };
   }
-  const userId = resolveAuthenticatedUserId(req, source);
+  const userId = resolveAuthenticatedUserId(req, source, store);
   const token = getRequestAuthToken(req);
-  return AUTH_TOKEN_TO_IDENTITY.get(token) || normalizeAuthIdentity(userId);
+  return AUTH_TOKEN_TO_IDENTITY.get(token) || findStoreAuthTokenIdentity(store, token) || normalizeAuthIdentity(userId);
 }
 
 function hasAuthScope(identity, requiredScope) {
@@ -2141,6 +2286,7 @@ function hasAuthScope(identity, requiredScope) {
 function requiredScopeForRequest(req, pathname) {
   if (pathname === "/api/health") return null;
   if (req.method === "GET") return "project:read";
+  if (pathname === "/api/auth/users" || pathname === "/api/auth/users/disable") return "auth:write";
   if (pathname === "/api/import") return "project:write";
   if (pathname === "/api/memory/confirm" || pathname === "/api/memory/forget" || pathname === "/api/memory/backup" || pathname === "/api/memory/restore-plan" || pathname === "/api/memory/restore") return "memory:write";
   if (pathname === "/api/chat" || pathname === "/api/agent-impact" || pathname === "/api/onboarding" || pathname === "/api/langgraph-resume") return "answer:write";
@@ -2148,9 +2294,9 @@ function requiredScopeForRequest(req, pathname) {
   return "project:read";
 }
 
-function requireAuthScope(req, pathname) {
+function requireAuthScope(req, pathname, store = null) {
   if (!AUTH_REQUIRED || pathname === "/api/health") return null;
-  const identity = resolveAuthenticatedIdentity(req, {});
+  const identity = resolveAuthenticatedIdentity(req, {}, store);
   const requiredScope = requiredScopeForRequest(req, pathname);
   if (!hasAuthScope(identity, requiredScope)) {
     const error = apiError(`Authenticated token lacks required scope: ${requiredScope}.`, "AUTH_SCOPE_FORBIDDEN", 403);
@@ -4601,7 +4747,7 @@ async function handleApiUnlocked(req, res, pathname) {
     store = await ensureStore();
     if (AUTH_REQUIRED && pathname !== "/api/health") {
       try {
-        requireAuthScope(req, pathname);
+        requireAuthScope(req, pathname, store);
       } catch (error) {
         recordAuthEvent(store, createAuthEvent({
           identity: error.auth ? {
@@ -4624,7 +4770,7 @@ async function handleApiUnlocked(req, res, pathname) {
     }
 
     if (req.method === "GET" && pathname === "/api/auth/me") {
-      const identity = resolveAuthenticatedIdentity(req, {});
+      const identity = resolveAuthenticatedIdentity(req, {}, store);
       sendJson(res, 200, {
         auth_required: AUTH_REQUIRED,
         identity: authIdentityResponse(identity)
@@ -4635,7 +4781,8 @@ async function handleApiUnlocked(req, res, pathname) {
     if (req.method === "GET" && pathname === "/api/auth/users") {
       sendJson(res, 200, {
         auth_required: AUTH_REQUIRED,
-        users: listAuthUsers(store)
+        users: listAuthUsers(store),
+        tokens: listAuthTokenSummaries(store)
       });
       return;
     }
@@ -4646,6 +4793,49 @@ async function handleApiUnlocked(req, res, pathname) {
         auth_required: AUTH_REQUIRED,
         events: listAuthEvents(store, url.searchParams.get("limit") || 50)
       });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/auth/users") {
+      const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
+      const created = upsertLocalAuthUser(store, {
+        userId: body.userId || body.user_id || body.id,
+        role: body.role || "user",
+        scopes: Array.isArray(body.scopes) ? body.scopes : ["project:read"],
+        orgId: body.orgId || body.org_id || null,
+        issueToken: body.issueToken !== false && body.issue_token !== false
+      });
+      recordAuthEvent(store, createAuthEvent({
+        identity: req.auth,
+        req,
+        pathname,
+        requiredScope: "auth:write",
+        status: "allowed",
+        reason: `created_user:${created.user.id}`
+      }));
+      await saveStore(store);
+      sendJson(res, 200, {
+        user: created.user,
+        token: created.token,
+        token_record: created.token_record,
+        token_visible_once: !!created.token
+      });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/auth/users/disable") {
+      const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
+      const disabled = disableLocalAuthUser(store, body.userId || body.user_id || body.id);
+      recordAuthEvent(store, createAuthEvent({
+        identity: req.auth,
+        req,
+        pathname,
+        requiredScope: "auth:write",
+        status: "allowed",
+        reason: `disabled_user:${disabled.user.id}`
+      }));
+      await saveStore(store);
+      sendJson(res, 200, disabled);
       return;
     }
 
@@ -4669,7 +4859,7 @@ async function handleApiUnlocked(req, res, pathname) {
       const url = new URL(req.url, `http://${req.headers.host}`);
       const projectId = url.searchParams.get("projectId");
       if (projectId) findProject(store, projectId);
-      const userId = resolveAuthenticatedUserId(req, { userId: url.searchParams.get("userId") || url.searchParams.get("user_id") });
+      const userId = resolveAuthenticatedUserId(req, { userId: url.searchParams.get("userId") || url.searchParams.get("user_id") }, store);
       const query = String(url.searchParams.get("query") || url.searchParams.get("q") || "").trim();
       const status = normalizeLongTermMemoryStatusFilter(url.searchParams.get("status") || "active");
       const limit = parsePositiveInteger(url.searchParams.get("limit"), 20, 50);
@@ -4750,7 +4940,7 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "POST" && pathname === "/api/memory/confirm") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
-      const userId = resolveAuthenticatedUserId(req, body);
+      const userId = resolveAuthenticatedUserId(req, body, store);
       const suggestion = store.memorySuggestions.find((item) => item.id === body.suggestionId);
       if (!suggestion) throw apiError("Memory suggestion not found.", "MEMORY_SUGGESTION_NOT_FOUND");
       if ((suggestion.userId || DEFAULT_USER_ID) !== userId) throw apiError("Memory suggestion belongs to a different user.", "MEMORY_USER_MISMATCH", 409);
@@ -4780,7 +4970,7 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "POST" && pathname === "/api/memory/forget") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
-      const userId = resolveAuthenticatedUserId(req, body);
+      const userId = resolveAuthenticatedUserId(req, body, store);
       if (body.suggestionId) {
         const suggestion = store.memorySuggestions.find((item) => item.id === body.suggestionId);
         if (!suggestion) throw apiError("Memory suggestion not found.", "MEMORY_SUGGESTION_NOT_FOUND");
@@ -4894,7 +5084,7 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "POST" && pathname === "/api/chat") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
-      const userId = resolveAuthenticatedUserId(req, body);
+      const userId = resolveAuthenticatedUserId(req, body, store);
       const project = findProject(store, body.projectId);
       const question = String(body.question || "").trim();
       if (!question) throw apiError("Question is required.", "QUESTION_REQUIRED");
@@ -5017,7 +5207,7 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "POST" && pathname === "/api/onboarding") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
-      const userId = resolveAuthenticatedUserId(req, body);
+      const userId = resolveAuthenticatedUserId(req, body, store);
       const project = findProject(store, body.projectId);
       const started = Date.now();
       const runId = createHarnessRunId("onboarding");
@@ -5103,7 +5293,7 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "POST" && pathname === "/api/agent-impact") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
-      const userId = resolveAuthenticatedUserId(req, body);
+      const userId = resolveAuthenticatedUserId(req, body, store);
       const project = findProject(store, body.projectId);
       const question = String(body.question || "").trim();
       if (!question) throw apiError("Question is required.", "QUESTION_REQUIRED");
@@ -5202,7 +5392,7 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "POST" && pathname === "/api/langgraph-resume") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
-      const userId = resolveAuthenticatedUserId(req, body);
+      const userId = resolveAuthenticatedUserId(req, body, store);
       const project = findProject(store, body.projectId);
       const started = Date.now();
       const resumed = await runLangGraphResumeFromCheckpoint(store, {
@@ -5269,6 +5459,7 @@ async function handleApiUnlocked(req, res, pathname) {
         auth: {
           required: AUTH_REQUIRED,
           token_count: AUTH_TOKEN_TO_IDENTITY.size,
+          store_token_count: (store.authTokens || []).filter((token) => token.status === "active").length,
           users_indexed: listAuthUsers(store).length,
           user_binding: "token",
           scopes_enabled: AUTH_REQUIRED

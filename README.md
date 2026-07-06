@@ -115,7 +115,7 @@ Without an API key, the app falls back to a deterministic retrieval-based answer
 - Impact analysis with impacted modules, risk level, testing suggestions, and open questions.
 - Agent Workflow tab backed by a LangGraph StateGraph with classifier, retriever, context expansion, impact analysis, QA planning, memory, safety guardrails, structured synthesis, and MemorySaver checkpointing.
 - Onboarding plans run through a lightweight deterministic harness with trace, safety, guardrails, citations, and pending memory suggestions.
-- Optional token-bound auth with user, role, scope, and audit metadata. `/api/auth/me` returns the current resolved identity, `/api/auth/users` lists configured users, and `/api/auth/events` lists recent auth decisions without exposing token values. This is not a password-login or session-management system.
+- Optional token-bound auth with user, role, scope, local store-backed tokens, and audit metadata. `/api/auth/me` returns the current resolved identity, `/api/auth/users` lists configured and local users, `POST /api/auth/users` creates a local user and returns a one-time visible token, `POST /api/auth/users/disable` disables a local user and its tokens, and `/api/auth/events` lists recent auth decisions without exposing token values. This is not a password-login or session-management system.
 - User preference memory suggestions that require explicit confirmation before being saved. Confirmed preferences are scoped by `userId`, defaulting to `local-user` for local/backward-compatible use. API clients can pass `userId` in JSON bodies or the `X-User-Id` header. Confirmed preferences can shape both impact analysis and ordinary Q&A emphasis; confirmed memory is also written to SQLite long-term memory for searchable reuse across later Agent Workflow and Direct Chat runs. Memory suggestions carry user and project ownership so confirmation/ignore actions can verify the active boundary. Ignored suggestions suppress the same key/value suggestion from being repeated for that user. The Copilot inspector includes a lightweight preference and long-term memory manager for viewing, removing one preference value, or clearing all preferences.
 - Application-level AI safety checks for prompt injection, system/developer prompt leakage requests, secret requests, read-only tool boundaries, retrieved sensitive content, citation validation, uncited impact areas, sensitive output, and overconfidence.
 - A centralized safety policy is exposed as `safety_policy` on `/api/health` and covered by red-team tests.
@@ -146,6 +146,8 @@ The `modelAdapter` boundary uses an OpenAI-compatible chat completions call when
 | `GET` | `/api/health` | Server, package version, git commit, Node runtime, environment, uptime, LLM configuration status, and effective request timeout. |
 | `GET` | `/api/auth/me` | Return the resolved auth identity, role, scopes, and org id for the current request. |
 | `GET` | `/api/auth/users` | Return configured auth users for audit without exposing token values. |
+| `POST` | `/api/auth/users` | Create or update a local store-backed auth user and optionally issue a one-time visible token. Requires `auth:write`. |
+| `POST` | `/api/auth/users/disable` | Disable a local store-backed auth user and its tokens. Requires `auth:write`. |
 | `GET` | `/api/auth/events` | Return recent auth allow/deny audit events without exposing token values. |
 | `GET` | `/api/projects` | List imported projects without chunk bodies. |
 | `POST` | `/api/import` | Import sample, public GitHub repository, or ZIP upload. |
@@ -185,6 +187,9 @@ Error responses keep a human-readable `error` string and add a machine-readable 
 - `AUTH_INVALID`
 - `AUTH_USER_MISMATCH`
 - `AUTH_SCOPE_FORBIDDEN`
+- `AUTH_USER_ID_REQUIRED`
+- `AUTH_USER_NOT_FOUND`
+- `AUTH_USER_CONFIG_MANAGED`
 
 Common API errors include:
 

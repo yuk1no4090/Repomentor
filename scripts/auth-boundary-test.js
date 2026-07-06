@@ -152,8 +152,43 @@ async function run() {
     assert(authUsers.users.length === 3, "auth users did not include configured users");
     assert(authUsers.users.some((user) => user.id === "user-a" && user.role === "admin"), "auth users missing user-a admin");
     assert(authUsers.users.some((user) => user.id === "viewer" && user.role === "viewer"), "auth users missing viewer role");
+    assert(Array.isArray(authUsers.tokens), "auth users did not include token summaries");
     assert(!JSON.stringify(authUsers).includes("token-a"), "auth users should not expose token values");
     assert(!JSON.stringify(authUsers).includes("viewer-token"), "auth users should not expose viewer token value");
+
+    const viewerCreateUser = await request(baseUrl, "/api/auth/users", {
+      method: "POST",
+      token: "viewer-token",
+      expectOk: false,
+      body: JSON.stringify({ userId: "store-viewer", role: "viewer", scopes: ["project:read"] })
+    });
+    assert(viewerCreateUser.status === 403, "viewer token should not create auth users");
+    assert(viewerCreateUser.payload.required_scope === "auth:write", "viewer create user required wrong scope");
+
+    const overwriteConfiguredUser = await request(baseUrl, "/api/auth/users", {
+      method: "POST",
+      token: "token-a",
+      expectOk: false,
+      body: JSON.stringify({ userId: "user-a", role: "viewer", scopes: ["project:read"] })
+    });
+    assert(overwriteConfiguredUser.status === 409, "configured token user overwrite should return 409");
+    assert(overwriteConfiguredUser.payload.code === "AUTH_USER_CONFIG_MANAGED", "configured token user overwrite returned wrong code");
+
+    const { payload: createdUser } = await request(baseUrl, "/api/auth/users", {
+      method: "POST",
+      token: "token-a",
+      body: JSON.stringify({
+        userId: "store-user",
+        role: "viewer",
+        scopes: ["project:read"]
+      })
+    });
+    assert(createdUser.user?.id === "store-user", "store auth user was not created");
+    assert(createdUser.user?.source === "store", "store auth user source was not reported");
+    assert(typeof createdUser.token === "string" && createdUser.token.startsWith("ai_pm_"), "store auth token was not returned once");
+    assert(createdUser.token_record?.token_prefix && !createdUser.token_record.tokenHash, "store auth token summary leaked hash or prefix missing");
+    const storeUserRead = await request(baseUrl, "/api/projects", { token: createdUser.token });
+    assert(Array.isArray(storeUserRead.payload.projects), "store auth token should read projects");
 
     const viewerRead = await request(baseUrl, "/api/projects", { token: "viewer-token" });
     assert(Array.isArray(viewerRead.payload.projects), "viewer token should be allowed to read projects");
@@ -236,11 +271,27 @@ async function run() {
     assert(viewerRestore.payload.code === "AUTH_SCOPE_FORBIDDEN", "viewer restore did not return AUTH_SCOPE_FORBIDDEN");
     assert(viewerRestore.payload.required_scope === "memory:write", "viewer restore required wrong scope");
 
-    const { payload: authEvents } = await request(baseUrl, "/api/auth/events?limit=20", { token: "token-a" });
+    const { payload: disabledUser } = await request(baseUrl, "/api/auth/users/disable", {
+      method: "POST",
+      token: "token-a",
+      body: JSON.stringify({ userId: "store-user" })
+    });
+    assert(disabledUser.user?.status === "disabled", "store auth user was not disabled");
+    assert(disabledUser.tokens?.some((item) => item.status === "disabled"), "store auth token was not disabled");
+    const disabledStoreToken = await request(baseUrl, "/api/projects", {
+      token: createdUser.token,
+      expectOk: false
+    });
+    assert(disabledStoreToken.status === 401, "disabled store token should return 401");
+    assert(disabledStoreToken.payload.code === "AUTH_INVALID", "disabled store token did not return AUTH_INVALID");
+
+    const { payload: authEvents } = await request(baseUrl, "/api/auth/events?limit=100", { token: "token-a" });
     assert(Array.isArray(authEvents.events), "auth events did not return an events array");
     assert(authEvents.events.some((event) => event.status === "allowed" && event.user_id === "user-a"), "auth events missing allowed user-a event");
     assert(authEvents.events.some((event) => event.status === "denied" && event.reason === "AUTH_REQUIRED"), "auth events missing missing-token denial");
     assert(authEvents.events.some((event) => event.status === "denied" && event.reason === "AUTH_INVALID"), "auth events missing invalid-token denial");
+    assert(authEvents.events.some((event) => event.status === "allowed" && event.reason === "created_user:store-user"), "auth events missing local user creation event");
+    assert(authEvents.events.some((event) => event.status === "allowed" && event.reason === "disabled_user:store-user"), "auth events missing local user disable event");
     assert(authEvents.events.some((event) => event.status === "denied" && event.required_scope === "memory:write"), "auth events missing memory scope denial");
     assert(!JSON.stringify(authEvents).includes("token-a"), "auth events should not expose token values");
     assert(!JSON.stringify(authEvents).includes("viewer-token"), "auth events should not expose viewer token value");

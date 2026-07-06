@@ -18,6 +18,10 @@ const architecture = readFileSync("docs/AGENT_RUNTIME_ARCHITECTURE.md", "utf8");
   ["function getRequestAuthToken", "request auth token parser"],
   ["function resolveAuthenticatedUserId", "authenticated user resolver"],
   ["function authUserFromIdentity", "auth user record builder"],
+  ["function normalizeAuthTokenRecord", "auth token record normalizer"],
+  ["function findStoreAuthTokenIdentity", "store auth token resolver"],
+  ["function upsertLocalAuthUser", "local auth user creation"],
+  ["function disableLocalAuthUser", "local auth user disable"],
   ["function listAuthUsers", "auth user audit listing"],
   ["function recordAuthEvent", "auth event recorder"],
   ["function listAuthEvents", "auth event audit listing"],
@@ -25,6 +29,7 @@ const architecture = readFileSync("docs/AGENT_RUNTIME_ARCHITECTURE.md", "utf8");
   ["function requiredScopeForRequest", "route scope mapping"],
   ["\"/api/auth/me\"", "auth me endpoint"],
   ["\"/api/auth/users\"", "auth users endpoint"],
+  ["\"/api/auth/users/disable\"", "auth user disable endpoint"],
   ["\"/api/auth/events\"", "auth events endpoint"],
   ["AUTH_SCOPE_FORBIDDEN", "scope forbidden error"],
   ["AUTH_REQUIRED", "missing auth error"],
@@ -43,11 +48,13 @@ assertIncludes(packageJson.scripts.test, "npm run test:auth", "full test suite a
 assertIncludes(readme, "AI_PM_AUTH_REQUIRED", "README auth env docs");
 assertIncludes(readme, "/api/auth/me", "README auth me docs");
 assertIncludes(readme, "/api/auth/users", "README auth users docs");
+assertIncludes(readme, "/api/auth/users/disable", "README auth user disable docs");
 assertIncludes(readme, "/api/auth/events", "README auth events docs");
 assertIncludes(readme, "AUTH_USER_MISMATCH", "README auth error docs");
 assertIncludes(readme, "AUTH_SCOPE_FORBIDDEN", "README auth scope error docs");
 assertIncludes(architecture, "token-bound user identity", "architecture auth boundary docs");
 assertIncludes(architecture, "authUsers", "architecture auth user audit docs");
+assertIncludes(architecture, "authTokens", "architecture auth token docs");
 assertIncludes(architecture, "authEvents", "architecture auth event audit docs");
 assertIncludes(architecture, "scopes", "architecture auth scopes docs");
 
