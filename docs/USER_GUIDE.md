@@ -202,6 +202,7 @@ npm run dev
 | GET | `/api/memory/backups` | 查看长期记忆 SQLite 备份列表 |
 | POST | `/api/memory/backup` | 创建长期记忆 SQLite 备份 |
 | POST | `/api/memory/restore-plan` | 校验备份并生成手动恢复计划 |
+| POST | `/api/memory/restore` | 使用校验过的备份恢复长期记忆 SQLite 数据库 |
 | POST | `/api/memory/confirm` | 确认待保存的记忆建议 |
 | POST | `/api/memory/forget` | 忽略建议、清除单项偏好或清空偏好 |
 

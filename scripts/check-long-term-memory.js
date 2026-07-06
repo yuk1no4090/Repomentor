@@ -47,6 +47,8 @@ const requiredServerSnippets = [
   "function createMemoryDatabaseBackup",
   "function listMemoryDatabaseBackups",
   "function createMemoryDatabaseRestorePlan",
+  "function restoreMemoryDatabaseFromBackup",
+  "function closeMemoryDatabase",
   "preference_summary",
   "memory_compaction",
   "long_term_memory_query",
@@ -56,7 +58,9 @@ const requiredServerSnippets = [
   "\"/api/memory/backups\"",
   "\"/api/memory/backup\"",
   "\"/api/memory/restore-plan\"",
+  "\"/api/memory/restore\"",
   "MEMORY_BACKUP_CHECKSUM_MISMATCH",
+  "MEMORY_RESTORE_CONFIRMATION_REQUIRED",
   "vector_search",
   "long_term_memories",
   "long_term:"
@@ -87,6 +91,7 @@ const requiredDocSnippets = [
   "/api/memory/backups",
   "/api/memory/backup",
   "/api/memory/restore-plan",
+  "/api/memory/restore",
   "SHA-256 checksum"
 ];
 

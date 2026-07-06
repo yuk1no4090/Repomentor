@@ -163,6 +163,7 @@ The `modelAdapter` boundary uses an OpenAI-compatible chat completions call when
 | `GET` | `/api/memory/backups` | List same-directory SQLite memory database backup files without returning memory content. |
 | `POST` | `/api/memory/backup` | Create a same-directory SQLite memory database backup and return its basename, size, and SHA-256 checksum. |
 | `POST` | `/api/memory/restore-plan` | Validate one backup basename and optional SHA-256, then return a non-executing rollback plan. |
+| `POST` | `/api/memory/restore` | Restore the SQLite memory database from a same-directory backup. Requires SHA-256 and `confirm: "RESTORE_MEMORY_DATABASE"`; creates a pre-restore backup first. |
 | `POST` | `/api/memory/confirm` | Confirm a pending memory suggestion for the resolved user and update preferences. |
 | `POST` | `/api/memory/forget` | Ignore a suggestion, clear one preference, or clear all preferences for the resolved user. |
 
@@ -178,6 +179,8 @@ Error responses keep a human-readable `error` string and add a machine-readable 
 - `MEMORY_BACKUP_INVALID`
 - `MEMORY_BACKUP_NOT_FOUND`
 - `MEMORY_BACKUP_CHECKSUM_MISMATCH`
+- `MEMORY_RESTORE_CONFIRMATION_REQUIRED`
+- `MEMORY_RESTORE_CHECKSUM_REQUIRED`
 - `AUTH_REQUIRED`
 - `AUTH_INVALID`
 - `AUTH_USER_MISMATCH`
@@ -215,7 +218,7 @@ Common API errors include:
 - `harness`: LangGraph runtime, run id, model mode, model adapter, executed steps, duration, fallback status, fallback reason, schema status, budgets, budget status, read-only tool registry, model error codes, and errors.
 - `safety`: aggregate safety status, risk types, and guardrail checks.
 
-`GET /api/memory` returns `long_term_memories` plus `long_term_memory_query` so the UI and tests can verify which query, status filter, limit, `embedding_model`, and `vector_search` setting produced the memory list. `GET /api/memory/status` exposes operational database counts and migration health without returning memory content. `POST /api/memory/backup` checkpoints WAL state, writes a same-directory `.sqlite.bak` copy, and returns a SHA-256 checksum so operators can verify backup integrity. `GET /api/memory/backups` lists available backup basenames, and `POST /api/memory/restore-plan` validates a selected backup and returns a manual rollback plan without mutating the active database.
+`GET /api/memory` returns `long_term_memories` plus `long_term_memory_query` so the UI and tests can verify which query, status filter, limit, `embedding_model`, and `vector_search` setting produced the memory list. `GET /api/memory/status` exposes operational database counts and migration health without returning memory content. `POST /api/memory/backup` checkpoints WAL state, writes a same-directory `.sqlite.bak` copy, and returns a SHA-256 checksum so operators can verify backup integrity. `GET /api/memory/backups` lists available backup basenames, and `POST /api/memory/restore-plan` validates a selected backup and returns a manual rollback plan without mutating the active database. `POST /api/memory/restore` requires the backup basename, matching SHA-256, and `confirm: "RESTORE_MEMORY_DATABASE"`; it creates a fresh pre-restore backup, replaces the active SQLite memory database, clears WAL/SHM files, and reopens the database.
 
 Evaluation metrics are scoped to the requested `projectId`, so safety status, output redaction counts, recent redaction events, memory status, memory event action counts, recent memory events, harness runtime, model mode, tool policy, recent tool policy events, budget status, schema status, LLM usage, trace tool usage, fallback, response-time counts, recent safety events, recent harness runs, recent LangGraph checkpoints, recent schema migrations, and recent feedback run correlation reflect the currently selected imported repository. Metrics ignore unknown feedback types so old or manually edited store data cannot pollute quality rates and failure-reason counts.
 

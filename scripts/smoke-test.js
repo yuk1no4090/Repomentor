@@ -1057,6 +1057,47 @@ async function main() {
     });
     assert(badRestorePlan.status === 409, "bad restore checksum should return 409");
     assert(badRestorePlan.payload.code === "MEMORY_BACKUP_CHECKSUM_MISMATCH", "bad restore checksum returned wrong code");
+    const restoreWithoutConfirm = await requestError("/api/memory/restore", {
+      method: "POST",
+      body: JSON.stringify({
+        backup: memoryBackup.backup.path_basename,
+        sha256: memoryBackup.backup.sha256
+      })
+    });
+    assert(restoreWithoutConfirm.status === 400, "restore without confirmation should return 400");
+    assert(restoreWithoutConfirm.payload.code === "MEMORY_RESTORE_CONFIRMATION_REQUIRED", "restore without confirmation returned wrong code");
+    const restoreUserHeaders = { "x-user-id": "restore-user" };
+    const restoreUserRun = await request("/api/agent-impact", {
+      method: "POST",
+      headers: restoreUserHeaders,
+      body: JSON.stringify({
+        projectId,
+        question: "As QA, I prefer detailed testing-focused answers for checkout risk reviews."
+      })
+    });
+    const restoreUserSuggestion = restoreUserRun.payload.memory_suggestions.find((item) => item.key === "role" && item.value === "QA");
+    assert(restoreUserSuggestion, "restore smoke did not create isolated QA memory suggestion");
+    await request("/api/memory/confirm", {
+      method: "POST",
+      headers: restoreUserHeaders,
+      body: JSON.stringify({ projectId, suggestionId: restoreUserSuggestion.id })
+    });
+    const restoreUserMemoryBefore = await request(`/api/memory?userId=restore-user&projectId=${encodeURIComponent(projectId)}&q=${encodeURIComponent("QA")}`);
+    assert(restoreUserMemoryBefore.long_term_memories.some((item) => item.key === "role" && item.value === "QA"), "restore smoke setup did not persist QA memory");
+    const restoreExecuted = await request("/api/memory/restore", {
+      method: "POST",
+      body: JSON.stringify({
+        backup: memoryBackup.backup.path_basename,
+        sha256: memoryBackup.backup.sha256,
+        confirm: "RESTORE_MEMORY_DATABASE"
+      })
+    });
+    assert(restoreExecuted.restore?.mode === "restore executed", "memory restore did not execute");
+    assert(restoreExecuted.restore.restored === true, "memory restore did not report restored=true");
+    assert(restoreExecuted.restore.backup.sha256 === memoryBackup.backup.sha256, "memory restore returned wrong backup checksum");
+    assert(/\.sqlite\.bak$/.test(restoreExecuted.restore.pre_restore_backup?.path_basename || ""), "memory restore did not create a pre-restore backup");
+    const restoreUserMemoryAfter = await request(`/api/memory?userId=restore-user&projectId=${encodeURIComponent(projectId)}&q=${encodeURIComponent("QA")}`);
+    assert(!restoreUserMemoryAfter.long_term_memories.some((item) => item.key === "role" && item.value === "QA" && item.status === "active"), "memory restore did not roll back isolated QA memory");
 
     const remembered = await request("/api/agent-impact", {
       method: "POST",

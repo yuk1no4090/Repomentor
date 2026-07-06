@@ -535,6 +535,16 @@ function getMemoryDatabase() {
   return memoryDb;
 }
 
+function closeMemoryDatabase() {
+  if (!memoryDb) return;
+  try {
+    memoryDb.close();
+  } finally {
+    memoryDb = null;
+    memoryDbFtsEnabled = false;
+  }
+}
+
 function getMemoryDatabaseStatus() {
   const db = getMemoryDatabase();
   const memoryCounts = db.prepare(`
@@ -681,6 +691,50 @@ function createMemoryDatabaseRestorePlan({ backupName, expectedSha256 = null } =
     ],
     note: "This endpoint validates a backup and returns a rollback plan only; it does not replace or mutate the active SQLite database."
   };
+}
+
+async function restoreMemoryDatabaseFromBackup({ backupName, expectedSha256, confirm } = {}) {
+  if (confirm !== "RESTORE_MEMORY_DATABASE") {
+    throw apiError("Restore confirmation phrase is required.", "MEMORY_RESTORE_CONFIRMATION_REQUIRED", 400);
+  }
+  if (!expectedSha256) {
+    throw apiError("Restore requires an expected SHA-256 checksum.", "MEMORY_RESTORE_CHECKSUM_REQUIRED", 400);
+  }
+  const restorePlan = createMemoryDatabaseRestorePlan({ backupName, expectedSha256 });
+  const currentBackup = await createMemoryDatabaseBackup();
+  const backupPath = resolveMemoryBackupPath(backupName);
+  const tempRestorePath = path.join(
+    path.dirname(MEMORY_DB_PATH),
+    `.memory-restore-${process.pid}-${Date.now()}.sqlite.tmp`
+  );
+  closeMemoryDatabase();
+  try {
+    await fs.copyFile(backupPath, tempRestorePath);
+    await fs.copyFile(tempRestorePath, MEMORY_DB_PATH);
+    await fs.unlink(tempRestorePath).catch(() => {});
+    await fs.unlink(`${MEMORY_DB_PATH}-wal`).catch(() => {});
+    await fs.unlink(`${MEMORY_DB_PATH}-shm`).catch(() => {});
+    const restoredStatus = getMemoryDatabaseStatus();
+    return {
+      mode: "restore executed",
+      restored: true,
+      backup: restorePlan.backup,
+      pre_restore_backup: currentBackup,
+      restored_database: {
+        path_basename: restoredStatus.path_basename,
+        size_bytes: restoredStatus.size_bytes,
+        total_memory_items: restoredStatus.total_memory_items,
+        schema_migration_count: restoredStatus.schema_migration_count,
+        langgraph_checkpoint_count: restoredStatus.langgraph_checkpoint_count
+      },
+      note: "The selected backup replaced the active SQLite memory database. The previous active database was backed up first."
+    };
+  } catch (error) {
+    await fs.unlink(tempRestorePath).catch(() => {});
+    closeMemoryDatabase();
+    getMemoryDatabase();
+    throw error;
+  }
 }
 
 function normalizeLongTermMemoryItem(item) {
@@ -2088,7 +2142,7 @@ function requiredScopeForRequest(req, pathname) {
   if (pathname === "/api/health") return null;
   if (req.method === "GET") return "project:read";
   if (pathname === "/api/import") return "project:write";
-  if (pathname === "/api/memory/confirm" || pathname === "/api/memory/forget" || pathname === "/api/memory/backup" || pathname === "/api/memory/restore-plan") return "memory:write";
+  if (pathname === "/api/memory/confirm" || pathname === "/api/memory/forget" || pathname === "/api/memory/backup" || pathname === "/api/memory/restore-plan" || pathname === "/api/memory/restore") return "memory:write";
   if (pathname === "/api/chat" || pathname === "/api/agent-impact" || pathname === "/api/onboarding" || pathname === "/api/langgraph-resume") return "answer:write";
   if (pathname === "/api/feedback") return "feedback:write";
   return "project:read";
@@ -4680,6 +4734,17 @@ async function handleApiUnlocked(req, res, pathname) {
         expectedSha256: body.sha256 || body.expectedSha256 || body.expected_sha256 || null
       });
       sendJson(res, 200, { restore_plan: restorePlan });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/memory/restore") {
+      const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
+      const restore = await restoreMemoryDatabaseFromBackup({
+        backupName: body.backup || body.backupName || body.backup_name,
+        expectedSha256: body.sha256 || body.expectedSha256 || body.expected_sha256 || null,
+        confirm: body.confirm
+      });
+      sendJson(res, 200, { restore });
       return;
     }
 

@@ -226,6 +226,15 @@ async function run() {
     assert(viewerRestorePlan.status === 403, "viewer token should not be allowed to create restore plans");
     assert(viewerRestorePlan.payload.code === "AUTH_SCOPE_FORBIDDEN", "viewer restore plan did not return AUTH_SCOPE_FORBIDDEN");
     assert(viewerRestorePlan.payload.required_scope === "memory:write", "viewer restore plan required wrong scope");
+    const viewerRestore = await request(baseUrl, "/api/memory/restore", {
+      method: "POST",
+      token: "viewer-token",
+      expectOk: false,
+      body: JSON.stringify({ backup: "memory-test.sqlite.bak", sha256: "0".repeat(64), confirm: "RESTORE_MEMORY_DATABASE" })
+    });
+    assert(viewerRestore.status === 403, "viewer token should not be allowed to restore memory database");
+    assert(viewerRestore.payload.code === "AUTH_SCOPE_FORBIDDEN", "viewer restore did not return AUTH_SCOPE_FORBIDDEN");
+    assert(viewerRestore.payload.required_scope === "memory:write", "viewer restore required wrong scope");
 
     const { payload: authEvents } = await request(baseUrl, "/api/auth/events?limit=20", { token: "token-a" });
     assert(Array.isArray(authEvents.events), "auth events did not return an events array");
