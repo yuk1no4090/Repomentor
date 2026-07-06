@@ -51,7 +51,7 @@ Memory suggestions are stored separately under `memorySuggestions`. The system m
 
 Memory mutations are also recorded under `memoryEvents`. Confirming, ignoring, selectively forgetting, or clearing preferences creates a lightweight audit event with project id, suggestion id when available, action, preference key/value, status, and timestamp. `GET /api/memory` returns recent events alongside preferences and suggestions.
 
-The Copilot inspector uses `GET /api/memory` plus `POST /api/memory/forget` as a lightweight memory manager. It shows confirmed preferences, recent long-term memory items, and audit events, and lets the user remove one key/value pair or clear all preferences without creating a separate page.
+The Copilot inspector uses `GET /api/memory` plus `POST /api/memory/forget` as a lightweight memory manager. It shows confirmed preferences, recent long-term memory items, and audit events, and lets the user remove one key/value pair or clear all preferences without creating a separate page. `GET /api/memory` also supports `q`/`query`, `status=active|forgotten|all`, and `limit`; the response includes `long_term_memory_query` so UI and tests can verify the exact memory inspection filter.
 
 Confirmed preferences are applied to both impact analysis and ordinary Q&A. Retrieved long-term memory is also reported to both flows. Product Manager, QA, focus-area, language, and detail-level preferences can change answer emphasis, suggested next questions, and concise/detailed shaping after schema validation and before safety checks.
 

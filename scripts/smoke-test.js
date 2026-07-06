@@ -959,6 +959,12 @@ async function main() {
     assert(memory.preferences.role || memory.preferences.detailLevel || memory.preferences.focusAreas.length, "confirmed memory did not update preferences");
     assert(Array.isArray(memory.long_term_memories), "memory API did not expose long-term memories");
     assert(memory.long_term_memories.some((item) => item.type === "preference" && item.status === "active" && suggestionIds.includes(String(item.source || "").replace("memory_suggestion:", ""))), "confirmed memory was not written to long-term memory store");
+    assert(memory.long_term_memory_query?.status === "active", "memory API did not report default long-term memory query status");
+    const searchedMemory = await request(`/api/memory?projectId=${encodeURIComponent(projectId)}&q=${encodeURIComponent("Product Manager")}&limit=2`);
+    assert(searchedMemory.long_term_memory_query.query === "Product Manager", "memory search did not echo the query");
+    assert(searchedMemory.long_term_memory_query.limit === 2, "memory search did not clamp/report requested limit");
+    assert(searchedMemory.long_term_memory_query.result_count <= 2, "memory search did not respect limit");
+    assert(searchedMemory.long_term_memories.some((item) => item.value === "Product Manager"), "memory search did not find Product Manager preference");
     const memoryDbPath = path.join(dataDir, "memory.sqlite");
     await readFile(memoryDbPath);
 
@@ -1037,6 +1043,9 @@ async function main() {
     assert(!forgotDetail.preferences.detailLevel, "selective forget did not clear detailLevel preference");
     assert(forgotDetail.events.some((item) => item.action === "forgot_preference" && item.key === "detailLevel" && item.status === "forgotten"), "selective forget did not create memory audit event");
     assert(!forgotDetail.long_term_memories.some((item) => item.key === "detailLevel" && item.status === "active"), "selective forget did not remove active long-term detail memory");
+    const forgottenDetailMemory = await request(`/api/memory?projectId=${encodeURIComponent(projectId)}&status=forgotten&q=${encodeURIComponent("concise")}`);
+    assert(forgottenDetailMemory.long_term_memory_query.status === "forgotten", "forgotten memory search did not report forgotten status");
+    assert(forgottenDetailMemory.long_term_memories.some((item) => item.key === "detailLevel" && item.status === "forgotten"), "forgotten memory search did not expose forgotten detail memory");
     const afterSelectiveForget = await request("/api/agent-impact", {
       method: "POST",
       body: JSON.stringify({

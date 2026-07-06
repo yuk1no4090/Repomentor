@@ -16,6 +16,8 @@ const requiredServerSnippets = [
   "function markLongTermMemoryForgotten",
   "function searchLongTermMemory",
   "function listLongTermMemories",
+  "function normalizeLongTermMemoryStatusFilter",
+  "long_term_memory_query",
   "long_term_memories",
   "long_term:"
 ];
@@ -31,7 +33,8 @@ const requiredDocSnippets = [
   "MEMORY_DB_PATH",
   "SQLite",
   "memory_items",
-  "long-term memory"
+  "long-term memory",
+  "long_term_memory_query"
 ];
 
 const missingServerSnippets = requiredServerSnippets.filter((snippet) => !serverSource.includes(snippet));

@@ -509,11 +509,45 @@ function tokenizeMemoryQuery(text) {
     .slice(0, 8);
 }
 
-function searchLongTermMemory({ projectId = null, query = "", limit = 5 } = {}) {
+function normalizeLongTermMemoryStatusFilter(status = "active") {
+  const normalized = String(status || "active").toLowerCase();
+  if (normalized === "all") return "all";
+  if (normalized === "forgotten") return "forgotten";
+  return "active";
+}
+
+function parsePositiveInteger(value, fallback, max) {
+  const parsed = Number.parseInt(String(value || ""), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(parsed, max);
+}
+
+function buildLongTermMemoryFilters({ projectId = null, status = "active" } = {}) {
+  const statusFilter = normalizeLongTermMemoryStatusFilter(status);
+  const clauses = [];
+  const params = [];
+  if (statusFilter === "active") {
+    clauses.push("m.status = ?");
+    params.push("active");
+  } else if (statusFilter === "forgotten") {
+    clauses.push("m.status != ?");
+    params.push("active");
+  }
+  if (projectId) {
+    clauses.push("(m.project_id = ? OR m.project_id IS NULL)");
+    params.push(projectId);
+  }
+  return {
+    status: statusFilter,
+    sql: clauses.length ? `AND ${clauses.join(" AND ")}` : "",
+    params
+  };
+}
+
+function searchLongTermMemory({ projectId = null, query = "", limit = 5, status = "active", recordUsage = true } = {}) {
   const db = getMemoryDatabase();
   const tokens = tokenizeMemoryQuery(query);
-  const scopedParams = projectId ? [projectId] : [];
-  const scopeSql = projectId ? "AND (m.project_id = ? OR m.project_id IS NULL)" : "";
+  const filters = buildLongTermMemoryFilters({ projectId, status });
   let rows = [];
   if (tokens.length && memoryDbFtsEnabled) {
     const ftsQuery = tokens.map((token) => `${token.replaceAll('"', "")}*`).join(" OR ");
@@ -521,54 +555,50 @@ function searchLongTermMemory({ projectId = null, query = "", limit = 5 } = {}) 
       SELECT m.* FROM memory_items_fts f
       JOIN memory_items m ON m.id = f.memory_id
       WHERE memory_items_fts MATCH ?
-        AND m.status = 'active'
-        ${scopeSql}
+        ${filters.sql}
       ORDER BY rank
       LIMIT ?
-    `).all(ftsQuery, ...scopedParams, limit);
+    `).all(ftsQuery, ...filters.params, limit);
   }
   if (!rows.length && tokens.length) {
     const like = `%${tokens[0]}%`;
     rows = db.prepare(`
       SELECT m.* FROM memory_items m
-      WHERE m.status = 'active'
-        ${scopeSql}
+      WHERE 1 = 1
+        ${filters.sql}
         AND (lower(m.content) LIKE ? OR lower(m.key) LIKE ? OR lower(m.value) LIKE ? OR lower(m.label) LIKE ?)
       ORDER BY m.updated_at DESC
       LIMIT ?
-    `).all(...scopedParams, like, like, like, like, limit);
+    `).all(...filters.params, like, like, like, like, limit);
   }
   if (!rows.length) {
     rows = db.prepare(`
       SELECT m.* FROM memory_items m
-      WHERE m.status = 'active'
-        ${scopeSql}
+      WHERE 1 = 1
+        ${filters.sql}
       ORDER BY m.updated_at DESC
       LIMIT ?
-    `).all(...scopedParams, limit);
+    `).all(...filters.params, limit);
   }
-  const now = new Date().toISOString();
-  rows.forEach((row) => {
-    db.prepare("UPDATE memory_items SET last_used_at = ? WHERE id = ?").run(now, row.id);
-  });
+  if (recordUsage) {
+    const now = new Date().toISOString();
+    rows.forEach((row) => {
+      db.prepare("UPDATE memory_items SET last_used_at = ? WHERE id = ?").run(now, row.id);
+    });
+  }
   return rows.map(normalizeLongTermMemoryItem).filter(Boolean);
 }
 
-function listLongTermMemories({ projectId = null, limit = 20 } = {}) {
+function listLongTermMemories({ projectId = null, limit = 20, status = "active" } = {}) {
   const db = getMemoryDatabase();
-  const rows = projectId
-    ? db.prepare(`
-      SELECT * FROM memory_items
-      WHERE status = 'active' AND (project_id = ? OR project_id IS NULL)
-      ORDER BY updated_at DESC
-      LIMIT ?
-    `).all(projectId, limit)
-    : db.prepare(`
-      SELECT * FROM memory_items
-      WHERE status = 'active'
-      ORDER BY updated_at DESC
-      LIMIT ?
-    `).all(limit);
+  const filters = buildLongTermMemoryFilters({ projectId, status });
+  const rows = db.prepare(`
+    SELECT * FROM memory_items m
+    WHERE 1 = 1
+      ${filters.sql}
+    ORDER BY updated_at DESC
+    LIMIT ?
+  `).all(...filters.params, limit);
   return rows.map(normalizeLongTermMemoryItem).filter(Boolean);
 }
 
@@ -3097,6 +3127,9 @@ async function handleApiUnlocked(req, res, pathname) {
       const url = new URL(req.url, `http://${req.headers.host}`);
       const projectId = url.searchParams.get("projectId");
       if (projectId) findProject(store, projectId);
+      const query = String(url.searchParams.get("query") || url.searchParams.get("q") || "").trim();
+      const status = normalizeLongTermMemoryStatusFilter(url.searchParams.get("status") || "active");
+      const limit = parsePositiveInteger(url.searchParams.get("limit"), 20, 50);
       const suggestions = store.memorySuggestions
         .filter((item) => !projectId || item.projectId === projectId)
         .slice(-20)
@@ -3105,12 +3138,20 @@ async function handleApiUnlocked(req, res, pathname) {
         .filter((item) => !projectId || item.projectId === projectId || item.projectId == null)
         .slice(-20)
         .reverse();
-      const longTermMemories = listLongTermMemories({ projectId, limit: 20 });
+      const longTermMemories = query
+        ? searchLongTermMemory({ projectId, query, status, limit, recordUsage: false })
+        : listLongTermMemories({ projectId, status, limit });
       sendJson(res, 200, {
         preferences: store.userPreferences,
         suggestions,
         events,
-        long_term_memories: longTermMemories
+        long_term_memories: longTermMemories,
+        long_term_memory_query: {
+          query,
+          status,
+          limit,
+          result_count: longTermMemories.length
+        }
       });
       return;
     }

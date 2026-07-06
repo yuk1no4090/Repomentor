@@ -122,7 +122,7 @@ The `modelAdapter` boundary uses an OpenAI-compatible chat completions call when
 | `POST` | `/api/feedback` | Record answer feedback. |
 | `GET` | `/api/evaluation` | Return quality, memory, safety, and fallback metrics. |
 | `GET` | `/api/harness-run` | Return one persisted harness run audit by `projectId` and `runId`. |
-| `GET` | `/api/memory` | Return confirmed preferences, recent memory suggestions, and memory audit events. |
+| `GET` | `/api/memory` | Return confirmed preferences, recent memory suggestions, memory audit events, and long-term memories. Supports `projectId`, `q`/`query`, `status=active|forgotten|all`, and `limit` for memory inspection. |
 | `POST` | `/api/memory/confirm` | Confirm a pending memory suggestion and update preferences. |
 | `POST` | `/api/memory/forget` | Ignore a suggestion, clear one preference, or clear all preferences. |
 
@@ -159,6 +159,8 @@ Common API errors include:
 - `memory_suggestions`: pending suggestions that require explicit user confirmation.
 - `harness`: LangGraph runtime, run id, model mode, model adapter, executed steps, duration, fallback status, fallback reason, schema status, budgets, budget status, read-only tool registry, model error codes, and errors.
 - `safety`: aggregate safety status, risk types, and guardrail checks.
+
+`GET /api/memory` returns `long_term_memories` plus `long_term_memory_query` so the UI and tests can verify which query, status filter, and limit produced the memory list.
 
 Evaluation metrics are scoped to the requested `projectId`, so safety status, output redaction counts, recent redaction events, memory status, memory event action counts, recent memory events, harness runtime, model mode, tool policy, recent tool policy events, budget status, schema status, LLM usage, trace tool usage, fallback, response-time counts, recent safety events, recent harness runs, and recent feedback run correlation reflect the currently selected imported repository. Metrics ignore unknown feedback types so old or manually edited store data cannot pollute quality rates and failure-reason counts.
 
