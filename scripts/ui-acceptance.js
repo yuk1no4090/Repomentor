@@ -98,8 +98,12 @@ function assertServedFrontend({ html, appSource, stylesSource }) {
   assert(appSource.includes("Long-term memory"), "served app is missing long-term memory UI copy");
   assert(appSource.includes("data-memory-action=\"confirm\""), "served app is missing memory confirmation action");
   assert(appSource.includes("data-harness-run"), "served app is missing harness audit action");
+  assert(appSource.includes("Auth Operations"), "served app is missing auth operations panel");
+  assert(appSource.includes("data-auth-token-input"), "served app is missing browser auth token input");
+  assert(appSource.includes("data-auth-disable-user"), "served app is missing local auth disable action");
   assert(stylesSource.includes(".runtime-status"), "served styles are missing runtime status styling");
   assert(stylesSource.includes(".memory-manager"), "served styles are missing memory manager styling");
+  assert(stylesSource.includes(".auth-ops"), "served styles are missing auth operations styling");
 }
 
 function assertUiDataContract({ project, agent, memory, evaluation, harnessAudit }) {

@@ -154,6 +154,30 @@ const missingDashboardSnippets = requiredDashboardSnippets.filter((snippet) => {
   return !appSource.includes(snippet);
 });
 
+const requiredAuthUiSnippets = [
+  "state.authToken",
+  "localStorage.getItem(\"aido-api-token\")",
+  "Authorization = `Bearer ${state.authToken}`",
+  "topbar-auth",
+  "data-auth-token-input",
+  "function renderAuthOperationsPanel",
+  "Auth Operations",
+  "/api/auth/users",
+  "/api/auth/events?limit=20",
+  "function refreshAuthAdmin",
+  "function saveBrowserAuthToken",
+  "function createAuthUserFromForm",
+  "function disableAuthUser",
+  "data-auth-action=\"create-user\"",
+  "data-auth-disable-user",
+  "confirm(`Disable local auth user",
+  "createdToken"
+];
+
+const missingAuthUiSnippets = requiredAuthUiSnippets.filter((snippet) => {
+  return !appSource.includes(snippet);
+});
+
 const requiredStyleSnippets = [
   ".runtime-status",
   ".memory-suggestions",
@@ -164,7 +188,11 @@ const requiredStyleSnippets = [
   ".memory-events",
   ".memory-clear",
   ".text-button",
-  ".compact-trace"
+  ".compact-trace",
+  ".topbar-auth",
+  ".auth-ops",
+  ".auth-grid",
+  ".auth-created-token"
 ];
 
 const staleFrontendTerms = [
@@ -183,6 +211,7 @@ if (
   || missingChatRuntimeSnippets.length
   || missingMemoryActionSnippets.length
   || missingDashboardSnippets.length
+  || missingAuthUiSnippets.length
   || missingStyleSnippets.length
   || staleFrontendTerms.length
 ) {
@@ -191,6 +220,7 @@ if (
     missingChatRuntimeSnippets,
     missingMemoryActionSnippets,
     missingDashboardSnippets,
+    missingAuthUiSnippets,
     missingStyleSnippets,
     staleFrontendTerms
   }, null, 2));
@@ -203,5 +233,6 @@ console.log(JSON.stringify({
   chatRuntimeSnippets: requiredChatRuntimeSnippets.length,
   memoryActionSnippets: requiredMemoryActionSnippets.length,
   dashboardSnippets: requiredDashboardSnippets.length,
+  authUiSnippets: requiredAuthUiSnippets.length,
   styleSnippets: requiredStyleSnippets.length
 }, null, 2));

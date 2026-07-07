@@ -8,6 +8,8 @@ const state = {
   metrics: null,
   harnessAudit: null,
   memory: null,
+  auth: { users: [], tokens: [], events: [], error: null, createdToken: null },
+  authToken: localStorage.getItem("aido-api-token") || "",
   llmStatus: null,
   lang: localStorage.getItem("aido-lang") || "en"
 };
@@ -508,9 +510,12 @@ function progressStepName(step) {
 }
 
 async function api(path, options = {}) {
+  const { headers: optionHeaders = {}, ...fetchOptions } = options;
+  const headers = { "content-type": "application/json", ...optionHeaders };
+  if (state.authToken && !headers.Authorization) headers.Authorization = `Bearer ${state.authToken}`;
   const response = await fetch(path, {
-    headers: { "content-type": "application/json", ...(options.headers || {}) },
-    ...options
+    headers,
+    ...fetchOptions
   });
   const payload = await response.json();
   if (!response.ok) {
@@ -560,7 +565,10 @@ async function refreshMemory(shouldRender = true) {
 function setPage(page) {
   state.page = page;
   if (page === "chat") Promise.all([checkHealth(), refreshMemory(false)]).then(render);
-  if (page === "dashboard" && state.project) refreshMetrics();
+  if (page === "dashboard" && state.project) {
+    refreshMetrics();
+    refreshAuthAdmin(false);
+  }
   render();
 }
 
@@ -590,6 +598,10 @@ function nav() {
         <nav>
           ${items.map(([page, label]) => `<button class="nav-item ${state.page === page ? "active" : ""}" data-page="${page}">${label}</button>`).join("")}
         </nav>
+        <div class="topbar-auth">
+          <input data-auth-token-input type="password" autocomplete="off" value="${escapeHtml(state.authToken || "")}" placeholder="API token">
+          <button data-auth-action="save-token">Auth</button>
+        </div>
         <div class="language-toggle" aria-label="Language switch">
           <button class="${state.lang === "en" ? "active" : ""}" data-lang="en">EN</button>
           <button class="${state.lang === "zh" ? "active" : ""}" data-lang="zh">中文</button>
@@ -1510,6 +1522,95 @@ function recentMemoryEvents(items = []) {
   `;
 }
 
+function renderAuthOperationsPanel() {
+  const auth = state.auth || {};
+  const users = auth.users || [];
+  const tokens = auth.tokens || [];
+  const events = auth.events || [];
+  const activeTokens = tokens.filter((item) => item.status === "active").length;
+  const tokenStatus = state.authToken ? "token set in this browser" : "no browser token";
+  return html`
+    <section class="panel span-3 auth-ops">
+      <div class="panel-title-row">
+        <div>
+          <h2>Auth Operations</h2>
+          <p>${escapeHtml(tokenStatus)} | ${users.length} users | ${activeTokens} active tokens</p>
+        </div>
+        <button class="secondary" data-auth-action="refresh">Refresh</button>
+      </div>
+
+      <div class="auth-token-row">
+        <label>
+          <span>API token</span>
+          <input data-auth-token-input type="password" autocomplete="off" value="${escapeHtml(state.authToken || "")}" placeholder="Bearer token for protected APIs">
+        </label>
+        <button data-auth-action="save-token">Save token</button>
+        <button class="secondary" data-auth-action="clear-token">Clear</button>
+      </div>
+
+      ${auth.error ? `<p class="auth-error">${escapeHtml(auth.error)}</p>` : ""}
+      ${auth.createdToken ? `<div class="auth-created-token">
+        <strong>One-time token</strong>
+        <code>${escapeHtml(auth.createdToken)}</code>
+      </div>` : ""}
+
+      <div class="auth-grid">
+        <div class="auth-form">
+          <h3>Create local user</h3>
+          <label><span>User ID</span><input id="authUserIdInput" autocomplete="off" placeholder="pm-user"></label>
+          <label><span>Role</span><input id="authRoleInput" autocomplete="off" value="viewer"></label>
+          <label><span>Scopes</span><input id="authScopesInput" autocomplete="off" value="project:read"></label>
+          <label><span>Org ID</span><input id="authOrgInput" autocomplete="off" placeholder="optional"></label>
+          <label class="auth-checkbox"><input id="authIssueTokenInput" type="checkbox" checked><span>Issue token</span></label>
+          <button data-auth-action="create-user">Create user</button>
+        </div>
+
+        <div class="auth-list">
+          <h3>Users</h3>
+          ${users.length ? users.map((user) => `
+            <div>
+              <span>
+                <strong>${escapeHtml(user.id || user.userId || "user")}</strong>
+                <small>${escapeHtml([user.role, user.source, user.status].filter(Boolean).join(" | "))}</small>
+                <small>${escapeHtml((user.scopes || []).join(", ") || "no scopes")}</small>
+              </span>
+              ${user.source === "store" && user.status !== "disabled"
+                ? `<button class="text-button danger-text" data-auth-disable-user="${escapeHtml(user.id || user.userId || "")}">Disable</button>`
+                : ""}
+            </div>
+          `).join("") : `<p class="empty-inline">No users loaded.</p>`}
+        </div>
+
+        <div class="auth-list">
+          <h3>Tokens</h3>
+          ${tokens.length ? tokens.map((token) => `
+            <div>
+              <span>
+                <strong>${escapeHtml(token.userId || "user")}</strong>
+                <small>${escapeHtml([token.tokenPrefix, token.status, token.source].filter(Boolean).join(" | "))}</small>
+                <small>${escapeHtml((token.scopes || []).join(", ") || "no scopes")}</small>
+              </span>
+            </div>
+          `).join("") : `<p class="empty-inline">No store-backed tokens loaded.</p>`}
+        </div>
+
+        <div class="auth-list">
+          <h3>Recent auth events</h3>
+          ${events.length ? events.slice(0, 6).map((event) => `
+            <div>
+              <span>
+                <strong>${escapeHtml(event.status || "unknown")}</strong>
+                <small>${escapeHtml([event.userId, event.requiredScope, event.reason].filter(Boolean).join(" | "))}</small>
+                <small>${escapeHtml(event.pathname || "")}</small>
+              </span>
+            </div>
+          `).join("") : `<p class="empty-inline">No auth events loaded.</p>`}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
 function dashboardPage() {
   if (!state.project) return emptyProject("Import a repository before viewing evaluation metrics.");
   const c = t();
@@ -1673,6 +1774,7 @@ function dashboardPage() {
           ${recentHarnessRuns(metrics.recent_harness_runs)}
         </section>
         ${harnessAuditPanel(state.harnessAudit)}
+        ${renderAuthOperationsPanel()}
         <section class="panel span-2">
           <h2>${c.dashboard.recent}</h2>
           <div class="feedback-log">
@@ -1929,6 +2031,79 @@ async function refreshMetrics(shouldRender = true) {
   if (shouldRender) render();
 }
 
+async function refreshAuthAdmin(shouldRender = true) {
+  try {
+    const [usersPayload, eventsPayload] = await Promise.all([
+      api("/api/auth/users"),
+      api("/api/auth/events?limit=20")
+    ]);
+    state.auth = {
+      users: usersPayload.users || [],
+      tokens: usersPayload.tokens || [],
+      events: eventsPayload.events || [],
+      error: null,
+      createdToken: state.auth?.createdToken || null
+    };
+  } catch (error) {
+    state.auth = {
+      users: [],
+      tokens: [],
+      events: [],
+      error: `${error.message || "Auth endpoints unavailable."}${error.code ? ` [${error.code}]` : ""}`,
+      createdToken: null
+    };
+  }
+  if (shouldRender) render();
+}
+
+function saveBrowserAuthToken(sourceElement = null) {
+  const token = sourceElement?.closest(".auth-token-row, .topbar-auth")?.querySelector("[data-auth-token-input]")?.value?.trim()
+    || document.querySelector("[data-auth-token-input]")?.value?.trim()
+    || "";
+  state.authToken = token;
+  if (token) localStorage.setItem("aido-api-token", token);
+  else localStorage.removeItem("aido-api-token");
+  state.auth = { ...(state.auth || {}), createdToken: null };
+  refreshAuthAdmin();
+}
+
+async function createAuthUserFromForm() {
+  try {
+    const userId = document.querySelector("#authUserIdInput")?.value?.trim();
+    const role = document.querySelector("#authRoleInput")?.value?.trim() || "viewer";
+    const scopes = (document.querySelector("#authScopesInput")?.value || "project:read")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const orgId = document.querySelector("#authOrgInput")?.value?.trim() || null;
+    const issueToken = !!document.querySelector("#authIssueTokenInput")?.checked;
+    const payload = await api("/api/auth/users", {
+      method: "POST",
+      body: JSON.stringify({ userId, role, scopes, orgId, issueToken })
+    });
+    await refreshAuthAdmin(false);
+    state.auth = { ...(state.auth || {}), error: null, createdToken: payload.token || null };
+    render();
+  } catch (error) {
+    showError(error);
+  }
+}
+
+async function disableAuthUser(userId) {
+  if (!userId) return;
+  if (!confirm(`Disable local auth user "${userId}" and all store-backed tokens for this user?`)) return;
+  try {
+    await api("/api/auth/users/disable", {
+      method: "POST",
+      body: JSON.stringify({ userId })
+    });
+    state.auth = { ...(state.auth || {}), createdToken: null };
+    await refreshAuthAdmin();
+  } catch (error) {
+    showError(error);
+  }
+}
+
 async function loadHarnessAudit(runId) {
   if (!state.project || !runId) return;
   try {
@@ -2012,6 +2187,27 @@ document.addEventListener("click", (event) => {
   const memoryButton = event.target.closest("[data-memory-action]");
   if (memoryButton) {
     handleMemorySuggestion(memoryButton.dataset.suggestion, memoryButton.dataset.memoryAction);
+    return;
+  }
+
+  const authAction = event.target.closest("[data-auth-action]");
+  if (authAction) {
+    const action = authAction.dataset.authAction;
+    if (action === "refresh") refreshAuthAdmin();
+    if (action === "save-token") saveBrowserAuthToken(authAction);
+    if (action === "clear-token") {
+      state.authToken = "";
+      localStorage.removeItem("aido-api-token");
+      state.auth = { users: [], tokens: [], events: [], error: null, createdToken: null };
+      render();
+    }
+    if (action === "create-user") createAuthUserFromForm();
+    return;
+  }
+
+  const disableAuth = event.target.closest("[data-auth-disable-user]");
+  if (disableAuth) {
+    disableAuthUser(disableAuth.dataset.authDisableUser);
     return;
   }
 
