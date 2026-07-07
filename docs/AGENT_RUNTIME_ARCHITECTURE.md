@@ -5,7 +5,7 @@ This document records the first production-shaped implementation boundary for th
 ## Scope
 
 - The agent workflow is implemented as a LangGraph `StateGraph`.
-- The LangGraph workflow runs with `MemorySaver` checkpointing and persists checkpoint summaries to SQLite.
+- The LangGraph workflow runs with `MemorySaver` checkpointing and persists checkpoint summaries plus sanitized executable checkpoint payloads to SQLite.
 - The first memory module is user preference memory only.
 - The harness is the runtime boundary around model calls, graph execution, tool policy, budgets, trace, schema validation, fallback, and errors.
 - AI safety is application-level guardrails. It is not a compliance certification.
@@ -92,13 +92,13 @@ If no API key is configured, the model adapter reports deterministic offline ret
 
 `buildAgentHarnessReport()` creates the public harness payload for `/api/agent-impact`.
 
-Agent workflow execution uses `MemorySaver` from `@langchain/langgraph-checkpoint` with `thread_id` set to the harness `run_id`. After execution, checkpoint tuple summaries are persisted into SQLite under `langgraph_checkpoints`. Persisted rows store metadata, compact state summaries, and a bounded resume input snapshot (`projectId`, question, user id, source run id). Audits can inspect checkpoint lineage, source, node, trace-step count, memory usage, and safety status without duplicating the full answer payload.
+Agent workflow execution uses `MemorySaver` from `@langchain/langgraph-checkpoint` with `thread_id` set to the harness `run_id`. Runtime `store` and full project objects are not graph-state channels; nodes access them through the runtime closure so executable checkpoint payloads do not serialize auth users, token hashes, or the whole JSON store. After execution, checkpoint tuple summaries are persisted into SQLite under `langgraph_checkpoints`, while the serialized MemorySaver storage/writes snapshot is persisted under `langgraph_checkpoint_payloads`. Persisted summary rows store metadata, compact state summaries, and a bounded resume input snapshot (`projectId`, question, user id, source run id). Audits can inspect checkpoint lineage, source, node, trace-step count, memory usage, and safety status without duplicating the full answer payload.
 
-`GET /api/langgraph-checkpoint` returns one persisted checkpoint summary by `projectId`, `runId`, and `checkpointId`. This is a read-only time-travel inspection boundary: it exposes the saved checkpoint metadata and compact state summary, but does not resume or mutate graph state.
+`GET /api/langgraph-checkpoint` returns one persisted checkpoint summary by `projectId`, `runId`, and `checkpointId`. This is a read-only time-travel inspection boundary: it exposes the saved checkpoint metadata, compact state summary, and executable-resume availability, but does not resume or mutate graph state.
 
 `GET /api/langgraph-replay` returns the ordered checkpoint summary replay for one LangGraph run by `projectId` and `runId`. The replay is deterministic and audit-only: it reconstructs the persisted checkpoint timeline from SQLite summaries and explicitly does not invoke the graph, tools, or model.
 
-`POST /api/langgraph-resume` uses the persisted checkpoint input snapshot to re-execute the Agent Workflow as a new harness run. This is executable recovery from the checkpoint's saved input boundary, not mid-node continuation. The new payload includes `harness.resume.mode=input_snapshot_reexecution`, the source run id, and source checkpoint id. Checkpoints created before resume snapshots existed return `LANGGRAPH_RESUME_UNAVAILABLE`.
+`POST /api/langgraph-resume` first looks for the persisted MemorySaver payload for the source run. When present, the payload is cloned into a new harness run thread and LangGraph is invoked with the selected `checkpoint_id`, producing `harness.resume.mode=checkpoint_continuation`. This is executable continuation from a historical checkpoint boundary, not a read-only replay. Older checkpoints without executable payloads still use the persisted input snapshot and report `harness.resume.mode=input_snapshot_reexecution`; checkpoints created before resume snapshots existed return `LANGGRAPH_RESUME_UNAVAILABLE`.
 
 `buildChatHarnessReport()` creates the equivalent lightweight payload for `/api/chat`.
 
@@ -190,7 +190,7 @@ The first version intentionally does not include:
 - external database migration framework
 - LangSmith tracing
 - dynamic supervisor routing
-- mid-node LangGraph continuation from historical checkpoints
+- cross-process supervisor/checkpoint persistence beyond the local SQLite payload store
 - autonomous write tools
 - automatic external browsing tools
 - compliance certification claims

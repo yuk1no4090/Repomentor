@@ -15,7 +15,12 @@ const missingDependencies = ["@langchain/langgraph-checkpoint"].filter((name) =>
 const requiredServerSnippets = [
   "import { MemorySaver } from \"@langchain/langgraph-checkpoint\"",
   "CREATE TABLE IF NOT EXISTS langgraph_checkpoints",
+  "CREATE TABLE IF NOT EXISTS langgraph_checkpoint_payloads",
   "function persistLangGraphCheckpoints",
+  "function serializeMemorySaverSnapshot",
+  "function deserializeMemorySaverSnapshot",
+  "function persistLangGraphCheckpointPayload",
+  "function loadLangGraphCheckpointPayload",
   "function listLangGraphCheckpoints",
   "function findLangGraphCheckpoint",
   "function summarizeCheckpointTuple",
@@ -31,6 +36,7 @@ const requiredServerSnippets = [
   "function buildLangGraphReplay",
   "function runLangGraphResumeFromCheckpoint",
   "resume_input_json",
+  "checkpoint_continuation",
   "LANGGRAPH_REPLAY_UNAVAILABLE",
   "LANGGRAPH_RESUME_UNAVAILABLE",
   "time_travel"
@@ -43,6 +49,7 @@ const requiredSmokeSnippets = [
   "langgraphCheckpoint.time_travel",
   "langgraphReplay.replay",
   "resumedAgent.payload.harness",
+  "checkpoint_continuation",
   "langgraph_checkpoint_count",
   "recent_langgraph_checkpoints"
 ];
@@ -52,11 +59,13 @@ const requiredDocSnippets = [
   "MemorySaver",
   "langgraph_checkpoints",
   "checkpointing",
+  "langgraph_checkpoint_payloads",
   "recent_langgraph_checkpoints",
   "/api/langgraph-checkpoint",
   "/api/langgraph-replay",
   "/api/langgraph-resume",
   "checkpoint summary replay",
+  "checkpoint_continuation",
   "input_snapshot_reexecution",
   "read-only time-travel"
 ];

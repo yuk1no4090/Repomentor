@@ -90,16 +90,18 @@ SQLite is the durable source of record. External vector indexes are acceleration
 
 - `/api/agent-impact` creates a LangGraph harness run with trace, safety, memory, fallback, and checkpointing metadata.
 - `langgraph_checkpoints` stores compact checkpoint summaries for audit and replay.
+- `langgraph_checkpoint_payloads` stores sanitized MemorySaver payloads used for executable checkpoint continuation.
 - `GET /api/harness-run` returns the saved harness run plus recent checkpoint summaries.
-- `GET /api/langgraph-checkpoint` returns one read-only checkpoint summary.
+- `GET /api/langgraph-checkpoint` returns one read-only checkpoint summary and whether executable resume payloads are available.
 - `GET /api/langgraph-replay` reconstructs the checkpoint timeline without invoking the graph, tools, or model.
-- `POST /api/langgraph-resume` currently re-executes from a persisted input snapshot and records `harness.resume.mode=input_snapshot_reexecution`.
+- `POST /api/langgraph-resume` continues from a persisted checkpoint payload when available and records `harness.resume.mode=checkpoint_continuation`.
 
 Current resume boundary:
 
-- Mid-node continuation from historical checkpoints is intentionally not enabled yet.
-- Persisting raw LangGraph checkpoint state would currently include the graph `store` channel, so it needs a state-shape refactor before being safe to persist as executable checkpoint data.
-- Until that refactor is done, checkpoint endpoints are audit/replay surfaces and resume is input-snapshot re-execution.
+- Runtime `store` is kept out of graph state before executable checkpoint payloads are persisted.
+- Resume clones the source MemorySaver payload into a new harness run thread and invokes LangGraph with the selected `checkpoint_id`.
+- Older runs that do not have `langgraph_checkpoint_payloads` fall back to input-snapshot re-execution and report `harness.resume.mode=input_snapshot_reexecution`.
+- Checkpoint audit and replay endpoints remain read-only; only `POST /api/langgraph-resume` executes continuation.
 
 ## Safety Operations
 

@@ -870,7 +870,8 @@ async function main() {
     assert(langgraphCheckpoint.checkpoint.state_summary, "single checkpoint audit missing state summary");
     assert(langgraphCheckpoint.checkpoint.resumable === true, "single checkpoint audit should mark new checkpoints resumable");
     assert(langgraphCheckpoint.time_travel?.mode === "read-only checkpoint audit", "single checkpoint audit missing read-only time-travel mode");
-    assert(langgraphCheckpoint.time_travel.resumable === false, "single checkpoint audit should not claim executable resume");
+    assert(langgraphCheckpoint.time_travel.resumable === true, "single checkpoint audit should report executable resume availability");
+    assert(langgraphCheckpoint.time_travel.executable_resume_available === true, "single checkpoint audit should expose executable resume availability");
     const langgraphReplay = await request(`/api/langgraph-replay?projectId=${encodeURIComponent(projectId)}&runId=${encodeURIComponent(agent.payload.harness.run_id)}`);
     assert(langgraphReplay.run.run_id === agent.payload.harness.run_id, "LangGraph replay returned wrong run id");
     assert(langgraphReplay.replay?.mode === "checkpoint summary replay", "LangGraph replay returned wrong mode");
@@ -894,6 +895,7 @@ async function main() {
     assert(resumedAgent.resumed_from?.run_id === agent.payload.harness.run_id, "LangGraph resume did not report source run id");
     assert(resumedAgent.resumed_from.checkpoint_id === checkpointForAudit.checkpoint_id, "LangGraph resume did not report source checkpoint id");
     assert(resumedAgent.payload.harness?.resume?.executable === true, "LangGraph resume harness did not report executable resume");
+    assert(resumedAgent.payload.harness.resume.mode === "checkpoint_continuation", "LangGraph resume should continue from checkpoint payload");
     assert(resumedAgent.payload.harness.resume.source_checkpoint_id === checkpointForAudit.checkpoint_id, "LangGraph resume harness source checkpoint mismatch");
     assert(resumedAgent.payload.harness.run_id !== agent.payload.harness.run_id, "LangGraph resume should create a new harness run");
     const missingResumeRun = await requestError("/api/langgraph-resume", {

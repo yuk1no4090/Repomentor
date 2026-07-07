@@ -485,6 +485,14 @@ function getMemoryDatabase() {
     );
     CREATE INDEX IF NOT EXISTS idx_langgraph_checkpoints_run ON langgraph_checkpoints(run_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_langgraph_checkpoints_project ON langgraph_checkpoints(project_id, created_at);
+    CREATE TABLE IF NOT EXISTS langgraph_checkpoint_payloads (
+      run_id TEXT PRIMARY KEY,
+      project_id TEXT,
+      thread_id TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_langgraph_checkpoint_payloads_project ON langgraph_checkpoint_payloads(project_id, created_at);
   `);
   recordSchemaMigration(memoryDb, "001_base_memory_and_checkpoints", "Create memory_items and langgraph_checkpoints base tables.");
   const memoryColumns = memoryDb.prepare("PRAGMA table_info(memory_items)").all().map((column) => column.name);
@@ -515,6 +523,17 @@ function getMemoryDatabase() {
     memoryDb.exec(`ALTER TABLE langgraph_checkpoints ADD COLUMN resume_input_json TEXT;`);
   }
   recordSchemaMigration(memoryDb, "010_langgraph_checkpoint_resume_input", "Add replayable resume input snapshots to LangGraph checkpoints.");
+  memoryDb.exec(`
+    CREATE TABLE IF NOT EXISTS langgraph_checkpoint_payloads (
+      run_id TEXT PRIMARY KEY,
+      project_id TEXT,
+      thread_id TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_langgraph_checkpoint_payloads_project ON langgraph_checkpoint_payloads(project_id, created_at);
+  `);
+  recordSchemaMigration(memoryDb, "011_langgraph_checkpoint_payloads", "Persist sanitized MemorySaver payloads for executable checkpoint continuation.");
   const embeddingBackfill = hydrateMissingMemoryEmbeddings(memoryDb);
   if (embeddingBackfill) {
     recordSchemaMigration(memoryDb, "008_backfill_memory_embeddings", "Backfill local embeddings for existing memory rows.");
@@ -572,6 +591,7 @@ function getMemoryDatabaseStatus() {
     FROM memory_items
   `).get();
   const checkpointCount = db.prepare("SELECT COUNT(*) AS count FROM langgraph_checkpoints").get();
+  const checkpointPayloadCount = db.prepare("SELECT COUNT(*) AS count FROM langgraph_checkpoint_payloads").get();
   const migrationCount = db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get();
   const latestMemory = db.prepare("SELECT MAX(updated_at) AS updated_at FROM memory_items").get();
   let sizeBytes = 0;
@@ -595,6 +615,7 @@ function getMemoryDatabaseStatus() {
     embedded_memory_items: Number(embeddingRows?.embedded || 0),
     total_memory_items: Number(embeddingRows?.total || 0),
     langgraph_checkpoint_count: Number(checkpointCount?.count || 0),
+    langgraph_checkpoint_payload_count: Number(checkpointPayloadCount?.count || 0),
     schema_migration_count: Number(migrationCount?.count || 0),
     latest_memory_updated_at: latestMemory?.updated_at || null
   };
@@ -1525,6 +1546,110 @@ function summarizeCheckpointTuple(tuple) {
   };
 }
 
+function bytesToBase64(value) {
+  return Buffer.from(value || []).toString("base64");
+}
+
+function base64ToBytes(value) {
+  return Uint8Array.from(Buffer.from(String(value || ""), "base64"));
+}
+
+function serializeMemorySaverSnapshot(checkpointer) {
+  const storage = {};
+  for (const [threadId, namespaces] of Object.entries(checkpointer.storage || {})) {
+    storage[threadId] = {};
+    for (const [namespace, checkpoints] of Object.entries(namespaces || {})) {
+      storage[threadId][namespace] = {};
+      for (const [checkpointId, entry] of Object.entries(checkpoints || {})) {
+        const [checkpoint, metadata, parentCheckpointId] = entry;
+        storage[threadId][namespace][checkpointId] = [
+          bytesToBase64(checkpoint),
+          bytesToBase64(metadata),
+          parentCheckpointId
+        ];
+      }
+    }
+  }
+  const writes = {};
+  for (const [outerKey, inner] of Object.entries(checkpointer.writes || {})) {
+    writes[outerKey] = {};
+    for (const [innerKey, entry] of Object.entries(inner || {})) {
+      const [taskId, channel, value] = entry;
+      writes[outerKey][innerKey] = [taskId, channel, bytesToBase64(value)];
+    }
+  }
+  return { version: 1, storage, writes };
+}
+
+function deserializeMemorySaverSnapshot(payload, { sourceThreadId = null, targetThreadId = null } = {}) {
+  const checkpointer = new MemorySaver();
+  const threadMap = sourceThreadId && targetThreadId && sourceThreadId !== targetThreadId
+    ? { [sourceThreadId]: targetThreadId }
+    : {};
+  for (const [threadId, namespaces] of Object.entries(payload?.storage || {})) {
+    const mappedThreadId = threadMap[threadId] || threadId;
+    checkpointer.storage[mappedThreadId] ||= Object.create(null);
+    for (const [namespace, checkpoints] of Object.entries(namespaces || {})) {
+      checkpointer.storage[mappedThreadId][namespace] ||= Object.create(null);
+      for (const [checkpointId, entry] of Object.entries(checkpoints || {})) {
+        const [checkpoint, metadata, parentCheckpointId] = entry;
+        checkpointer.storage[mappedThreadId][namespace][checkpointId] = [
+          base64ToBytes(checkpoint),
+          base64ToBytes(metadata),
+          parentCheckpointId
+        ];
+      }
+    }
+  }
+  for (const [outerKey, inner] of Object.entries(payload?.writes || {})) {
+    let mappedOuterKey = outerKey;
+    if (sourceThreadId && targetThreadId && sourceThreadId !== targetThreadId) {
+      try {
+        const [threadId, namespace, checkpointId] = JSON.parse(outerKey);
+        if (threadId === sourceThreadId) mappedOuterKey = JSON.stringify([targetThreadId, namespace, checkpointId]);
+      } catch {
+        mappedOuterKey = outerKey;
+      }
+    }
+    checkpointer.writes[mappedOuterKey] ||= Object.create(null);
+    for (const [innerKey, entry] of Object.entries(inner || {})) {
+      const [taskId, channel, value] = entry;
+      checkpointer.writes[mappedOuterKey][innerKey] = [taskId, channel, base64ToBytes(value)];
+    }
+  }
+  return checkpointer;
+}
+
+function persistLangGraphCheckpointPayload({ projectId, runId, threadId, checkpointer }) {
+  const payload = serializeMemorySaverSnapshot(checkpointer);
+  getMemoryDatabase().prepare(`
+    INSERT OR REPLACE INTO langgraph_checkpoint_payloads (
+      run_id, project_id, thread_id, payload_json, created_at
+    ) VALUES (?, ?, ?, ?, ?)
+  `).run(runId, projectId || null, threadId, JSON.stringify(payload), new Date().toISOString());
+  return {
+    persisted: true,
+    store: "SQLite langgraph_checkpoint_payloads",
+    version: payload.version
+  };
+}
+
+function loadLangGraphCheckpointPayload({ projectId, runId }) {
+  if (!runId) return null;
+  const row = getMemoryDatabase().prepare(`
+    SELECT * FROM langgraph_checkpoint_payloads
+    WHERE run_id = ? AND (? IS NULL OR project_id = ?)
+  `).get(runId, projectId || null, projectId || null);
+  if (!row) return null;
+  return {
+    run_id: row.run_id,
+    projectId: row.project_id,
+    thread_id: row.thread_id,
+    payload: JSON.parse(row.payload_json || "{}"),
+    createdAt: row.created_at
+  };
+}
+
 async function persistLangGraphCheckpoints({ projectId, runId, threadId, checkpointer, resumeInput = null }) {
   const db = getMemoryDatabase();
   const rows = [];
@@ -1561,11 +1686,14 @@ async function persistLangGraphCheckpoints({ projectId, runId, threadId, checkpo
     );
   });
   const latest = rows[0];
+  const payloadPersistence = persistLangGraphCheckpointPayload({ projectId, runId, threadId, checkpointer });
   return {
     enabled: true,
     saver: "MemorySaver",
     persisted: true,
+    executable_resume: true,
     store: "SQLite langgraph_checkpoints",
+    payload_store: payloadPersistence.store,
     thread_id: threadId,
     checkpoint_count: rows.length,
     latest_checkpoint_id: latest?.checkpoint?.id || null
@@ -1693,14 +1821,19 @@ async function runLangGraphResumeFromCheckpoint(store, { projectId, runId, check
     throw apiError("LangGraph checkpoint belongs to a different user.", "LANGGRAPH_RESUME_USER_MISMATCH", 403);
   }
   const project = findProject(store, resumeInput.projectId);
+  const checkpointPayload = loadLangGraphCheckpointPayload({ projectId: resumeInput.projectId, runId });
+  const resumeMode = checkpointPayload ? "checkpoint_continuation" : "input_snapshot_reexecution";
   const payload = await runAgenticImpactWorkflow(
     store,
     project,
     String(resumeInput.question || ""),
     normalizedUserId,
     {
+      mode: resumeMode,
       sourceRunId: runId,
-      sourceCheckpointId: checkpoint.checkpoint_id
+      sourceThreadId: checkpoint.thread_id,
+      sourceCheckpointId: checkpoint.checkpoint_id,
+      checkpointPayload
     }
   );
   return {
@@ -1850,7 +1983,9 @@ function normalizeHarnessRun(item) {
       enabled: !!item.checkpointing.enabled,
       saver: item.checkpointing.saver || null,
       persisted: !!item.checkpointing.persisted,
+      executable_resume: !!item.checkpointing.executable_resume,
       store: item.checkpointing.store || null,
+      payload_store: item.checkpointing.payload_store || null,
       thread_id: item.checkpointing.thread_id || null,
       checkpoint_count: Number.isFinite(Number(item.checkpointing.checkpoint_count)) ? Number(item.checkpointing.checkpoint_count) : 0,
       latest_checkpoint_id: item.checkpointing.latest_checkpoint_id || null
@@ -3587,6 +3722,25 @@ function createMemorySuggestions(store, projectId, question, userId = DEFAULT_US
     .slice(0, 3);
 }
 
+function appendMemorySuggestions(store, suggestions = []) {
+  const appended = [];
+  for (const suggestion of suggestions) {
+    const normalized = normalizeMemorySuggestion(suggestion);
+    if (!normalized) continue;
+    const duplicate = store.memorySuggestions.some((item) => {
+      return item.status === normalized.status
+        && (item.userId || DEFAULT_USER_ID) === (normalized.userId || DEFAULT_USER_ID)
+        && (item.projectId || null) === (normalized.projectId || null)
+        && item.key === normalized.key
+        && item.value === normalized.value;
+    });
+    if (duplicate) continue;
+    store.memorySuggestions.push(normalized);
+    appended.push(normalized);
+  }
+  return appended;
+}
+
 function applyMemorySuggestion(preferences, suggestion) {
   const next = {
     ...createEmptyPreferences(),
@@ -4045,8 +4199,7 @@ function withWorkflowTimeout(promise, timeoutMs) {
 function createGraphStateAnnotation() {
   const replace = (_left, right) => right;
   return Annotation.Root({
-    project: Annotation({ reducer: replace, default: () => null }),
-    store: Annotation({ reducer: replace, default: () => null }),
+    projectId: Annotation({ reducer: replace, default: () => null }),
     userId: Annotation({ reducer: replace, default: () => DEFAULT_USER_ID }),
     question: Annotation({ reducer: replace, default: () => "" }),
     preferences: Annotation({ reducer: replace, default: () => createEmptyPreferences() }),
@@ -4067,7 +4220,9 @@ function createGraphStateAnnotation() {
   });
 }
 
-function createAgentGraph(checkpointer = false) {
+function createAgentGraph(checkpointer = false, runtime = {}) {
+  const runtimeStore = runtime.store;
+  const runtimeProject = runtime.project;
   const State = createGraphStateAnnotation();
   return new StateGraph(State)
     .addNode("input_safety", async (state) => {
@@ -4085,11 +4240,12 @@ function createAgentGraph(checkpointer = false) {
     })
     .addNode("memory", async (state) => {
       const userId = normalizeUserId(state.userId);
-      const preferences = getUserPreferences(state.store, userId);
-      const longTermMemories = await searchLongTermMemory({ userId, projectId: state.project.id, query: state.question, limit: 5 });
+      const projectId = runtimeProject?.id || state.projectId;
+      const preferences = getUserPreferences(runtimeStore, userId);
+      const longTermMemories = await searchLongTermMemory({ userId, projectId, query: state.question, limit: 5 });
       const memoryLearningAllowed = state.inputSafety.status === "passed";
       const suggestions = memoryLearningAllowed
-        ? createMemorySuggestions(state.store, state.project.id, state.question, userId)
+        ? createMemorySuggestions(runtimeStore, projectId, state.question, userId)
         : [];
       const summary = summarizePreferences(preferences);
       const longTermSummary = summarizeLongTermMemories(longTermMemories);
@@ -4108,7 +4264,7 @@ function createAgentGraph(checkpointer = false) {
           step: "2. Load user preference and long-term memory",
           tool: "memory.load_preferences",
           purpose: "Apply confirmed user preferences, retrieve long-term memory, and create explicit suggestions for unconfirmed memory.",
-          input: { project_id: state.project.id, user_id: userId },
+          input: { project_id: projectId, user_id: userId },
           output: {
             memory_used: combinedSummary,
             long_term_memories: longTermMemories.length,
@@ -4133,7 +4289,7 @@ function createAgentGraph(checkpointer = false) {
       };
     })
     .addNode("retrieve", async (state) => {
-      const primaryChunks = retrieveChunks(state.project, state.question, 8);
+      const primaryChunks = retrieveChunks(runtimeProject, state.question, 8);
       return {
         primaryChunks,
         trace: [makeTraceStep({
@@ -4147,7 +4303,7 @@ function createAgentGraph(checkpointer = false) {
       };
     })
     .addNode("expand_context", async (state) => {
-      const expandedChunks = expandImpactChunks(state.project, state.question, state.primaryChunks, state.classification);
+      const expandedChunks = expandImpactChunks(runtimeProject, state.question, state.primaryChunks, state.classification);
       const relatedFiles = relatedFilesFromChunks(expandedChunks);
       const retrievedSafety = scanRetrievedSafety(expandedChunks);
       return {
@@ -4165,12 +4321,12 @@ function createAgentGraph(checkpointer = false) {
       };
     })
     .addNode("impact_analysis", async (state) => {
-      let impact = generateImpactAnswer(state.question, state.expandedChunks, state.project);
+      let impact = generateImpactAnswer(state.question, state.expandedChunks, runtimeProject);
       const modelResult = await runModelAdapter({
         question: state.question,
         chunks: state.expandedChunks,
         kind: "impact",
-        project: state.project,
+        project: runtimeProject,
         validatePayload: validateImpactPayload
       });
       if (modelResult.payload) impact = modelResult.payload;
@@ -4214,7 +4370,7 @@ function createAgentGraph(checkpointer = false) {
       };
     })
     .addNode("guardrails", async (state) => {
-      const outputSafety = scanOutputSafety(state.project, {
+      const outputSafety = scanOutputSafety(runtimeProject, {
         summary: state.impact.summary,
         related_files: state.relatedFiles,
         impact_areas: state.impact.impact_areas,
@@ -4317,8 +4473,14 @@ async function runAgenticImpactWorkflow(store, project, question, userId = DEFAU
   const started = Date.now();
   const runId = createHarnessRunId("agent");
   const normalizedUserId = normalizeUserId(userId);
-  const checkpointer = new MemorySaver();
-  const graph = createAgentGraph(checkpointer);
+  const executableCheckpointResume = resumeMetadata?.mode === "checkpoint_continuation" && resumeMetadata.checkpointPayload;
+  const checkpointer = executableCheckpointResume
+    ? deserializeMemorySaverSnapshot(resumeMetadata.checkpointPayload.payload, {
+        sourceThreadId: resumeMetadata.checkpointPayload.thread_id,
+        targetThreadId: runId
+      })
+    : new MemorySaver();
+  const graph = createAgentGraph(checkpointer, { store, project });
   let state;
   let errors = [];
   let harnessEvents = [];
@@ -4326,22 +4488,26 @@ async function runAgenticImpactWorkflow(store, project, question, userId = DEFAU
     enabled: true,
     saver: "MemorySaver",
     persisted: false,
+    executable_resume: false,
     store: "SQLite langgraph_checkpoints",
     thread_id: runId,
     checkpoint_count: 0,
     latest_checkpoint_id: null
   };
   try {
-    state = await withWorkflowTimeout(graph.invoke({
-      store,
-      project,
-      userId: normalizedUserId,
-      question,
-      preferences: getUserPreferences(store, userId)
-    }, {
+    const graphInput = executableCheckpointResume
+      ? null
+      : {
+          projectId: project.id,
+          userId: normalizedUserId,
+          question,
+          preferences: getUserPreferences(store, userId)
+        };
+    state = await withWorkflowTimeout(graph.invoke(graphInput, {
       configurable: {
         thread_id: runId,
-        checkpoint_ns: ""
+        checkpoint_ns: "",
+        ...(executableCheckpointResume ? { checkpoint_id: resumeMetadata.sourceCheckpointId } : {})
       }
     }), AGENT_BUDGETS.timeout_ms);
     checkpointing = await persistLangGraphCheckpoints({
@@ -4353,7 +4519,7 @@ async function runAgenticImpactWorkflow(store, project, question, userId = DEFAU
         projectId: project.id,
         question,
         userId: normalizedUserId,
-        source_run_id: runId
+        source_run_id: resumeMetadata?.sourceRunId || runId
       }
     });
   } catch (error) {
@@ -4410,11 +4576,14 @@ async function runAgenticImpactWorkflow(store, project, question, userId = DEFAU
   payload.harness.checkpointing = checkpointing;
   if (resumeMetadata) {
     payload.harness.resume = {
-      mode: "input_snapshot_reexecution",
+      mode: executableCheckpointResume ? "checkpoint_continuation" : "input_snapshot_reexecution",
       executable: true,
       source_run_id: resumeMetadata.sourceRunId || null,
       source_checkpoint_id: resumeMetadata.sourceCheckpointId || null,
-      note: "This run re-executes the saved LangGraph input snapshot associated with the source checkpoint."
+      source_thread_id: resumeMetadata.sourceThreadId || null,
+      note: executableCheckpointResume
+        ? "This run continued execution from a persisted LangGraph checkpoint payload cloned into the new harness run thread."
+        : "This run re-executes the saved LangGraph input snapshot associated with the source checkpoint."
     };
   }
   payload.llm_used = !!payload.harness.model_adapter.llm_used;
@@ -5198,7 +5367,7 @@ async function handleApiUnlocked(req, res, pathname) {
       store.answers.push(answerRecord);
       recordHarnessRun(store, answerRecord);
       if (memorySuggestions.length) {
-        store.memorySuggestions.push(...memorySuggestions);
+        appendMemorySuggestions(store, memorySuggestions);
       }
       await saveStore(store);
       sendJson(res, 200, { answerId: answerRecord.id, kind, payload });
@@ -5284,7 +5453,7 @@ async function handleApiUnlocked(req, res, pathname) {
       store.answers.push(answerRecord);
       recordHarnessRun(store, answerRecord);
       if (memorySuggestions.length) {
-        store.memorySuggestions.push(...memorySuggestions);
+        appendMemorySuggestions(store, memorySuggestions);
       }
       await saveStore(store);
       sendJson(res, 200, { answerId: answerRecord.id, kind: "onboarding", payload });
@@ -5300,7 +5469,7 @@ async function handleApiUnlocked(req, res, pathname) {
       const started = Date.now();
       const payload = await runAgenticImpactWorkflow(store, project, question, userId);
       if (payload.memory_suggestions?.length) {
-        store.memorySuggestions.push(...payload.memory_suggestions);
+        appendMemorySuggestions(store, payload.memory_suggestions);
       }
       const questionRecord = {
         id: crypto.randomUUID(),
@@ -5368,12 +5537,14 @@ async function handleApiUnlocked(req, res, pathname) {
         runId: url.searchParams.get("runId"),
         checkpointId: url.searchParams.get("checkpointId") || url.searchParams.get("checkpoint_id")
       });
+      const checkpointPayload = loadLangGraphCheckpointPayload({ projectId: project.id, runId: checkpoint.run_id });
       sendJson(res, 200, {
         checkpoint,
         time_travel: {
           mode: "read-only checkpoint audit",
-          resumable: false,
-          note: "This endpoint exposes persisted checkpoint summaries for inspection; it does not replay or mutate graph state."
+          resumable: !!checkpointPayload,
+          executable_resume_available: !!checkpointPayload,
+          note: "This endpoint exposes persisted checkpoint summaries for inspection; executable continuation is available through POST /api/langgraph-resume when a checkpoint payload exists."
         }
       });
       return;
@@ -5402,7 +5573,7 @@ async function handleApiUnlocked(req, res, pathname) {
         userId
       });
       if (resumed.payload.memory_suggestions?.length) {
-        store.memorySuggestions.push(...resumed.payload.memory_suggestions);
+        appendMemorySuggestions(store, resumed.payload.memory_suggestions);
       }
       const questionRecord = {
         id: crypto.randomUUID(),

@@ -198,7 +198,7 @@ npm run dev
 | GET | `/api/harness-run` | 按 projectId 和 runId 查看单次 harness 执行快照 |
 | GET | `/api/langgraph-checkpoint` | 按 projectId、runId 和 checkpointId 查看单个 LangGraph checkpoint 摘要 |
 | GET | `/api/langgraph-replay` | 按 projectId 和 runId 查看 LangGraph checkpoint summary replay |
-| POST | `/api/langgraph-resume` | 基于 checkpoint 输入快照重新执行 Agent Workflow |
+| POST | `/api/langgraph-resume` | 有 checkpoint payload 时从历史 checkpoint 继续执行，否则基于输入快照重新执行 Agent Workflow |
 | GET | `/api/memory` | 获取已确认偏好和最近记忆建议 |
 | GET | `/api/memory/status` | 查看长期记忆 SQLite 数据库健康状态 |
 | GET | `/api/memory/backups` | 查看长期记忆 SQLite 备份列表 |

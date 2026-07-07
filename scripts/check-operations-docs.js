@@ -36,8 +36,10 @@ const requiredTerms = [
   "qdrant",
   "pinecone",
   "langgraph_checkpoints",
+  "langgraph_checkpoint_payloads",
+  "checkpoint_continuation",
   "input_snapshot_reexecution",
-  "Mid-node continuation from historical checkpoints is intentionally not enabled yet",
+  "Runtime `store` is kept out of graph state",
   "Repository content is treated as untrusted evidence",
   "npm test"
 ];
