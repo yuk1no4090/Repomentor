@@ -235,4 +235,6 @@ Safety payloads include `risk_details`, a normalized explanation list for each r
 
 See [docs/AGENT_RUNTIME_ARCHITECTURE.md](docs/AGENT_RUNTIME_ARCHITECTURE.md) for the LangGraph, memory, harness, and safety implementation boundary.
 
+See [docs/OPERATIONS.md](docs/OPERATIONS.md) for deployment, authentication, long-term memory, backup/restore, vector memory, safety, and verification operations.
+
 See [docs/PRD.md](docs/PRD.md) for the product requirements and roadmap.
