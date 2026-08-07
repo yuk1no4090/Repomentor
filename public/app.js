@@ -5,6 +5,7 @@ const state = {
   loading: false,
   progress: [],
   messages: [],
+  errorBanner: null,
   metrics: null,
   harnessAudit: null,
   memory: null,
@@ -528,9 +529,20 @@ async function api(path, options = {}) {
   return payload;
 }
 
-function showError(error) {
+function showError(error, retryFn = null) {
   const code = error?.code && error.code !== "REQUEST_FAILED" ? `\n[${error.code}]` : "";
-  alert(`${error?.message || "Request failed."}${code}`);
+  const message = `${error?.message || "Request failed."}${code}`;
+  if (retryFn) {
+    // Show inline retry banner instead of alert
+    state.errorBanner = { message, retryFn };
+    render();
+  } else {
+    alert(message);
+  }
+}
+function clearError() {
+  state.errorBanner = null;
+  render();
 }
 
 async function loadProjects() {
@@ -1857,7 +1869,13 @@ function render() {
     chat: chatPage,
     dashboard: dashboardPage
   };
-  app.innerHTML = nav() + pages[state.page]();
+  app.innerHTML = nav() + (state.errorBanner ? html`
+    <div class="error-banner">
+      <span>${escapeHtml(state.errorBanner.message)}</span>
+      <button data-retry>Retry</button>
+      <button data-dismiss-error>Dismiss</button>
+    </div>
+  ` : "") + pages[state.page]();
 }
 
 async function importRepository({ sample = false } = {}) {
@@ -1941,7 +1959,7 @@ async function ask(kind = "qa", questionOverride = "") {
     await refreshMemory(false);
     render();
   } catch (error) {
-    showError(error);
+    showError(error, () => ask(kind, question));
     state.messages = state.messages.filter((item) => item.answerId !== "pending");
     render();
   }
@@ -1974,7 +1992,7 @@ async function runAgentImpact(questionOverride = "") {
     await refreshMemory(false);
     render();
   } catch (error) {
-    showError(error);
+    showError(error, () => ask(kind, question));
     state.messages = state.messages.filter((item) => item.answerId !== "pending");
     render();
   }
@@ -2293,6 +2311,19 @@ document.addEventListener("click", (event) => {
   const hitlButton = event.target.closest("[data-hitl-action]");
   if (hitlButton) {
     handleHitlDecision(hitlButton.dataset.hitlAction, hitlButton.dataset.answerId, hitlButton.dataset.runId);
+    return;
+  }
+
+  const retryButton = event.target.closest("[data-retry]");
+  if (retryButton && state.errorBanner?.retryFn) {
+    clearError();
+    state.errorBanner.retryFn();
+    return;
+  }
+
+  const dismissError = event.target.closest("[data-dismiss-error]");
+  if (dismissError) {
+    clearError();
     return;
   }
 });

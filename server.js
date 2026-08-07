@@ -9,6 +9,16 @@ import { MemorySaver } from "@langchain/langgraph-checkpoint";
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "127.0.0.1";
+const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
+const LOG_LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
+const shouldLog = (level) => (LOG_LEVELS[level] ?? 1) >= (LOG_LEVELS[LOG_LEVEL] ?? 1);
+
+function log(level, message, extra = {}) {
+  if (!shouldLog(level)) return;
+  const entry = { time: new Date().toISOString(), level, message, ...extra };
+  if (level === "error") console.error(JSON.stringify(entry));
+  else console.log(JSON.stringify(entry));
+}
 const ROOT = process.cwd();
 const PUBLIC_DIR = path.join(ROOT, "public");
 const DATA_DIR = process.env.DATA_DIR
@@ -107,6 +117,7 @@ const MAX_IMPORTED_FILES = 450;
 const MAX_IMPORTED_FILE_BYTES = 400_000;
 const MAX_IMPORTED_TOTAL_BYTES = 12 * 1024 * 1024;
 const GITHUB_IMPORT_TIMEOUT_MS = 15_000;
+const MAX_QUESTION_LENGTH = 16_000;
 
 const AGENT_MAX_STEPS = parsePositiveIntegerEnv("AGENT_MAX_STEPS", 14);
 const AGENT_BUDGETS = {
@@ -116,6 +127,30 @@ const AGENT_BUDGETS = {
 };
 const AGENT_GRAPH_MODE = String(process.env.AGENT_GRAPH_MODE || "supervisor").toLowerCase();
 const AGENT_HITL_ENABLED = String(process.env.AGENT_HITL_ENABLED || "false").toLowerCase() === "true";
+
+// ── Simple in-memory rate limiter (token bucket per IP) ──
+const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX || 120);     // requests per window (0 = disabled)
+const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 60_000);
+const rateBuckets = new Map();
+
+function checkRateLimit(ip) {
+  if (RATE_LIMIT_MAX === 0) return true; // disabled
+  if (ip === "127.0.0.1" || ip === "::1" || ip === "localhost") return true; // local dev
+  const now = Date.now();
+  let bucket = rateBuckets.get(ip);
+  if (!bucket || now - bucket.windowStart > RATE_LIMIT_WINDOW_MS) {
+    bucket = { windowStart: now, count: 0 };
+    rateBuckets.set(ip, bucket);
+  }
+  bucket.count++;
+  // Periodic cleanup (every 1000 requests)
+  if (Math.random() < 0.001) {
+    for (const [key, b] of rateBuckets) {
+      if (now - b.windowStart > RATE_LIMIT_WINDOW_MS * 2) rateBuckets.delete(key);
+    }
+  }
+  return bucket.count <= RATE_LIMIT_MAX;
+}
 
 function parsePositiveIntegerEnv(name, fallback) {
   const value = Number(process.env[name]);
@@ -2503,7 +2538,10 @@ function sendJson(res, status, payload) {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
-    "content-length": Buffer.byteLength(body)
+    "content-length": Buffer.byteLength(body),
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-headers": "Content-Type, Authorization, X-API-Key, X-AI-PM-Token, X-User-Id, X-AI-PM-User-Id"
   });
   res.end(body);
 }
@@ -5450,6 +5488,7 @@ async function handleApiUnlocked(req, res, pathname) {
       const project = findProject(store, body.projectId, userId);
       const question = String(body.question || "").trim();
       if (!question) throw apiError("Question is required.", "QUESTION_REQUIRED");
+      if (question.length > MAX_QUESTION_LENGTH) throw apiError(`Question exceeds maximum length of ${MAX_QUESTION_LENGTH} characters.`, "QUESTION_TOO_LONG", 413);
       const kind = body.kind || inferQuestionType(question);
       const started = Date.now();
       const runId = createHarnessRunId("chat");
@@ -5659,6 +5698,7 @@ async function handleApiUnlocked(req, res, pathname) {
       const project = findProject(store, body.projectId, userId);
       const question = String(body.question || "").trim();
       if (!question) throw apiError("Question is required.", "QUESTION_REQUIRED");
+      if (question.length > MAX_QUESTION_LENGTH) throw apiError(`Question exceeds maximum length of ${MAX_QUESTION_LENGTH} characters.`, "QUESTION_TOO_LONG", 413);
       const started = Date.now();
       const payload = await runAgenticImpactWorkflow(store, project, question, userId);
       if (payload.memory_suggestions?.length) {
@@ -5812,8 +5852,29 @@ async function handleApiUnlocked(req, res, pathname) {
       const model = resolveLlmModel();
       const provider = resolveLlmProvider();
       const endpoint = hasKey ? resolveLlmEndpoint() : null;
-      sendJson(res, 200, {
-        status: "ok",
+      // Check SQLite connectivity
+      let dbStatus = "unknown";
+      try {
+        const dbTest = new DatabaseSync(MEMORY_DB_PATH);
+        dbTest.exec("SELECT 1");
+        dbTest.close();
+        dbStatus = "connected";
+      } catch (e) {
+        dbStatus = `error: ${e.message}`;
+      }
+      // Check store file health
+      let storeStatus = "ok";
+      try {
+        await fs.access(STORE_PATH, fs.constants.R_OK | fs.constants.W_OK);
+      } catch {
+        storeStatus = "unavailable";
+      }
+      const healthy = dbStatus === "connected" && storeStatus === "ok";
+      sendJson(res, healthy ? 200 : 503, {
+        status: healthy ? "ok" : "degraded",
+        ready: healthy,
+        database: { status: dbStatus, path: MEMORY_DB_PATH },
+        store: { status: storeStatus, path: STORE_PATH },
         llm: {
           configured: hasKey,
           provider,
@@ -5877,18 +5938,35 @@ async function serveStatic(req, res, pathname) {
   try {
     const content = await fs.readFile(filePath);
     const ext = path.extname(filePath);
-    res.writeHead(200, { "content-type": MIME_TYPES[ext] || "application/octet-stream" });
+    res.writeHead(200, { "content-type": MIME_TYPES[ext] || "application/octet-stream", "access-control-allow-origin": "*" });
     res.end(content);
   } catch {
     const fallback = await fs.readFile(path.join(PUBLIC_DIR, "index.html"));
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "access-control-allow-origin": "*" });
     res.end(fallback);
   }
 }
 
 const server = http.createServer(async (req, res) => {
+  // CORS preflight
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, {
+      "access-control-allow-origin": "*",
+      "access-control-allow-methods": "GET, POST, OPTIONS",
+      "access-control-allow-headers": "Content-Type, Authorization, X-API-Key, X-AI-PM-Token, X-User-Id, X-AI-PM-User-Id",
+      "access-control-max-age": "86400"
+    });
+    res.end();
+    return;
+  }
+
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (url.pathname.startsWith("/api/")) {
+    const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.socket.remoteAddress || "unknown";
+    if (!checkRateLimit(ip)) {
+      sendJson(res, 429, { error: "Rate limit exceeded. Please wait before sending more requests.", code: "RATE_LIMITED", retry_after_ms: RATE_LIMIT_WINDOW_MS });
+      return;
+    }
     await handleApi(req, res, url.pathname);
     return;
   }
@@ -5896,6 +5974,33 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`AI Developer Onboarding Copilot running at http://${HOST}:${PORT}`);
+  log("info", "server started", { host: HOST, port: PORT, graph_mode: AGENT_GRAPH_MODE, hitl_enabled: AGENT_HITL_ENABLED });
 });
+
+// ── Graceful shutdown ──
+let shuttingDown = false;
+async function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log("info", "shutdown initiated", { signal });
+  // Stop accepting new connections
+  server.close(() => {
+    log("info", "http server closed");
+  });
+  // Drain existing connections (force close after 10s)
+  setTimeout(() => {
+    console.log("Forcing shutdown after timeout.");
+    process.exit(0);
+  }, 10_000).unref();
+  // Flush store if needed
+  try {
+    await saveStore(store);
+    console.log("Store flushed before shutdown.");
+  } catch (e) {
+    console.error("Failed to flush store during shutdown:", e.message);
+  }
+  process.exit(0);
+}
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 

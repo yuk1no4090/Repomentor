@@ -72,8 +72,20 @@ The project targets Node.js 24 because the long-term memory store uses the built
 | `OPENAI_BASE_URL` | `https://api.openai.com` | OpenAI-compatible API base URL. |
 | `OPENAI_MODEL` | `gpt-4o-mini` | Chat completion model name. |
 | `LLM_CONTEXT_TOKEN_BUDGET` | `8000` | Estimated prompt context token budget before using deterministic fallback. |
+| `AGENT_GRAPH_MODE` | `supervisor` | Graph routing mode: `supervisor` for dynamic multi-agent routing or `linear` for the original 9-node pipeline. |
+| `AGENT_MAX_STEPS` | `14` | Maximum LangGraph execution steps (increased from 9 to support supervisor routing overhead). |
+| `AGENT_HITL_ENABLED` | `false` | Set to `true` to enable human-in-the-loop review for high-risk changes. |
+| `RATE_LIMIT_MAX` | `120` | Maximum API requests per window per IP. Set to `0` to disable rate limiting. |
+| `RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window duration in milliseconds. |
+| `LOG_LEVEL` | `info` | Structured log level: `debug`, `info`, `warn`, or `error`. |
+| `MAX_QUESTION_LENGTH` | `16000` | Maximum question text length in characters. |
 
-## LLM Setup (Optional but recommended)
+## Docker Deployment
+
+```bash
+docker build -t ai-pm .
+docker run -p 3000:3000 -v $(pwd)/data:/app/data ai-pm
+```
 
 Set the following environment variables to enable AI-powered answers:
 
@@ -159,7 +171,7 @@ The `modelAdapter` boundary uses an OpenAI-compatible chat completions call when
 | `GET` | `/api/harness-run` | Return one persisted harness run audit by `projectId` and `runId`. |
 | `GET` | `/api/langgraph-checkpoint` | Return one persisted LangGraph checkpoint summary by `projectId`, `runId`, and `checkpointId` for read-only time-travel inspection. |
 | `GET` | `/api/langgraph-replay` | Return a read-only checkpoint summary replay for one LangGraph run by `projectId` and `runId`. |
-| `POST` | `/api/langgraph-resume` | Continue a LangGraph run from a persisted checkpoint payload when available, otherwise re-execute from the saved input snapshot. |
+| `POST` | `/api/langgraph-resume` | Continue a LangGraph run from a persisted checkpoint. Accepts optional `decision` (`"approve"`/`"reject"`) for HITL resume. |
 | `GET` | `/api/memory` | Return confirmed preferences, recent memory suggestions, memory audit events, and long-term memories for the resolved user. Supports `X-User-Id` or `userId`, plus `projectId`, `q`/`query`, `status=active|forgotten|superseded|all`, and `limit` for memory inspection. |
 | `GET` | `/api/memory/status` | Return SQLite long-term memory database health, counts, migration count, FTS status, and embedding mode without exposing memory content. |
 | `GET` | `/api/memory/backups` | List same-directory SQLite memory database backup files without returning memory content. |

@@ -280,11 +280,17 @@ npm.cmd test
 以下能力没有实现，属于明确的第一版边界：
 
 - PostgreSQL/pgvector 部署；当前以 SQLite 为本地事实来源。
-- LangSmith、分布式 checkpoint 存储或动态 supervisor 派发。
+- LangSmith 或分布式 checkpoint 存储。
 - 未经用户确认自动写入的长期语义记忆。
 - 完整账号生命周期：密码、OAuth、session、MFA、用户自服务。
-- 合规认证，或“护栏消除 AI 风险”的表述。
+- 合规认证，或"护栏消除 AI 风险"的表述。
 - Agent 自动改代码、执行 shell 或使用外部网络工具。
+
+### 已实现的超越版本（2026-08-07）
+
+以下能力原列在第一版边界之外，现已实现：
+- **Supervisor 动态路由**：`AGENT_GRAPH_MODE=supervisor`（默认），`decideNextRoute()` 确定性规则表驱动，`addConditionalEdges` 实现动态编排。`AGENT_GRAPH_MODE=linear` 一键回退。
+- **Human-in-the-Loop 审核**：`AGENT_HITL_ENABLED=true` 时高风险变更暂停到 `human_review` 节点，通过 `POST /api/langgraph-resume` 提交 approve/reject 决策。
 
 ## 下一阶段建议
 

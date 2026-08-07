@@ -89,26 +89,32 @@ npm run dev
 2. 点击 "Analyze Impact"
 3. 输出：影响摘要、受影响模块（按 Data Model / API Routes / Business Logic / UI / Tests 分类）、风险等级、测试建议、开放问题
 
-#### 4.3 Agent Tab — LangGraph Agent 工作流
+#### 4.3 Agent Tab — 多 Agent 协同工作流
 
-**功能**：展示 9 节点 LangGraph Agent 工作流，每步可见输入、输出、引用和 guardrail 结果。
+**功能**：展示 7 专家 Agent 的 Supervisor 协同工作流。默认使用 Supervisor 动态路由（`AGENT_GRAPH_MODE=supervisor`），可通过环境变量切回线性模式（`AGENT_GRAPH_MODE=linear`）。
+
+**Agent 角色**：SafetyGuard、MemoryCurator、Classifier、Retriever、ImpactAnalyst、QAPlanner、Synthesizer — 每步 trace 标注 agent_role，handoff 链展示 Agent 间交接流转。
+
+**新特性（2026-08-07）**：
+- **Supervisor 路由**：确定性规则表 `ROUTE_RULES` 驱动动态编排，支持 `AGENT_GRAPH_MODE=linear` 一键回退。
+- **HITL 审核**：启用 `AGENT_HITL_ENABLED=true` 后，高风险变更暂停到人工审核节点，通过 `/api/langgraph-resume` 提交 approve/reject 决策。
+- **Agent Roster 面板**：页面展示所有 Agent 角色及其工具子集。
+- **Handoff 流转链**：可视化 Agent 间的交接路径（sender → recipient）。
 
 **流程**：
-1. input_safety — 检查 prompt injection、密钥请求和越权工具意图
-2. memory — 加载已确认偏好，并生成待确认记忆建议
-3. classify_change_request — 识别改动类型
-4. retrieve_repository_chunks — 检索相关 chunks
-5. expand_dependency_context — 扩展搜索上下游依赖
-6. estimate_impact_risk — 按模块聚合风险
-7. plan_regression_tests — 生成回归测试建议
-8. validate_output — 校验引用、敏感输出、过度自信和工具策略
-9. compose_structured_answer — 生成结构化输出
+1. SafetyGuard — 检查 prompt injection、密钥请求和越权工具意图
+2. MemoryCurator — 加载已确认偏好，并生成待确认记忆建议
+3. Classifier — 识别改动类型
+4. Retriever — 检索相关 chunks 并扩展依赖上下文
+5. ImpactAnalyst — 调用 LLM 按模块聚合风险（唯一走模型的节点）
+6. [human_review] — HITL 启用时，高风险变更暂停等待审批
+7. QAPlanner — 生成回归测试建议
+8. SafetyGuard — 校验引用、敏感输出、过度自信
+9. Synthesizer — 生成结构化输出
 
-**状态卡**：Agent header 会展示 Memory、Harness、Safety 三类状态。Memory 显示已使用偏好和待确认数量；Harness 显示模型模式、步骤数、耗时、fallback 和预算状态；Safety 显示护栏通过或需要复核以及命中的风险类型。
+**状态卡**：Agent header 展示 Memory、Harness、Safety 三类状态。Memory 显示已使用偏好和待确认数量；Harness 显示模型模式、步骤数、耗时、fallback、budget、handoff_count；Safety 显示护栏通过或需要复核。
 
-**记忆建议**：Agent 会展示最近的记忆建议。待确认建议可保存或忽略；已确认和已忽略建议会保留状态标记，避免用户误以为本次旧回答已经应用了刚保存的偏好。
-
-**面试价值**：展示 LangGraph nodes / state / tools / trace / memory / harness / guardrails / structured output 这些 Agent 工程核心理念。
+**面试价值**：展示 Supervisor 动态路由 / Agent 角色分工 / conditional edges / Handoff 机制 / HITL 人在回路 / trace / guardrails / structured output 等 Agent 工程核心理念。
 
 #### 4.4 Onboarding Plan Tab — 入职学习路径
 

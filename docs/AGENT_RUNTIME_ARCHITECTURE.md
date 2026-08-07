@@ -12,19 +12,32 @@ This document records the first production-shaped implementation boundary for th
 
 ## Graph Nodes
 
-The `/api/agent-impact` workflow executes these nodes in order:
+### Default mode: Supervisor routing (`AGENT_GRAPH_MODE=supervisor`)
 
 ```text
-input_safety
-  -> memory
-  -> classify
-  -> retrieve
-  -> expand_context
-  -> impact_analysis
-  -> qa_plan
-  -> guardrails
-  -> synthesize
+START → supervisor
+  supervisor → (conditional) → input_safety
+  supervisor → (conditional) → memory
+  supervisor → (conditional) → classify
+  supervisor → (conditional) → retrieve
+  supervisor → (conditional) → expand_context
+  supervisor → (conditional) → impact_analysis
+  supervisor → (conditional) → human_review  (when HITL enabled + riskLevel=high)
+  supervisor → (conditional) → qa_plan
+  supervisor → (conditional) → guardrails
+  supervisor → (conditional) → synthesize
+  supervisor → (conditional) → END
 ```
+
+The `supervisor` node calls `decideNextRoute(state)` — a deterministic pure function based on `state.trace.length` and state signals (riskLevel, hitlRequest, AGENT_HITL_ENABLED). It appends `routeDecisions` and `handoffs` records to state.
+
+### Linear fallback (`AGENT_GRAPH_MODE=linear`)
+
+```text
+input_safety → memory → classify → retrieve → expand_context → impact_analysis → qa_plan → guardrails → synthesize → END
+```
+
+The linear mode skips supervisor/human_review nodes entirely and is wire-compatible with pre-P2 checkpoint data.
 
 Each node appends trace metadata so the UI can show the agent path instead of hiding the workflow.
 
@@ -182,18 +195,22 @@ The active safety policy is centralized in `SAFETY_POLICY` and summarized on `/a
 
 ## Non-Goals
 
-The first version intentionally does not include:
+The current version intentionally does not include:
 
 - external database persistence beyond local JSON and SQLite files
 - managed vector database integration
 - full account management, password login, sessions, roles, and org authorization
 - external database migration framework
 - LangSmith tracing
-- dynamic supervisor routing
-- cross-process supervisor/checkpoint persistence beyond the local SQLite payload store
 - autonomous write tools
 - automatic external browsing tools
 - compliance certification claims
+
+## What's New (2026-08-07)
+
+- **Supervisor routing**: `AGENT_GRAPH_MODE=supervisor` (default) uses a deterministic `decideNextRoute()` function with `addConditionalEdges` for dynamic agent orchestration. Set `AGENT_GRAPH_MODE=linear` to fall back to the original 9-node linear pipeline.
+- **Human-in-the-loop (HITL)**: Enable with `AGENT_HITL_ENABLED=true`. High-risk (`riskLevel="high"`) changes are paused at a `human_review` node and resumed via `POST /api/langgraph-resume` with `{ decision: "approve"|"reject" }`.
+- **Agent role metadata**: All 11 tools in `AGENT_TOOL_REGISTRY` carry `agent_role` fields mapping to 9 agent roles (SafetyGuard, MemoryCurator, Classifier, Retriever, ImpactAnalyst, QAPlanner, OnboardingPlanner, Synthesizer, Harness). Trace steps, handoffs, and an agent roster are returned in API payloads.
 
 ## Verification Gates
 
