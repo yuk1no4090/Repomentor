@@ -4291,13 +4291,13 @@ function decideNextRoute(state) {
   // Phases 0-8: follow linear path
   if (phase < ROUTE_RULES.phaseMap.length) {
     const nextNode = ROUTE_RULES.phaseMap[phase];
+    // Override: if HITL decision already exists (from resume), skip to synthesizer
+    if (nextNode === "qa_plan" && state.hitlRequest?.decision) {
+      return "synthesize";
+    }
     // Override: if impact_analysis rated high risk and HITL is enabled, route to human_review
     if (nextNode === "qa_plan" && state.riskLevel === "high" && AGENT_HITL_ENABLED) {
       return "human_review";
-    }
-    // Override: if human_review approved/rejected (from resume), route to synthesizer
-    if (nextNode === "qa_plan" && state.hitlRequest?.decision) {
-      return "synthesize";
     }
     return nextNode;
   }

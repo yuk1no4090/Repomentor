@@ -852,6 +852,19 @@ async function main() {
     assert(agent.payload.memory_suggestions.every((item) => item.status === "pending"), "new memory suggestions should be pending");
     assert((agent.payload.trace || []).some((step) => step.tool === "memory.load_preferences"), "trace missing memory node");
     assert((agent.payload.trace || []).some((step) => step.tool === "safety_guardrail_agent.validate_output"), "trace missing safety guardrail node");
+
+    // ── Multi-Agent assertions (P1-P2) ──
+    assert((agent.payload.trace || []).every((step) => step.agent_role), "trace step missing agent_role field");
+    assert((agent.payload.trace || []).some((step) => step.agent_role === "SafetyGuard"), "trace missing SafetyGuard role");
+    assert((agent.payload.trace || []).some((step) => step.agent_role === "Retriever"), "trace missing Retriever role");
+    assert((agent.payload.trace || []).some((step) => step.agent_role === "ImpactAnalyst"), "trace missing ImpactAnalyst role");
+    assert((agent.payload.trace || []).some((step) => step.agent_role === "Synthesizer"), "trace missing Synthesizer role");
+    assert(Array.isArray(agent.payload.handoffs), "payload missing handoffs array");
+    assert(agent.payload.handoffs.length >= 8, `handoffs should have >= 8 entries, got ${agent.payload.handoffs.length}`);
+    assert(agent.payload.handoffs.every((h) => h.sender && h.recipient), "handoff entry missing sender or recipient");
+    assert(agent.payload.agent_roster && Object.keys(agent.payload.agent_roster).length >= 7, "agent_roster should have >= 7 roles");
+    assert(agent.payload.agent_roster.SafetyGuard && agent.payload.agent_roster.SafetyGuard.length >= 1, "agent_roster missing SafetyGuard tools");
+    assert(typeof agent.payload.harness.handoff_count === "number" && agent.payload.harness.handoff_count >= 8, "harness handoff_count should be >= 8");
     const agentRunAudit = await request(`/api/harness-run?projectId=${encodeURIComponent(projectId)}&runId=${encodeURIComponent(agent.payload.harness.run_id)}`);
     assert(agentRunAudit.run.run_id === agent.payload.harness.run_id, "harness run audit returned wrong run id");
     assert(agentRunAudit.run.answer_id === agent.answerId, "harness run audit did not link answer id");

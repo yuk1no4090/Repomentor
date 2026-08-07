@@ -2466,10 +2466,20 @@ code {
 .agent-handoff h3 { margin: 0 0 4px 0; font-size: 0.9em; }
 .handoff-chain { display: flex; flex-wrap: wrap; align-items: center; gap: 0; }
 .handoff-item {
-  padding: 4px 8px;
-  font-size: 0.82em;
+  padding: 3px 8px;
+  font-size: 0.8em;
   font-weight: 600;
   color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  margin: 2px 0;
+  cursor: default;
+  display: inline-block;
+  transition: border-color var(--transition);
+}
+.handoff-item:hover {
+  border-color: var(--accent-2);
 }
 .handoff-end {
   padding: 4px 8px;

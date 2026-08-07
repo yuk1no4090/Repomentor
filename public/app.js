@@ -1250,10 +1250,9 @@ function renderAgentImpactMessage(message) {
           <div class="agent-handoff">
             <h3>${c.chat.agentHandoff || "Agent Handoff Flow"}</h3>
             <div class="handoff-chain">
-              ${payload.handoffs.map((h, i) => html`
-                <span class="handoff-item">${escapeHtml(h.sender)} &rarr;</span>
+              ${payload.handoffs.map((h) => html`
+                <span class="handoff-item" title="${escapeHtml(h.reason || '')}">${escapeHtml(h.sender)} &rarr; ${escapeHtml(h.recipient)}</span>
               `).join("")}
-              <span class="handoff-end">END</span>
             </div>
           </div>
         ` : ""}
