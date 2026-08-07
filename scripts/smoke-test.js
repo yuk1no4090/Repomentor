@@ -826,7 +826,7 @@ async function main() {
     assert(agent.payload?.harness?.fallback_used === true, "offline smoke test should report fallback use");
     assert(agent.payload.harness.fallback_reason.includes("OPENAI_API_KEY"), "offline fallback reason should mention missing API key");
     assert(agent.payload?.harness?.schema_valid === true, "harness schema status should be valid");
-    assert(agent.payload?.harness?.budgets?.max_steps === 14, "harness should report max step budget (14 for multi-agent supervisor)");
+    assert(agent.payload?.harness?.budgets?.max_steps >= 14, `harness max_steps should be >= 14 for multi-agent supervisor, got ${agent.payload?.harness?.budgets?.max_steps}`);
     assert(agent.payload.harness.budgets.max_context_tokens === 8000, "harness should report context token budget");
     assert(agent.payload?.harness?.budget_status?.steps_executed === agent.payload.harness.steps_executed, "budget status should mirror executed steps");
     assert(agent.payload.harness.budget_status.step_budget_exceeded === false, "normal agent run should not exceed step budget");

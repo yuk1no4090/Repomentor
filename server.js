@@ -118,6 +118,7 @@ const MAX_IMPORTED_FILE_BYTES = 400_000;
 const MAX_IMPORTED_TOTAL_BYTES = 12 * 1024 * 1024;
 const GITHUB_IMPORT_TIMEOUT_MS = 15_000;
 const MAX_QUESTION_LENGTH = 16_000;
+const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
 
 const AGENT_MAX_STEPS = parsePositiveIntegerEnv("AGENT_MAX_STEPS", 14);
 const AGENT_BUDGETS = {
@@ -2539,7 +2540,7 @@ function sendJson(res, status, payload) {
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(body),
-    "access-control-allow-origin": "*",
+    "access-control-allow-origin": CORS_ORIGIN,
     "access-control-allow-methods": "GET, POST, OPTIONS",
     "access-control-allow-headers": "Content-Type, Authorization, X-API-Key, X-AI-PM-Token, X-User-Id, X-AI-PM-User-Id"
   });
@@ -4278,13 +4279,13 @@ const ROUTE_RULES = Object.freeze({
 function decideNextRoute(state) {
   const phase = state.trace.length;
 
+  // Terminal condition: if finalPayload already exists, the workflow is done
+  if (state.finalPayload) return END;
+
   // After human_review: route to synthesize (regardless of phase alignment)
   if (state.hitlRequest?.node === "human_review" && state.riskLevel === "high") {
-    // human_review has run; now route to synthesize
-    if (!state.hitlRequest.decision) {
-      // First pass: human_review just set hitlRequest, now go to synthesize to produce paused answer
-      return "synthesize";
-    }
+    // human_review has run; now route to synthesize to produce paused/approved/rejected answer
+    return "synthesize";
   }
 
   // Phases 0-8: follow linear path
@@ -4294,12 +4295,8 @@ function decideNextRoute(state) {
     if (nextNode === "qa_plan" && state.riskLevel === "high" && AGENT_HITL_ENABLED) {
       return "human_review";
     }
-    // Override: if human_review approved, route to synthesizer
-    if (nextNode === "qa_plan" && state.hitlRequest?.decision === "approve") {
-      return "synthesize";
-    }
-    // Override: if human_review rejected, route to synthesizer (which will produce rejection answer)
-    if (nextNode === "qa_plan" && state.hitlRequest?.decision === "reject") {
+    // Override: if human_review approved/rejected (from resume), route to synthesizer
+    if (nextNode === "qa_plan" && state.hitlRequest?.decision) {
       return "synthesize";
     }
     return nextNode;
@@ -4720,14 +4717,17 @@ async function runAgenticImpactWorkflow(store, project, question, userId = DEFAU
     if (pausedDecision) {
       baseInput.hitlRequest = { node: "human_review", reason: "resumed with decision", checkpoint_id: null, decision: pausedDecision };
     }
-    const graphInput = executableCheckpointResume
+    // When resuming with a HITL decision, always use fresh execution (not checkpoint continuation)
+    // so the decision is injected into the initial state
+    const useCheckpointResume = executableCheckpointResume && !pausedDecision;
+    const graphInput = useCheckpointResume
       ? null
       : baseInput;
     state = await withWorkflowTimeout(graph.invoke(graphInput, {
       configurable: {
         thread_id: runId,
         checkpoint_ns: "",
-        ...(executableCheckpointResume ? { checkpoint_id: resumeMetadata.sourceCheckpointId } : {})
+        ...(useCheckpointResume ? { checkpoint_id: resumeMetadata.sourceCheckpointId } : {})
       }
     }), AGENT_BUDGETS.timeout_ms);
     checkpointing = await persistLangGraphCheckpoints({
@@ -5612,7 +5612,9 @@ async function handleApiUnlocked(req, res, pathname) {
       const project = findProject(store, body.projectId, userId);
       const started = Date.now();
       const runId = createHarnessRunId("onboarding");
-      let payload = generateOnboardingPlan(project, body.role || "Backend Engineer", body.duration || "3 days");
+      const role = String(body.role || "Backend Engineer").slice(0, 100);
+      const duration = String(body.duration || "3 days").slice(0, 50);
+      let payload = generateOnboardingPlan(project, role, duration);
       const question = `Generate onboarding plan for ${payload.role}, ${payload.duration}`;
       const inputSafety = scanInputSafety(question);
       const memoryLearningAllowed = inputSafety.status === "passed";
@@ -5854,13 +5856,15 @@ async function handleApiUnlocked(req, res, pathname) {
       const endpoint = hasKey ? resolveLlmEndpoint() : null;
       // Check SQLite connectivity
       let dbStatus = "unknown";
+      let dbTest = null;
       try {
-        const dbTest = new DatabaseSync(MEMORY_DB_PATH);
+        dbTest = new DatabaseSync(MEMORY_DB_PATH);
         dbTest.exec("SELECT 1");
-        dbTest.close();
         dbStatus = "connected";
       } catch (e) {
         dbStatus = `error: ${e.message}`;
+      } finally {
+        if (dbTest) { try { dbTest.close(); } catch {} }
       }
       // Check store file health
       let storeStatus = "ok";
@@ -5938,11 +5942,11 @@ async function serveStatic(req, res, pathname) {
   try {
     const content = await fs.readFile(filePath);
     const ext = path.extname(filePath);
-    res.writeHead(200, { "content-type": MIME_TYPES[ext] || "application/octet-stream", "access-control-allow-origin": "*" });
+    res.writeHead(200, { "content-type": MIME_TYPES[ext] || "application/octet-stream", "access-control-allow-origin": CORS_ORIGIN });
     res.end(content);
   } catch {
     const fallback = await fs.readFile(path.join(PUBLIC_DIR, "index.html"));
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "access-control-allow-origin": "*" });
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "access-control-allow-origin": CORS_ORIGIN });
     res.end(fallback);
   }
 }
@@ -5951,7 +5955,7 @@ const server = http.createServer(async (req, res) => {
   // CORS preflight
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
-      "access-control-allow-origin": "*",
+      "access-control-allow-origin": CORS_ORIGIN,
       "access-control-allow-methods": "GET, POST, OPTIONS",
       "access-control-allow-headers": "Content-Type, Authorization, X-API-Key, X-AI-PM-Token, X-User-Id, X-AI-PM-User-Id",
       "access-control-max-age": "86400"
@@ -5962,7 +5966,10 @@ const server = http.createServer(async (req, res) => {
 
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (url.pathname.startsWith("/api/")) {
-    const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.socket.remoteAddress || "unknown";
+    // Prefer direct socket address; only use XFF when explicitly trusted (behind reverse proxy)
+    const ip = process.env.TRUST_PROXY === "true"
+      ? (req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.socket.remoteAddress || "unknown")
+      : (req.socket.remoteAddress || "unknown");
     if (!checkRateLimit(ip)) {
       sendJson(res, 429, { error: "Rate limit exceeded. Please wait before sending more requests.", code: "RATE_LIMITED", retry_after_ms: RATE_LIMIT_WINDOW_MS });
       return;
@@ -5983,22 +5990,23 @@ async function gracefulShutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   log("info", "shutdown initiated", { signal });
-  // Stop accepting new connections
-  server.close(() => {
-    log("info", "http server closed");
-  });
-  // Drain existing connections (force close after 10s)
-  setTimeout(() => {
-    console.log("Forcing shutdown after timeout.");
-    process.exit(0);
-  }, 10_000).unref();
-  // Flush store if needed
+  // Force close after 10s if drain takes too long
+  const forceTimer = setTimeout(() => {
+    log("warn", "forcing shutdown after timeout");
+    process.exit(1);
+  }, 10_000);
+  forceTimer.unref();
+  // Flush store
   try {
     await saveStore(store);
-    console.log("Store flushed before shutdown.");
+    log("info", "store flushed before shutdown");
   } catch (e) {
-    console.error("Failed to flush store during shutdown:", e.message);
+    log("error", "failed to flush store during shutdown", { error: e.message });
   }
+  // Stop accepting new connections and drain existing ones
+  await new Promise((resolve) => server.close(resolve));
+  log("info", "http server closed");
+  clearTimeout(forceTimer);
   process.exit(0);
 }
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));

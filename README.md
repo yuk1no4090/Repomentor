@@ -79,6 +79,8 @@ The project targets Node.js 24 because the long-term memory store uses the built
 | `RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window duration in milliseconds. |
 | `LOG_LEVEL` | `info` | Structured log level: `debug`, `info`, `warn`, or `error`. |
 | `MAX_QUESTION_LENGTH` | `16000` | Maximum question text length in characters. |
+| `CORS_ORIGIN` | `*` | CORS allow-origin header value. Set to a specific origin (e.g. `https://yourapp.com`) in production. |
+| `TRUST_PROXY` | `false` | Set to `true` to trust `X-Forwarded-For` header for rate limiting (when behind a reverse proxy). |
 
 ## Docker Deployment
 
