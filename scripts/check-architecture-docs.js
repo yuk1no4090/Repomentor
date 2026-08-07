@@ -66,11 +66,12 @@ const stalePrdTerms = [
   '"pattern": "single-agent tool workflow"'
 ].filter((term) => prd.includes(term));
 const requiredUserGuideTerms = [
-  "LangGraph Agent 工作流",
-  "9 节点 LangGraph",
+  "多 Agent 协同工作流",
+  "Supervisor",
   "Memory、Harness、Safety",
-  "fallback 和预算状态",
-  "已确认和已忽略建议会保留状态标记",
+  "HITL",
+  "Agent Roster",
+  "handoff",
   "/api/memory",
   "/api/memory/confirm",
   "/api/memory/forget",
@@ -82,7 +83,9 @@ const missingUserGuideTerms = requiredUserGuideTerms.filter((term) => !userGuide
 const staleUserGuideTerms = [
   "展示 6 步 Agent",
   "Agent 工作流的 6 步",
-  "零依赖"
+  "零依赖",
+  "9 节点 LangGraph Agent 工作流",
+  "展示 9 节点 LangGraph Agent 工作流"
 ].filter((term) => userGuide.includes(term));
 
 if (
