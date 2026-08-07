@@ -145,10 +145,10 @@ The `modelAdapter` boundary uses an OpenAI-compatible chat completions call when
 | --- | --- | --- |
 | `GET` | `/api/health` | Server, package version, git commit, Node runtime, environment, uptime, LLM configuration status, and effective request timeout. |
 | `GET` | `/api/auth/me` | Return the resolved auth identity, role, scopes, and org id for the current request. |
-| `GET` | `/api/auth/users` | Return configured auth users for audit without exposing token values. |
+| `GET` | `/api/auth/users` | Return configured auth users for audit without exposing token values. Requires `auth:read`. |
 | `POST` | `/api/auth/users` | Create or update a local store-backed auth user and optionally issue a one-time visible token. Requires `auth:write`. |
 | `POST` | `/api/auth/users/disable` | Disable a local store-backed auth user and its tokens. Requires `auth:write`. |
-| `GET` | `/api/auth/events` | Return recent auth allow/deny audit events without exposing token values. |
+| `GET` | `/api/auth/events` | Return recent auth allow/deny audit events without exposing token values. Requires `auth:read`. |
 | `GET` | `/api/projects` | List imported projects without chunk bodies. |
 | `POST` | `/api/import` | Import sample, public GitHub repository, or ZIP upload. |
 | `POST` | `/api/chat` | Repository Q&A or standard impact analysis with lightweight harness and safety metadata. |

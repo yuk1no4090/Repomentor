@@ -1,4 +1,12 @@
 node_modules
 .env
-data/store.json
 .DS_Store
+
+# Runtime data — never commit (contains user preferences, repo analysis, checkpoints, memory)
+data/store.json
+data/store.json.corrupt-*
+data/memory.sqlite
+data/memory.sqlite-wal
+data/memory.sqlite-shm
+data/*.sqlite.bak
+data/*.sqlite.bak.*

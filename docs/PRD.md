@@ -572,6 +572,7 @@ Rules:
 - QA test case export
 - 增加 supervisor 动态派发或 human-in-the-loop 审核节点
 - 增加 human-in-the-loop 审核节点
+- 详见 [MULTI_AGENT_PLAN.md](./MULTI_AGENT_PLAN.md) 多 Agent 协同计划书（scene#17）
 
 ### V0.4 团队化能力
 

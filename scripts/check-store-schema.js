@@ -118,7 +118,7 @@ const requiredMemoryEndpointSnippets = [
   "fs.unlink(tempPath).catch(() => {})",
   "const FEEDBACK_TYPES = new Set",
   "FEEDBACK_TYPES.has(item.type)",
-  "if (projectId) findProject(store, projectId)",
+  "if (projectId) findProject(store, projectId, userId)",
   "suggestion.projectId !== body.projectId",
   "const MEMORY_PREFERENCE_KEYS = new Set",
   "const MEMORY_VALUE_OPTIONS = {",

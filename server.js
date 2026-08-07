@@ -108,11 +108,14 @@ const MAX_IMPORTED_FILE_BYTES = 400_000;
 const MAX_IMPORTED_TOTAL_BYTES = 12 * 1024 * 1024;
 const GITHUB_IMPORT_TIMEOUT_MS = 15_000;
 
+const AGENT_MAX_STEPS = parsePositiveIntegerEnv("AGENT_MAX_STEPS", 14);
 const AGENT_BUDGETS = {
-  max_steps: 9,
+  max_steps: AGENT_MAX_STEPS,
   timeout_ms: 30_000,
   max_context_tokens: 8_000
 };
+const AGENT_GRAPH_MODE = String(process.env.AGENT_GRAPH_MODE || "supervisor").toLowerCase();
+const AGENT_HITL_ENABLED = String(process.env.AGENT_HITL_ENABLED || "false").toLowerCase() === "true";
 
 function parsePositiveIntegerEnv(name, fallback) {
   const value = Number(process.env[name]);
@@ -124,17 +127,17 @@ const LLM_CONTEXT_TOKEN_BUDGET = parsePositiveIntegerEnv("LLM_CONTEXT_TOKEN_BUDG
 const MEMORY_EMBEDDING_PROVIDER = String(process.env.MEMORY_EMBEDDING_PROVIDER || "").toLowerCase();
 
 const AGENT_TOOL_REGISTRY = [
-  { name: "safety.scan_input", capability: "input_guardrail", access: "read-only", external_network: false },
-  { name: "memory.load_preferences", capability: "preference_memory", access: "read-only", external_network: false },
-  { name: "classifier_agent.classify_change_request", capability: "classification", access: "read-only", external_network: false },
-  { name: "retriever_agent.retrieve_repository_chunks", capability: "repo_retrieval", access: "read-only", external_network: false },
-  { name: "context_expander_agent.expand_dependency_context", capability: "repo_context_expansion", access: "read-only", external_network: false },
-  { name: "impact_analyst_agent.estimate_impact_risk", capability: "impact_analysis", access: "read-only", external_network: false },
-  { name: "qa_planner_agent.plan_regression_tests", capability: "qa_planning", access: "read-only", external_network: false },
-  { name: "onboarding_planner_agent.generate_plan", capability: "onboarding_planning", access: "read-only", external_network: false },
-  { name: "safety_guardrail_agent.validate_output", capability: "output_guardrail", access: "read-only", external_network: false },
-  { name: "synthesizer_agent.compose_structured_answer", capability: "structured_synthesis", access: "read-only", external_network: false },
-  { name: "agent_harness.fallback", capability: "deterministic_fallback", access: "read-only", external_network: false }
+  { name: "safety.scan_input", capability: "input_guardrail", access: "read-only", external_network: false, agent_role: "SafetyGuard" },
+  { name: "memory.load_preferences", capability: "preference_memory", access: "read-only", external_network: false, agent_role: "MemoryCurator" },
+  { name: "classifier_agent.classify_change_request", capability: "classification", access: "read-only", external_network: false, agent_role: "Classifier" },
+  { name: "retriever_agent.retrieve_repository_chunks", capability: "repo_retrieval", access: "read-only", external_network: false, agent_role: "Retriever" },
+  { name: "context_expander_agent.expand_dependency_context", capability: "repo_context_expansion", access: "read-only", external_network: false, agent_role: "Retriever" },
+  { name: "impact_analyst_agent.estimate_impact_risk", capability: "impact_analysis", access: "read-only", external_network: false, agent_role: "ImpactAnalyst" },
+  { name: "qa_planner_agent.plan_regression_tests", capability: "qa_planning", access: "read-only", external_network: false, agent_role: "QAPlanner" },
+  { name: "onboarding_planner_agent.generate_plan", capability: "onboarding_planning", access: "read-only", external_network: false, agent_role: "OnboardingPlanner" },
+  { name: "safety_guardrail_agent.validate_output", capability: "output_guardrail", access: "read-only", external_network: false, agent_role: "SafetyGuard" },
+  { name: "synthesizer_agent.compose_structured_answer", capability: "structured_synthesis", access: "read-only", external_network: false, agent_role: "Synthesizer" },
+  { name: "agent_harness.fallback", capability: "deterministic_fallback", access: "read-only", external_network: false, agent_role: "Harness" }
 ];
 
 const AGENT_TOOL_POLICY = {
@@ -1742,8 +1745,8 @@ function normalizeLangGraphCheckpointRow(row) {
   };
 }
 
-function findLangGraphCheckpoint(store, { projectId, runId, checkpointId }) {
-  findProject(store, projectId);
+function findLangGraphCheckpoint(store, { projectId, runId, checkpointId, userId = null }) {
+  findProject(store, projectId, userId);
   if (!runId) throw apiError("Run id is required.", "RUN_ID_REQUIRED");
   if (!checkpointId) throw apiError("Checkpoint id is required.", "CHECKPOINT_ID_REQUIRED");
   const row = getMemoryDatabase().prepare(`
@@ -1804,9 +1807,9 @@ function buildLangGraphReplay(store, { projectId, runId }) {
   };
 }
 
-async function runLangGraphResumeFromCheckpoint(store, { projectId, runId, checkpointId = null, userId = DEFAULT_USER_ID } = {}) {
+async function runLangGraphResumeFromCheckpoint(store, { projectId, runId, checkpointId = null, userId = DEFAULT_USER_ID, decision = null } = {}) {
   if (!runId) throw apiError("Run id is required.", "RUN_ID_REQUIRED");
-  findProject(store, projectId);
+  findProject(store, projectId, userId);
   const checkpoint = checkpointId
     ? findLangGraphCheckpoint(store, { projectId, runId, checkpointId })
     : listLangGraphCheckpoints({ projectId, runId, limit: 1 })[0];
@@ -1820,7 +1823,7 @@ async function runLangGraphResumeFromCheckpoint(store, { projectId, runId, check
   if (resumeUserId !== normalizedUserId) {
     throw apiError("LangGraph checkpoint belongs to a different user.", "LANGGRAPH_RESUME_USER_MISMATCH", 403);
   }
-  const project = findProject(store, resumeInput.projectId);
+  const project = findProject(store, resumeInput.projectId, normalizedUserId);
   const checkpointPayload = loadLangGraphCheckpointPayload({ projectId: resumeInput.projectId, runId });
   const resumeMode = checkpointPayload ? "checkpoint_continuation" : "input_snapshot_reexecution";
   const payload = await runAgenticImpactWorkflow(
@@ -1833,7 +1836,8 @@ async function runLangGraphResumeFromCheckpoint(store, { projectId, runId, check
       sourceRunId: runId,
       sourceThreadId: checkpoint.thread_id,
       sourceCheckpointId: checkpoint.checkpoint_id,
-      checkpointPayload
+      checkpointPayload,
+      pausedDecision: decision || null
     }
   );
   return {
@@ -2420,6 +2424,7 @@ function hasAuthScope(identity, requiredScope) {
 
 function requiredScopeForRequest(req, pathname) {
   if (pathname === "/api/health") return null;
+  if (req.method === "GET" && (pathname === "/api/auth/users" || pathname === "/api/auth/events")) return "auth:read";
   if (req.method === "GET") return "project:read";
   if (pathname === "/api/auth/users" || pathname === "/api/auth/users/disable") return "auth:write";
   if (pathname === "/api/import") return "project:write";
@@ -2615,7 +2620,14 @@ function parseZip(buffer) {
     if (compressionMethod === 0) {
       contentBuffer = compressed;
     } else if (compressionMethod === 8) {
-      contentBuffer = zlib.inflateRawSync(compressed);
+      // Guard against ZIP bombs: cap decompressed output before it fills memory.
+      // maxOutputLength throws RangeError when the decompressed stream exceeds the limit.
+      try {
+        contentBuffer = zlib.inflateRawSync(compressed, { maxOutputLength: MAX_IMPORTED_FILE_BYTES + 1 });
+      } catch (inflateError) {
+        if (inflateError instanceof RangeError) continue; // decompressed too large — skip
+        throw inflateError;
+      }
     } else {
       continue;
     }
@@ -2886,7 +2898,7 @@ function scanImportSafety(files) {
   };
 }
 
-function createProject({ name, source, files }) {
+function createProject({ name, source, files, ownerId = null }) {
   const limitedFiles = files
     .filter((file) => shouldIncludeFile(file.path))
     .slice(0, MAX_IMPORTED_FILES)
@@ -2905,6 +2917,7 @@ function createProject({ name, source, files }) {
     id: crypto.randomUUID(),
     name,
     source,
+    ownerId,
     createdAt: new Date().toISOString(),
     fileCount: limitedFiles.length,
     chunkCount: chunks.length,
@@ -2935,11 +2948,17 @@ function buildOverview(name, techStack, businessFeatures, recommendedFiles) {
   return `${name} appears to use ${stack}. The main visible domains are ${modules}. Recommended first reads: ${reads || "README and top-level source files"}.`;
 }
 
-function findProject(store, projectId) {
-  const project = projectId
-    ? store.projects.find((item) => item.id === projectId)
-    : store.projects.at(-1);
-  if (projectId && !project) throw apiError("Project not found.", "PROJECT_NOT_FOUND", 404);
+function findProject(store, projectId, userId = null) {
+  const visibleTo = (item) => {
+    if (!AUTH_REQUIRED || !userId) return true;
+    return !item.ownerId || item.ownerId === userId;
+  };
+  if (projectId) {
+    const project = store.projects.find((item) => item.id === projectId && visibleTo(item));
+    if (!project) throw apiError("Project not found.", "PROJECT_NOT_FOUND", 404);
+    return project;
+  }
+  const project = store.projects.filter(visibleTo).at(-1);
   if (!project) throw apiError("Import a repository before using this feature.", "PROJECT_REQUIRED");
   return project;
 }
@@ -3446,8 +3465,8 @@ function validateAgentCitations(project, payload) {
   };
 }
 
-function makeTraceStep({ step, tool, purpose, input, output, citations = [] }) {
-  return {
+function makeTraceStep({ step, tool, purpose, input, output, citations = [], agent_role }) {
+  const entry = {
     step,
     tool,
     purpose,
@@ -3455,6 +3474,8 @@ function makeTraceStep({ step, tool, purpose, input, output, citations = [] }) {
     output,
     citations: citations.slice(0, 6)
   };
+  if (agent_role) entry.agent_role = agent_role;
+  return entry;
 }
 
 function createHarnessRunId(prefix) {
@@ -3950,7 +3971,7 @@ async function runModelAdapter({ question, chunks, kind, project, validatePayloa
   };
 }
 
-function buildAgentHarnessReport({ runId, started, trace, harnessEvents, errors }) {
+function buildAgentHarnessReport({ runId, started, trace, harnessEvents, errors, agentRoster, handoffs }) {
   const modelEvent = harnessEvents.find((event) => event.type === "model_adapter") || {};
   const harnessErrors = [
     ...errors,
@@ -4009,6 +4030,8 @@ function buildAgentHarnessReport({ runId, started, trace, harnessEvents, errors 
     },
     budget_status,
     tool_registry: summarizeToolRegistry(),
+    agent_roster: agentRoster || {},
+    handoff_count: (handoffs || []).length,
     errors: harnessErrors
   };
 }
@@ -4149,9 +4172,9 @@ function recordHarnessRun(store, answerRecord) {
   return snapshot;
 }
 
-function findHarnessRunAudit(store, projectId, runId) {
+function findHarnessRunAudit(store, projectId, runId, userId = null) {
   if (!runId) throw apiError("Run id is required.", "RUN_ID_REQUIRED");
-  findProject(store, projectId);
+  findProject(store, projectId, userId);
   const persisted = (store.harnessRuns || []).find((item) => item.projectId === projectId && item.run_id === runId);
   const answer = store.answers.find((item) => {
     return item.projectId === projectId && item.payload?.harness?.run_id === runId;
@@ -4196,6 +4219,59 @@ function withWorkflowTimeout(promise, timeoutMs) {
   });
 }
 
+// ── Multi-Agent Supervisor Routing ──────────────────────────
+// Deterministic route table: given current phase (trace length) + state signals,
+// returns the next LangGraph node name. LLM never participates in routing.
+const ROUTE_RULES = Object.freeze({
+  // Phase → next node (ordered linear path; supervisor overrides based on state signals)
+  phaseMap: [
+    "input_safety",    // phase 0
+    "memory",          // phase 1
+    "classify",        // phase 2
+    "retrieve",        // phase 3
+    "expand_context",  // phase 4
+    "impact_analysis", // phase 5
+    "qa_plan",         // phase 6
+    "guardrails",      // phase 7
+    "synthesize"       // phase 8
+  ]
+});
+
+function decideNextRoute(state) {
+  const phase = state.trace.length;
+
+  // After human_review: route to synthesize (regardless of phase alignment)
+  if (state.hitlRequest?.node === "human_review" && state.riskLevel === "high") {
+    // human_review has run; now route to synthesize
+    if (!state.hitlRequest.decision) {
+      // First pass: human_review just set hitlRequest, now go to synthesize to produce paused answer
+      return "synthesize";
+    }
+  }
+
+  // Phases 0-8: follow linear path
+  if (phase < ROUTE_RULES.phaseMap.length) {
+    const nextNode = ROUTE_RULES.phaseMap[phase];
+    // Override: if impact_analysis rated high risk and HITL is enabled, route to human_review
+    if (nextNode === "qa_plan" && state.riskLevel === "high" && AGENT_HITL_ENABLED) {
+      return "human_review";
+    }
+    // Override: if human_review approved, route to synthesizer
+    if (nextNode === "qa_plan" && state.hitlRequest?.decision === "approve") {
+      return "synthesize";
+    }
+    // Override: if human_review rejected, route to synthesizer (which will produce rejection answer)
+    if (nextNode === "qa_plan" && state.hitlRequest?.decision === "reject") {
+      return "synthesize";
+    }
+    return nextNode;
+  }
+  // Phase >= 9: all nodes complete → END
+  return END;
+}
+
+// ─────────────────────────────────────────────────────────────
+
 function createGraphStateAnnotation() {
   const replace = (_left, right) => right;
   return Annotation.Root({
@@ -4214,6 +4290,10 @@ function createGraphStateAnnotation() {
     relatedFiles: Annotation({ reducer: replace, default: () => [] }),
     impact: Annotation({ reducer: replace, default: () => null }),
     riskLevel: Annotation({ reducer: replace, default: () => "low" }),
+    handoffs: Annotation({ reducer: (left, right) => [...left, ...right], default: () => [] }),
+    routeDecisions: Annotation({ reducer: (left, right) => [...left, ...right], default: () => [] }),
+    hitlRequest: Annotation({ reducer: replace, default: () => null }),
+    agentRoster: Annotation({ reducer: replace, default: () => ({}) }),
     trace: Annotation({ reducer: (left, right) => [...left, ...right], default: () => [] }),
     harnessEvents: Annotation({ reducer: (left, right) => [...left, ...right], default: () => [] }),
     finalPayload: Annotation({ reducer: replace, default: () => null })
@@ -4224,17 +4304,19 @@ function createAgentGraph(checkpointer = false, runtime = {}) {
   const runtimeStore = runtime.store;
   const runtimeProject = runtime.project;
   const State = createGraphStateAnnotation();
-  return new StateGraph(State)
+  let graph = new StateGraph(State)
     .addNode("input_safety", async (state) => {
       const inputSafety = scanInputSafety(state.question);
       return {
         inputSafety,
+        handoffs: [{ sender: "SafetyGuard", recipient: "MemoryCurator", reason: "input safety passed", step: 0 }],
         trace: [makeTraceStep({
           step: "1. Input safety scan",
           tool: "safety.scan_input",
           purpose: "Detect prompt injection, secret requests, and out-of-scope tool intents before any agent work.",
           input: { question: state.question },
-          output: { status: inputSafety.status, risk_types: inputSafety.risk_types }
+          output: { status: inputSafety.status, risk_types: inputSafety.risk_types },
+          agent_role: "SafetyGuard"
         })]
       };
     })
@@ -4260,6 +4342,7 @@ function createAgentGraph(checkpointer = false, runtime = {}) {
           summary: combinedSummary,
           long_term: longTermMemories
         },
+        handoffs: [{ sender: "MemoryCurator", recipient: "Classifier", reason: "preferences loaded", step: 1 }],
         trace: [makeTraceStep({
           step: "2. Load user preference and long-term memory",
           tool: "memory.load_preferences",
@@ -4271,7 +4354,8 @@ function createAgentGraph(checkpointer = false, runtime = {}) {
             suggestions: suggestions.length,
             learning_skipped: !memoryLearningAllowed,
             skip_reason: memoryLearningAllowed ? null : "input_safety_needs_review"
-          }
+          },
+          agent_role: "MemoryCurator"
         })]
       };
     })
@@ -4279,12 +4363,14 @@ function createAgentGraph(checkpointer = false, runtime = {}) {
       const classification = classifyChangeRequest(state.question);
       return {
         classification,
+        handoffs: [{ sender: "Classifier", recipient: "Retriever", reason: `change_type=${classification.change_type}`, step: 2 }],
         trace: [makeTraceStep({
           step: "3. Classify change request",
           tool: "classifier_agent.classify_change_request",
           purpose: "Identify the kind of change before retrieval so the workflow can search adjacent risk areas.",
           input: state.question,
-          output: classification
+          output: classification,
+          agent_role: "Classifier"
         })]
       };
     })
@@ -4292,13 +4378,15 @@ function createAgentGraph(checkpointer = false, runtime = {}) {
       const primaryChunks = retrieveChunks(runtimeProject, state.question, 8);
       return {
         primaryChunks,
+        handoffs: [{ sender: "Retriever", recipient: "Retriever", reason: "expand context next", step: 3 }],
         trace: [makeTraceStep({
           step: "4. Retrieve primary evidence",
           tool: "retriever_agent.retrieve_repository_chunks",
           purpose: "Find top repository chunks directly related to the request.",
           input: { top_k: 8, query: state.question },
           output: { chunks_found: primaryChunks.length },
-          citations: relatedFilesFromChunks(primaryChunks).map((file) => file.file_path)
+          citations: relatedFilesFromChunks(primaryChunks).map((file) => file.file_path),
+          agent_role: "Retriever"
         })]
       };
     })
@@ -4310,13 +4398,15 @@ function createAgentGraph(checkpointer = false, runtime = {}) {
         expandedChunks,
         relatedFiles,
         retrievedSafety,
+        handoffs: [{ sender: "Retriever", recipient: "ImpactAnalyst", reason: "context expanded", step: 4 }],
         trace: [makeTraceStep({
           step: "5. Expand dependency context",
           tool: "context_expander_agent.expand_dependency_context",
           purpose: "Search models, routes, services, UI, and tests that may be indirectly affected.",
           input: { change_type: state.classification.change_type, risk_drivers: state.classification.risk_drivers },
           output: { total_context_chunks: expandedChunks.length, safety: retrievedSafety.status },
-          citations: relatedFiles.map((file) => file.file_path)
+          citations: relatedFiles.map((file) => file.file_path),
+          agent_role: "Retriever"
         })]
       };
     })
@@ -4340,6 +4430,7 @@ function createAgentGraph(checkpointer = false, runtime = {}) {
         impact,
         riskLevel,
         harnessEvents: [modelResult.event],
+        handoffs: [{ sender: "ImpactAnalyst", recipient: "QAPlanner", reason: `risk_level=${riskLevel}`, step: 5 }],
         trace: [makeTraceStep({
           step: "6. Estimate impact risk",
           tool: "impact_analyst_agent.estimate_impact_risk",
@@ -4353,19 +4444,22 @@ function createAgentGraph(checkpointer = false, runtime = {}) {
               ? "LLM unavailable or schema-invalid"
               : null
           },
-          citations: impact.impact_areas.flatMap((area) => area.files || [])
+          citations: impact.impact_areas.flatMap((area) => area.files || []),
+          agent_role: "ImpactAnalyst"
         })]
       };
     })
     .addNode("qa_plan", async (state) => {
       const testingSuggestions = state.impact.testing_suggestions || [];
       return {
+        handoffs: [{ sender: "QAPlanner", recipient: "SafetyGuard", reason: "qa plan ready for guardrails", step: 6 }],
         trace: [makeTraceStep({
           step: "7. Plan QA coverage",
           tool: "qa_planner_agent.plan_regression_tests",
           purpose: "Turn impacted areas into practical regression and edge-case checks.",
           input: { risk_level: state.riskLevel },
-          output: { testing_suggestions: testingSuggestions.length }
+          output: { testing_suggestions: testingSuggestions.length },
+          agent_role: "QAPlanner"
         })]
       };
     })
@@ -4382,13 +4476,15 @@ function createAgentGraph(checkpointer = false, runtime = {}) {
       });
       return {
         outputSafety,
+        handoffs: [{ sender: "SafetyGuard", recipient: "Synthesizer", reason: `output safety=${outputSafety.status}`, step: 7 }],
         trace: [makeTraceStep({
           step: "8. Run safety guardrails",
           tool: "safety_guardrail_agent.validate_output",
           purpose: "Validate citations, sensitive output, overconfidence, and untrusted retrieved instructions.",
           input: { required: "Read-only tools, cited files, no secret leakage." },
           output: { status: outputSafety.status, risk_types: outputSafety.risk_types },
-          citations: state.relatedFiles.map((file) => file.file_path)
+          citations: state.relatedFiles.map((file) => file.file_path),
+          agent_role: "SafetyGuard"
         })]
       };
     })
@@ -4418,6 +4514,13 @@ function createAgentGraph(checkpointer = false, runtime = {}) {
           detail: toolSafety.checks[0].detail
         }
       ];
+      // Build agent roster from tool registry: role → tool list
+      const agentRoster = {};
+      for (const tool of AGENT_TOOL_REGISTRY) {
+        if (!tool.agent_role) continue;
+        if (!agentRoster[tool.agent_role]) agentRoster[tool.agent_role] = [];
+        agentRoster[tool.agent_role].push(tool.name);
+      }
       const finalPayload = {
         agent: {
           name: "LangGraph Impact Analysis Team",
@@ -4430,7 +4533,22 @@ function createAgentGraph(checkpointer = false, runtime = {}) {
             "Run safety guardrails before finalizing."
           ]
         },
-        summary: state.impact.summary,
+        summary: state.hitlRequest?.decision === "reject"
+          ? `[HITL REJECTED] The change was reviewed and rejected by a human reviewer. Original risk assessment: ${state.impact?.summary || "high risk"}.`
+          : state.hitlRequest?.decision === "approve"
+            ? `[HITL APPROVED] ${state.impact?.summary || "Impact analysis approved."}`
+            : state.hitlRequest && !state.hitlRequest.decision
+              ? `[HITL PAUSED — awaiting human review] ${state.impact?.summary || "High-risk change detected."}`
+              : state.impact?.summary,
+        hitl: state.hitlRequest
+          ? {
+              paused: !state.hitlRequest.decision,
+              approved: state.hitlRequest.decision === "approve",
+              rejected: state.hitlRequest.decision === "reject",
+              reason: state.hitlRequest.reason,
+              decision: state.hitlRequest.decision || null
+            }
+          : undefined,
         trace: state.trace,
         related_files: state.relatedFiles,
         impact_areas: state.impact.impact_areas,
@@ -4443,30 +4561,88 @@ function createAgentGraph(checkpointer = false, runtime = {}) {
         memory_used: state.memoryUsed,
         memory_suggestions: state.memorySuggestions,
         safety,
+        agent_roster: agentRoster,
+        handoffs: state.handoffs,
         harness: null
       };
       return {
         finalPayload,
+        agentRoster,
+        handoffs: [{ sender: "Synthesizer", recipient: "END", reason: "final answer composed", step: 8 }],
         trace: [makeTraceStep({
           step: "9. Compose structured output",
           tool: "synthesizer_agent.compose_structured_answer",
           purpose: "Return a product-ready impact summary, trace, memory status, harness metadata, and safety report.",
           input: { answer_contract: ["summary", "impact_areas", "testing_suggestions", "open_questions", "memory", "safety"] },
-          output: { guardrails: guardrails.length, memory_suggestions: state.memorySuggestions.length, safety: safety.status }
+          output: { guardrails: guardrails.length, memory_suggestions: state.memorySuggestions.length, safety: safety.status, agent_roster_size: Object.keys(agentRoster).length },
+          agent_role: "Synthesizer"
         })]
       };
-    })
-    .addEdge(START, "input_safety")
-    .addEdge("input_safety", "memory")
-    .addEdge("memory", "classify")
-    .addEdge("classify", "retrieve")
-    .addEdge("retrieve", "expand_context")
-    .addEdge("expand_context", "impact_analysis")
-    .addEdge("impact_analysis", "qa_plan")
-    .addEdge("qa_plan", "guardrails")
-    .addEdge("guardrails", "synthesize")
-    .addEdge("synthesize", END)
-    .compile({ checkpointer });
+    });
+  // ── Graph wiring: supervisor mode vs linear fallback ──
+  if (AGENT_GRAPH_MODE === "linear") {
+    graph = graph
+      .addEdge(START, "input_safety")
+      .addEdge("input_safety", "memory")
+      .addEdge("memory", "classify")
+      .addEdge("classify", "retrieve")
+      .addEdge("retrieve", "expand_context")
+      .addEdge("expand_context", "impact_analysis")
+      .addEdge("impact_analysis", "qa_plan")
+      .addEdge("qa_plan", "guardrails")
+      .addEdge("guardrails", "synthesize")
+      .addEdge("synthesize", END);
+  } else {
+    // Supervisor mode: add routing nodes + wire conditional edges
+    graph = graph
+      .addNode("supervisor", async (state) => {
+        const nextNode = decideNextRoute(state);
+        return {
+          routeDecisions: [{
+            from_node: "supervisor",
+            to_node: nextNode,
+            signal: `phase=${state.trace.length}`,
+            rule_matched: nextNode,
+            step: state.trace.length
+          }],
+          handoffs: state.trace.length === 0 ? [] : [{
+            sender: "Supervisor",
+            recipient: nextNode === "__end__" ? "END" : nextNode,
+            reason: nextNode === "__end__" ? "workflow complete" : `routing to next agent (phase ${state.trace.length})`,
+            step: state.trace.length
+          }]
+        };
+      })
+      .addNode("human_review", async (state) => {
+        // P3 HITL: when riskLevel=high and HITL enabled, this node flags the answer as paused.
+        // The workflow continues to synthesize, which produces a paused response.
+        // User resumes via /api/langgraph-resume with decision: approve|reject.
+        return {
+          hitlRequest: { node: "human_review", reason: "high risk change requires human review", checkpoint_id: null, decision: null },
+          trace: [makeTraceStep({
+            step: `${state.trace.length + 1}. Human review (paused)`,
+            tool: "agent_harness.fallback",
+            purpose: "High-risk change flagged for human-in-the-loop review. Answer is paused until reviewer approves or rejects.",
+            input: { risk_level: state.riskLevel },
+            output: { status: "hitl_paused" },
+            agent_role: "Synthesizer"
+          })]
+        };
+      });
+    const nodeNames = ["input_safety", "memory", "classify", "retrieve", "expand_context", "impact_analysis", "qa_plan", "guardrails", "synthesize", "human_review"];
+    const pathMap = {};
+    for (const name of nodeNames) {
+      pathMap[name] = name;
+    }
+    pathMap["__end__"] = END;
+    graph = graph
+      .addEdge(START, "supervisor")
+      .addConditionalEdges("supervisor", decideNextRoute, pathMap);
+    for (const name of nodeNames) {
+      graph = graph.addEdge(name, "supervisor");
+    }
+  }
+  return graph.compile({ checkpointer });
 }
 
 async function runAgenticImpactWorkflow(store, project, question, userId = DEFAULT_USER_ID, resumeMetadata = null) {
@@ -4495,14 +4671,20 @@ async function runAgenticImpactWorkflow(store, project, question, userId = DEFAU
     latest_checkpoint_id: null
   };
   try {
+    const pausedDecision = resumeMetadata?.pausedDecision;
+    const baseInput = {
+      projectId: project.id,
+      userId: normalizedUserId,
+      question,
+      preferences: getUserPreferences(store, userId)
+    };
+    // When resuming with a HITL decision, inject it into the initial state
+    if (pausedDecision) {
+      baseInput.hitlRequest = { node: "human_review", reason: "resumed with decision", checkpoint_id: null, decision: pausedDecision };
+    }
     const graphInput = executableCheckpointResume
       ? null
-      : {
-          projectId: project.id,
-          userId: normalizedUserId,
-          question,
-          preferences: getUserPreferences(store, userId)
-        };
+      : baseInput;
     state = await withWorkflowTimeout(graph.invoke(graphInput, {
       configurable: {
         thread_id: runId,
@@ -4571,6 +4753,8 @@ async function runAgenticImpactWorkflow(store, project, question, userId = DEFAU
     started,
     trace: payload.trace,
     harnessEvents: state.harnessEvents,
+    agentRoster: state.agentRoster || state.agent_roster || {},
+    handoffs: state.handoffs,
     errors
   });
   payload.harness.checkpointing = checkpointing;
@@ -5009,11 +5193,17 @@ async function handleApiUnlocked(req, res, pathname) {
     }
 
     if (req.method === "GET" && pathname === "/api/projects") {
+      const userId = resolveAuthenticatedUserId(req, {}, store);
+      const visibleTo = (project) => {
+        if (!AUTH_REQUIRED) return true;
+        return !project.ownerId || project.ownerId === userId;
+      };
       sendJson(res, 200, {
-        projects: store.projects.map((project) => ({
+        projects: store.projects.filter(visibleTo).map((project) => ({
           id: project.id,
           name: project.name,
           source: project.source,
+          ownerId: project.ownerId || null,
           createdAt: project.createdAt,
           fileCount: project.fileCount,
           chunkCount: project.chunkCount,
@@ -5026,9 +5216,9 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "GET" && pathname === "/api/memory") {
       const url = new URL(req.url, `http://${req.headers.host}`);
-      const projectId = url.searchParams.get("projectId");
-      if (projectId) findProject(store, projectId);
       const userId = resolveAuthenticatedUserId(req, { userId: url.searchParams.get("userId") || url.searchParams.get("user_id") }, store);
+      const projectId = url.searchParams.get("projectId");
+      if (projectId) findProject(store, projectId, userId);
       const query = String(url.searchParams.get("query") || url.searchParams.get("q") || "").trim();
       const status = normalizeLongTermMemoryStatusFilter(url.searchParams.get("status") || "active");
       const limit = parsePositiveInteger(url.searchParams.get("limit"), 20, 50);
@@ -5155,7 +5345,7 @@ async function handleApiUnlocked(req, res, pathname) {
           status: "ignored"
         }));
       } else if (body.key) {
-        if (body.projectId) findProject(store, body.projectId);
+        if (body.projectId) findProject(store, body.projectId, userId);
         if (!MEMORY_PREFERENCE_KEYS.has(body.key)) throw apiError("Unknown memory preference key.", "UNKNOWN_MEMORY_PREFERENCE_KEY");
         if (body.value && !isKnownMemoryValue(body.key, body.value)) throw apiError("Unknown memory preference value.", "UNKNOWN_MEMORY_PREFERENCE_VALUE");
         const preferences = getUserPreferences(store, userId);
@@ -5185,7 +5375,7 @@ async function handleApiUnlocked(req, res, pathname) {
           reason: "forgotten"
         });
       } else {
-        if (body.projectId) findProject(store, body.projectId);
+        if (body.projectId) findProject(store, body.projectId, userId);
         setUserPreferences(store, userId, createEmptyPreferences());
         store.memoryEvents.push(createMemoryEvent({
           userId,
@@ -5213,6 +5403,7 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "POST" && pathname === "/api/import") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
+      const ownerId = resolveAuthenticatedUserId(req, body, store);
       let importResult;
       if (body.sample) {
         importResult = { files: SAMPLE_FILES, repoName: "Sample Commerce API", source: "sample" };
@@ -5232,7 +5423,8 @@ async function handleApiUnlocked(req, res, pathname) {
       const project = createProject({
         name: importResult.repoName,
         source: importResult.source,
-        files: importResult.files
+        files: importResult.files,
+        ownerId
       });
       store.projects.push(project);
       await saveStore(store);
@@ -5241,6 +5433,7 @@ async function handleApiUnlocked(req, res, pathname) {
           id: project.id,
           name: project.name,
           source: project.source,
+          ownerId: project.ownerId,
           createdAt: project.createdAt,
           fileCount: project.fileCount,
           chunkCount: project.chunkCount,
@@ -5254,7 +5447,7 @@ async function handleApiUnlocked(req, res, pathname) {
     if (req.method === "POST" && pathname === "/api/chat") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
       const userId = resolveAuthenticatedUserId(req, body, store);
-      const project = findProject(store, body.projectId);
+      const project = findProject(store, body.projectId, userId);
       const question = String(body.question || "").trim();
       if (!question) throw apiError("Question is required.", "QUESTION_REQUIRED");
       const kind = body.kind || inferQuestionType(question);
@@ -5377,7 +5570,7 @@ async function handleApiUnlocked(req, res, pathname) {
     if (req.method === "POST" && pathname === "/api/onboarding") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
       const userId = resolveAuthenticatedUserId(req, body, store);
-      const project = findProject(store, body.projectId);
+      const project = findProject(store, body.projectId, userId);
       const started = Date.now();
       const runId = createHarnessRunId("onboarding");
       let payload = generateOnboardingPlan(project, body.role || "Backend Engineer", body.duration || "3 days");
@@ -5463,7 +5656,7 @@ async function handleApiUnlocked(req, res, pathname) {
     if (req.method === "POST" && pathname === "/api/agent-impact") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
       const userId = resolveAuthenticatedUserId(req, body, store);
-      const project = findProject(store, body.projectId);
+      const project = findProject(store, body.projectId, userId);
       const question = String(body.question || "").trim();
       if (!question) throw apiError("Question is required.", "QUESTION_REQUIRED");
       const started = Date.now();
@@ -5516,26 +5709,30 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "GET" && pathname === "/api/evaluation") {
       const url = new URL(req.url, `http://${req.headers.host}`);
-      const project = findProject(store, url.searchParams.get("projectId"));
+      const userId = resolveAuthenticatedUserId(req, {}, store);
+      const project = findProject(store, url.searchParams.get("projectId"), userId);
       sendJson(res, 200, { metrics: computeMetrics(store, project.id) });
       return;
     }
 
     if (req.method === "GET" && pathname === "/api/harness-run") {
       const url = new URL(req.url, `http://${req.headers.host}`);
-      const project = findProject(store, url.searchParams.get("projectId"));
-      const audit = findHarnessRunAudit(store, project.id, url.searchParams.get("runId"));
+      const userId = resolveAuthenticatedUserId(req, {}, store);
+      const project = findProject(store, url.searchParams.get("projectId"), userId);
+      const audit = findHarnessRunAudit(store, project.id, url.searchParams.get("runId"), userId);
       sendJson(res, 200, audit);
       return;
     }
 
     if (req.method === "GET" && pathname === "/api/langgraph-checkpoint") {
       const url = new URL(req.url, `http://${req.headers.host}`);
-      const project = findProject(store, url.searchParams.get("projectId"));
+      const userId = resolveAuthenticatedUserId(req, {}, store);
+      const project = findProject(store, url.searchParams.get("projectId"), userId);
       const checkpoint = findLangGraphCheckpoint(store, {
         projectId: project.id,
         runId: url.searchParams.get("runId"),
-        checkpointId: url.searchParams.get("checkpointId") || url.searchParams.get("checkpoint_id")
+        checkpointId: url.searchParams.get("checkpointId") || url.searchParams.get("checkpoint_id"),
+        userId
       });
       const checkpointPayload = loadLangGraphCheckpointPayload({ projectId: project.id, runId: checkpoint.run_id });
       sendJson(res, 200, {
@@ -5552,7 +5749,8 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "GET" && pathname === "/api/langgraph-replay") {
       const url = new URL(req.url, `http://${req.headers.host}`);
-      const project = findProject(store, url.searchParams.get("projectId"));
+      const userId = resolveAuthenticatedUserId(req, {}, store);
+      const project = findProject(store, url.searchParams.get("projectId"), userId);
       const replay = buildLangGraphReplay(store, {
         projectId: project.id,
         runId: url.searchParams.get("runId")
@@ -5564,13 +5762,14 @@ async function handleApiUnlocked(req, res, pathname) {
     if (req.method === "POST" && pathname === "/api/langgraph-resume") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
       const userId = resolveAuthenticatedUserId(req, body, store);
-      const project = findProject(store, body.projectId);
+      const project = findProject(store, body.projectId, userId);
       const started = Date.now();
       const resumed = await runLangGraphResumeFromCheckpoint(store, {
         projectId: project.id,
         runId: body.runId || body.run_id,
         checkpointId: body.checkpointId || body.checkpoint_id || null,
-        userId
+        userId,
+        decision: body.decision || null
       });
       if (resumed.payload.memory_suggestions?.length) {
         appendMemorySuggestions(store, resumed.payload.memory_suggestions);

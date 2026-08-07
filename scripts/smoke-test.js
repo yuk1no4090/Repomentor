@@ -826,7 +826,7 @@ async function main() {
     assert(agent.payload?.harness?.fallback_used === true, "offline smoke test should report fallback use");
     assert(agent.payload.harness.fallback_reason.includes("OPENAI_API_KEY"), "offline fallback reason should mention missing API key");
     assert(agent.payload?.harness?.schema_valid === true, "harness schema status should be valid");
-    assert(agent.payload?.harness?.budgets?.max_steps === 9, "harness should report max step budget");
+    assert(agent.payload?.harness?.budgets?.max_steps === 14, "harness should report max step budget (14 for multi-agent supervisor)");
     assert(agent.payload.harness.budgets.max_context_tokens === 8000, "harness should report context token budget");
     assert(agent.payload?.harness?.budget_status?.steps_executed === agent.payload.harness.steps_executed, "budget status should mirror executed steps");
     assert(agent.payload.harness.budget_status.step_budget_exceeded === false, "normal agent run should not exceed step budget");
@@ -876,8 +876,8 @@ async function main() {
     assert(langgraphReplay.run.run_id === agent.payload.harness.run_id, "LangGraph replay returned wrong run id");
     assert(langgraphReplay.replay?.mode === "checkpoint summary replay", "LangGraph replay returned wrong mode");
     assert(langgraphReplay.replay.executable === false, "LangGraph replay should not claim executable resume");
-    assert(langgraphReplay.replay.checkpoint_count === agentRunAudit.checkpoints.length, "LangGraph replay checkpoint count mismatch");
-    assert(Array.isArray(langgraphReplay.steps) && langgraphReplay.steps.length === agentRunAudit.checkpoints.length, "LangGraph replay missing steps");
+    assert(langgraphReplay.replay.checkpoint_count >= agentRunAudit.checkpoints.length, "LangGraph replay checkpoint count should be at least agent audit count (supervisor mode adds routing checkpoints)");
+    assert(Array.isArray(langgraphReplay.steps) && langgraphReplay.steps.length >= agentRunAudit.checkpoints.length, "LangGraph replay missing steps (supervisor mode adds routing steps)");
     assert(langgraphReplay.steps.every((item) => item.checkpoint_id && item.state_summary), "LangGraph replay steps missing checkpoint summaries");
     assert(langgraphReplay.answer?.trace_steps === agent.payload.trace.length, "LangGraph replay did not summarize answer trace");
     const missingReplayRun = await requestError(`/api/langgraph-replay?projectId=${encodeURIComponent(projectId)}`);

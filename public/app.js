@@ -1205,6 +1205,47 @@ function renderAgentImpactMessage(message) {
         ${renderRuntimeStatus(payload)}
 
         ${renderOptionalRuntimeStatus(payload)}
+
+        ${payload.hitl?.paused ? html`
+          <div class="hitl-card paused" id="hitl-${escapeHtml(message.answerId)}">
+            <h3>&#9888; ${c.chat.hitlPaused || "Human Review Required"}</h3>
+            <p>${escapeHtml(payload.hitl.reason || "This high-risk change requires human approval before proceeding.")}</p>
+            <div class="hitl-actions">
+              <button class="primary" data-hitl-action="approve" data-answer-id="${escapeHtml(message.answerId)}" data-run-id="${escapeHtml(payload.harness?.run_id || "")}">&#10003; ${c.chat.hitlApprove || "Approve"}</button>
+              <button class="danger" data-hitl-action="reject" data-answer-id="${escapeHtml(message.answerId)}" data-run-id="${escapeHtml(payload.harness?.run_id || "")}">&#10007; ${c.chat.hitlReject || "Reject"}</button>
+            </div>
+          </div>
+        ` : ""}
+        ${payload.hitl?.approved ? html`
+          <div class="hitl-card approved"><h3>&#10003; ${c.chat.hitlApproved || "Approved by Reviewer"}</h3></div>
+        ` : ""}
+        ${payload.hitl?.rejected ? html`
+          <div class="hitl-card rejected"><h3>&#10007; ${c.chat.hitlRejected || "Rejected by Reviewer"}</h3></div>
+        ` : ""}
+
+        ${payload.agent_roster ? html`
+          <div class="agent-roster">
+            <h3>${c.chat.agentRoster || "Agent Roster"}</h3>
+            <div class="agent-roster-list">
+              ${renderList(Object.keys(payload.agent_roster), (role) => `
+                <span class="agent-badge" title="${escapeHtml((payload.agent_roster[role] || []).join(', '))}">${escapeHtml(role)}</span>
+              `)}
+            </div>
+          </div>
+        ` : ""}
+
+        ${payload.handoffs?.length ? html`
+          <div class="agent-handoff">
+            <h3>${c.chat.agentHandoff || "Agent Handoff Flow"}</h3>
+            <div class="handoff-chain">
+              ${payload.handoffs.map((h, i) => html`
+                <span class="handoff-item">${escapeHtml(h.sender)} &rarr;</span>
+              `).join("")}
+              <span class="handoff-end">END</span>
+            </div>
+          </div>
+        ` : ""}
+
         <h3>${c.chat.impactSummary}</h3>
         <p>${escapeHtml(payload.summary)}</p>
 
@@ -1221,9 +1262,10 @@ function renderAgentImpactMessage(message) {
 
         <h3>${c.chat.agentTrace}</h3>
         <div class="trace-list">
-          ${renderList(payload.trace, (step) => `
+          ${renderList(payload.trace, (step) => html`
             <div class="trace-step">
               <strong>${escapeHtml(step.step)}</strong>
+              ${step.agent_role ? html`<span class="agent-role-badge">${escapeHtml(step.agent_role)}</span>` : ""}
               <code>${escapeHtml(step.tool)}</code>
               <p>${escapeHtml(step.purpose)}</p>
               <small>${escapeHtml(renderJsonSummary(step.output))}</small>
@@ -1973,6 +2015,37 @@ async function sendFeedback(answerId, type) {
   }
 }
 
+async function handleHitlDecision(decision, answerId, runId) {
+  const c = t();
+  try {
+    const card = document.getElementById(`hitl-${answerId}`);
+    if (card) card.innerHTML = `<p>${escapeHtml(c.chat.hitlSubmitting || "Submitting decision...")}</p>`;
+    const resumed = await api("/api/langgraph-resume", {
+      method: "POST",
+      body: JSON.stringify({ projectId: state.project?.id, runId, decision })
+    });
+    if (decision === "approve") {
+      state.messages.push({
+        question: "[HITL] Reviewer approved the high-risk change",
+        kind: "agent_impact",
+        payload: resumed.payload,
+        answerId: resumed.answerId
+      });
+    } else {
+      state.messages.push({
+        question: "[HITL] Reviewer rejected the high-risk change",
+        kind: "agent_impact",
+        payload: resumed.payload,
+        answerId: resumed.answerId
+      });
+    }
+    if (card) card.remove();
+    render();
+  } catch (error) {
+    showError(error);
+  }
+}
+
 async function handleMemorySuggestion(suggestionId, action) {
   try {
     const endpoint = action === "confirm" ? "/api/memory/confirm" : "/api/memory/forget";
@@ -2214,6 +2287,12 @@ document.addEventListener("click", (event) => {
   const harnessRunButton = event.target.closest("[data-harness-run]");
   if (harnessRunButton) {
     loadHarnessAudit(harnessRunButton.dataset.harnessRun);
+    return;
+  }
+
+  const hitlButton = event.target.closest("[data-hitl-action]");
+  if (hitlButton) {
+    handleHitlDecision(hitlButton.dataset.hitlAction, hitlButton.dataset.answerId, hitlButton.dataset.runId);
     return;
   }
 });
