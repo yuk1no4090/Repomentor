@@ -22,6 +22,10 @@
   --danger-light: #fef2f2;
   --success: #16a34a;
   --success-light: #f0fdf4;
+  --success-text: #15803d;
+  --success-border: #bbf7d0;
+  --warn-text: #92400e;
+  --warn-border: #fde68a;
   --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
   --shadow: 0 4px 16px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.04);
   --shadow-lg: 0 12px 40px rgba(15, 23, 42, 0.08), 0 4px 12px rgba(15, 23, 42, 0.04);
@@ -344,42 +348,12 @@ nav {
 }
 
 /* ---- Command Center Preview ---- */
-.command-center {
+.figma-preview {
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background: #fff;
   box-shadow: var(--shadow-xl);
-}
-
-.command-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  min-height: 52px;
-  padding: 0 18px;
-  border-bottom: 1px solid var(--line);
-  background: var(--surface-2);
-}
-
-.command-header div {
-  display: inline-flex;
-  align-items: center;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--muted);
-}
-
-.status-dot {
-  display: inline-flex;
-  align-items: center;
-  width: 8px;
-  height: 8px;
-  margin-right: 8px;
-  border-radius: 50%;
-  background: var(--success);
-  box-shadow: 0 0 0 4px rgba(22, 163, 74, 0.12);
 }
 
 .source-pill {
@@ -773,8 +747,6 @@ textarea {
 
 .progress-box {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 10px;
   padding: 0;
   border: 0;
   background: transparent;
@@ -1322,14 +1294,14 @@ code {
 
 .llm-badge.active {
   background: var(--success-light);
-  color: #15803d;
-  border: 1px solid #bbf7d0;
+  color: var(--success-text);
+  border: 1px solid var(--success-border);
 }
 
 .llm-badge.fallback {
   background: var(--warn-light);
-  color: #92400e;
-  border: 1px solid #fde68a;
+  color: var(--warn-text);
+  border: 1px solid var(--warn-border);
 }
 
 .llm-source {
@@ -1344,14 +1316,14 @@ code {
 
 .llm-source.ai {
   background: var(--success-light);
-  color: #15803d;
-  border: 1px solid #bbf7d0;
+  color: var(--success-text);
+  border: 1px solid var(--success-border);
 }
 
 .llm-source.fallback {
   background: var(--warn-light);
-  color: #92400e;
-  border: 1px solid #fde68a;
+  color: var(--warn-text);
+  border: 1px solid var(--warn-border);
 }
 
 .answer-meta {
@@ -1359,6 +1331,58 @@ code {
   align-items: center;
   gap: 8px;
   margin-bottom: 12px;
+}
+
+/* ---- Agent Welcome (Chat Empty State) ---- */
+.agent-welcome {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 6px;
+  height: 100%;
+  padding: 48px 16px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.agent-avatar {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 6px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #4f46e5, #7c3aed);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.suggestion-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+  width: 100%;
+  max-width: 640px;
+  margin-top: 12px;
+}
+
+.suggestion-grid button {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  padding: 12px 14px;
+  text-align: left;
+  font-size: 12.5px;
+  font-weight: 550;
+  line-height: 1.4;
+  transition: all var(--transition);
+}
+
+.suggestion-grid button:hover {
+  border-color: var(--accent);
+  background: var(--accent-light);
 }
 
 /* ---- Messages ---- */
@@ -1434,7 +1458,6 @@ code {
 .trace-list,
 .guardrail-list,
 .plan-grid,
-.failure-list,
 .feedback-log {
   display: grid;
   gap: 8px;
@@ -1445,7 +1468,6 @@ code {
 .trace-step,
 .guardrail-list > div,
 .plan-day,
-.failure-list div,
 .feedback-log div {
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -1467,8 +1489,7 @@ code {
 }
 
 .citation-list span,
-.feedback-log span,
-.failure-list span {
+.feedback-log span {
   display: block;
   margin-top: 6px;
   color: var(--muted);
@@ -1507,12 +1528,12 @@ code {
 
 .risk.low {
   background: var(--success-light);
-  color: #15803d;
+  color: var(--success-text);
 }
 
 .risk.medium {
   background: var(--warn-light);
-  color: #92400e;
+  color: var(--warn-text);
 }
 
 .risk.high,
@@ -1558,7 +1579,7 @@ code {
 
 .agent-header span:last-child {
   background: var(--success-light);
-  color: #15803d;
+  color: var(--success-text);
 }
 
 .agent-meta-grid {
@@ -1917,7 +1938,7 @@ code {
   font-size: 11px;
   font-weight: 750;
   background: var(--success-light);
-  color: #15803d;
+  color: var(--success-text);
 }
 
 .guardrail-list p {
@@ -1929,7 +1950,7 @@ code {
 
 .guardrail-list .needs_review span {
   background: var(--warn-light);
-  color: #92400e;
+  color: var(--warn-text);
 }
 
 /* ---- Chip Row / Next Questions ---- */
@@ -2195,7 +2216,6 @@ code {
 }
 
 /* ---- Dashboard Bands ---- */
-.failure-list div,
 .feedback-log div {
   display: flex;
   align-items: center;
@@ -2203,13 +2223,8 @@ code {
   gap: 14px;
 }
 
-.failure-list span,
 .feedback-log span {
   margin: 0;
-}
-
-.failure-list strong {
-  font-size: 13px;
 }
 
 .feedback-log strong {
@@ -2219,11 +2234,6 @@ code {
 /* ---- Empty States ---- */
 .muted {
   color: var(--muted);
-}
-
-.center {
-  text-align: center;
-  padding: 48px 16px;
 }
 
 .empty {
@@ -2341,10 +2351,6 @@ code {
     grid-template-columns: 1fr;
   }
 
-  .hero {
-    grid-template-columns: 1fr;
-  }
-
   .workflow-grid {
     grid-template-columns: 1fr 1fr;
   }
@@ -2379,7 +2385,6 @@ code {
   .metrics-grid,
   .auth-grid,
   .plan-grid,
-  .progress-box:not(.vertical),
   .onboarding-form,
   .task-intro {
     grid-template-columns: 1fr;
@@ -2480,14 +2485,6 @@ code {
 }
 .handoff-item:hover {
   border-color: var(--accent-2);
-}
-.handoff-end {
-  padding: 4px 8px;
-  font-size: 0.82em;
-  font-weight: 700;
-  color: var(--ink);
-  background: var(--accent-2-light);
-  border-radius: 4px;
 }
 
 .agent-role-badge {
