@@ -10,3 +10,4 @@ data/memory.sqlite-wal
 data/memory.sqlite-shm
 data/*.sqlite.bak
 data/*.sqlite.bak.*
+.claude/
