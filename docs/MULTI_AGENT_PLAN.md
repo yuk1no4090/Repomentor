@@ -213,8 +213,6 @@ Supervisor 读取 state 信号后查表决策：
 - HITL 审核卡片可交互
 - 不影响现有 Q&A / Impact / Onboarding 面板渲染
 
-**不改**：nocode/ 原型。
-
 ---
 
 ## 4. 演示场景

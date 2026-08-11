@@ -182,7 +182,6 @@ npm run dev
 | 数据 | JSON 文件存储（`data/store.json`） |
 | LLM | OpenAI 兼容 API（DeepSeek / GPT-4o-mini / Groq 等） |
 | 检索 | 本地关键词匹配 + 中英文术语扩展 |
-| 可选前端 | `nocode/` 目录含 React + Vite + shadcn/ui 版本（独立项目） |
 
 ## API 端点
 

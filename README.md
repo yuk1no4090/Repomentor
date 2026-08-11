@@ -15,6 +15,7 @@ Then open `http://localhost:3000`.
 
 ```bash
 npm run test:static
+npm run test:smoke
 npm run test:ui
 npm run test:safety
 npm run test:memory

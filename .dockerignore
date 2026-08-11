@@ -1,0 +1,11 @@
+node_modules
+.git
+data/
+nocode/
+scripts/
+docs/
+.workbuddy/
+.github/
+*.md
+.nvmrc
+.gitignore

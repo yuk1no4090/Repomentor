@@ -12,7 +12,6 @@ RUN npm ci --omit=dev && npm cache clean --force
 # Copy application code
 COPY server.js ./
 COPY public/ ./public/
-COPY scripts/ ./scripts/
 
 # Runtime configuration via env vars
 ENV NODE_ENV=production
@@ -23,7 +22,7 @@ ENV PUBLIC_DIR=/app/public
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3000/api/health',(r)=>{process.exit(r.statusCode===200?0:1)})"
+  CMD node -e "require('http').get('http://localhost:${PORT:-3000}/api/health',(r)=>{process.exit(r.statusCode===200?0:1)})"
 
 EXPOSE 3000
 
