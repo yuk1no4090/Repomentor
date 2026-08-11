@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { readServerSource } from "./shared/source-reader.js";
 
 function assertIncludes(source, needle, label) {
   if (!source.includes(needle)) {
@@ -6,7 +7,7 @@ function assertIncludes(source, needle, label) {
   }
 }
 
-const server = readFileSync("server.js", "utf8");
+const server = await readServerSource();
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 const readme = readFileSync("README.md", "utf8");
 const architecture = readFileSync("docs/AGENT_RUNTIME_ARCHITECTURE.md", "utf8");

@@ -1,9 +1,10 @@
 import { readFile } from "node:fs/promises";
+import { readServerSource, readFrontendSource } from "./shared/source-reader.js";
 
 const [serverSource, readme, appSource] = await Promise.all([
-  readFile("server.js", "utf8"),
+  readServerSource(),
   readFile("README.md", "utf8"),
-  readFile("public/app.js", "utf8")
+  readFrontendSource()
 ]);
 
 const requiredPayloadFields = [

@@ -1,8 +1,9 @@
 import { readFile } from "node:fs/promises";
+import { readServerSource } from "./shared/source-reader.js";
 
 const [packageJsonRaw, serverSource, smokeSource, readme, architectureDoc] = await Promise.all([
   readFile("package.json", "utf8"),
-  readFile("server.js", "utf8"),
+  readServerSource(),
   readFile("scripts/smoke-test.js", "utf8"),
   readFile("README.md", "utf8"),
   readFile("docs/AGENT_RUNTIME_ARCHITECTURE.md", "utf8")
@@ -24,7 +25,6 @@ const requiredServerSnippets = [
   "function listLangGraphCheckpoints",
   "function findLangGraphCheckpoint",
   "function summarizeCheckpointTuple",
-  ".compile({ checkpointer })",
   "new MemorySaver()",
   "thread_id: runId",
   "harness.checkpointing",
@@ -74,12 +74,24 @@ const missingServerSnippets = requiredServerSnippets.filter((snippet) => !server
 const missingSmokeSnippets = requiredSmokeSnippets.filter((snippet) => !smokeSource.includes(snippet));
 const missingDocSnippets = requiredDocSnippets.filter((snippet) => !combinedDocs.includes(snippet));
 
-if (missingDependencies.length || missingServerSnippets.length || missingSmokeSnippets.length || missingDocSnippets.length) {
+// Whitespace-tolerant: asserts the graph is compiled with a checkpointer without
+// pinning the exact spacing/formatting of the call (e.g. `.compile({checkpointer})`
+// and `.compile({ checkpointer })` should both satisfy this).
+const compilesWithCheckpointer = /\.compile\(\{\s*checkpointer\s*\}\)/.test(serverSource);
+
+if (
+  missingDependencies.length
+  || missingServerSnippets.length
+  || missingSmokeSnippets.length
+  || missingDocSnippets.length
+  || !compilesWithCheckpointer
+) {
   console.error(JSON.stringify({
     missingDependencies,
     missingServerSnippets,
     missingSmokeSnippets,
-    missingDocSnippets
+    missingDocSnippets,
+    compilesWithCheckpointer
   }, null, 2));
   throw new Error("LangGraph checkpoint contract is incomplete.");
 }

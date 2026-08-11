@@ -1,6 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { readFrontendSource } from "./shared/source-reader.js";
 
-const appSource = await readFile("public/app.js", "utf8");
+const appSource = await readFrontendSource();
 const copyStart = appSource.indexOf("const copy = ");
 const copyEnd = appSource.indexOf("\nfunction t()", copyStart);
 

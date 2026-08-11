@@ -1,9 +1,10 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { listServerSourceFiles } from "./shared/source-reader.js";
 
 const rootFiles = [
   "README.md",
-  "server.js",
+  ...(await listServerSourceFiles()),
   "public/app.js",
   "public/styles.css"
 ];

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
+import { readFrontendSource } from "./shared/source-reader.js";
 
-const appSource = await readFile("public/app.js", "utf8");
+const appSource = await readFrontendSource();
 const stylesSource = await readFile("public/styles.css", "utf8");
 
 const renderRuntimeMatch = appSource.match(/function renderRuntimeStatus\(payload\) \{([\s\S]*?)\n\}/);
@@ -71,7 +72,6 @@ const requiredMemoryActionSnippets = [
   "function refreshMemory",
   "function renderMemoryManager",
   "function forgetMemoryPreference",
-  "JSON.stringify({ suggestionId, projectId: state.project?.id })",
   "const visible = suggestions.slice(0, 3)",
   "item.status === \"pending\"",
   "memory-state",
@@ -206,6 +206,10 @@ const missingStyleSnippets = requiredStyleSnippets.filter((snippet) => {
   return !stylesSource.includes(snippet);
 });
 
+// Whitespace-tolerant: asserts forgetMemoryPreference posts { suggestionId, projectId }
+// without pinning exact spacing/formatting of the JSON.stringify(...) call.
+const forgetsMemoryPreferenceWithSuggestionAndProject = /JSON\.stringify\(\{\s*suggestionId,\s*projectId:\s*state\.project\?\.id\s*\}\)/.test(appSource);
+
 if (
   missingRuntimeSnippets.length
   || missingChatRuntimeSnippets.length
@@ -214,6 +218,7 @@ if (
   || missingAuthUiSnippets.length
   || missingStyleSnippets.length
   || staleFrontendTerms.length
+  || !forgetsMemoryPreferenceWithSuggestionAndProject
 ) {
   console.error(JSON.stringify({
     missingRuntimeSnippets,
@@ -222,7 +227,8 @@ if (
     missingDashboardSnippets,
     missingAuthUiSnippets,
     missingStyleSnippets,
-    staleFrontendTerms
+    staleFrontendTerms,
+    forgetsMemoryPreferenceWithSuggestionAndProject
   }, null, 2));
   throw new Error("Frontend agent UI contract is incomplete.");
 }
