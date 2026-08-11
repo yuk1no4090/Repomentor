@@ -14,7 +14,7 @@ import {
   safetyPolicySummary, MIME_TYPES, normalizeUserId, apiError
 } from "./lib/config.js";
 import {
-  ensureStore, saveStore, withWriteLock, setStoreRecordNormalizers
+  ensureStore, saveStore, withWriteLock, setStoreRecordNormalizers, flushStore
 } from "./lib/store.js";
 import {
   listSchemaMigrations, getMemoryDatabaseStatus,
@@ -1205,6 +1205,13 @@ async function gracefulShutdown(signal) {
   // Stop accepting new connections and drain existing ones
   await new Promise((resolve) => server.close(resolve));
   log("info", "http server closed");
+  // Wait for any in-flight store.json write to actually land on disk before
+  // exiting — ensureStore()/saveStore() now keep the store resident in memory
+  // between requests (see lib/store.js), so this is the one place a pending
+  // write could otherwise be lost to a signal arriving mid-save.
+  await flushStore().catch((error) => {
+    log("error", "store flush failed during shutdown", { error: error.message });
+  });
   clearTimeout(forceTimer);
   process.exit(0);
 }
