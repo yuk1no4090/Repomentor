@@ -5137,13 +5137,21 @@ function computeMetrics(store, projectId) {
 }
 
 async function handleApi(req, res, pathname) {
-  // All API requests (including GET) go through the write lock: when
-  // AUTH_REQUIRED is on, GET handlers also record an auth event and persist
-  // the store (see handleApiUnlocked below), so a GET running concurrently
-  // with a POST's load-modify-save cycle could otherwise clobber writes.
-  // Serializing everything through the same in-process queue closes that
-  // race without needing to special-case which GET routes happen to write.
-  return withWriteLock(() => handleApiUnlocked(req, res, pathname));
+  // Non-GET requests always mutate the store, so they always take the write
+  // lock. GET only needs the lock when AUTH_REQUIRED is on and the route
+  // isn't /api/health: that's the one GET path that calls
+  // recordAuthEvent()+saveStore() (see handleApiUnlocked below), so it can
+  // race with a concurrent POST's load-modify-save cycle. /api/health is
+  // explicitly excluded from that auth-event bookkeeping and never writes
+  // the store, so it must stay unlocked — agent workflow requests can hold
+  // the write lock for 30s+ (LLM_REQUEST_TIMEOUT_MS x multi-step runs), and
+  // the Dockerfile HEALTHCHECK only allows 5s with 3 retries; queuing health
+  // checks behind that would get the container flagged unhealthy.
+  const needsWriteLock = req.method !== "GET" || (AUTH_REQUIRED && pathname !== "/api/health");
+  if (needsWriteLock) {
+    return withWriteLock(() => handleApiUnlocked(req, res, pathname));
+  }
+  return handleApiUnlocked(req, res, pathname);
 }
 
 async function handleApiUnlocked(req, res, pathname) {
