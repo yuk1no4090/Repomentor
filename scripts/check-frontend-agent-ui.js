@@ -170,7 +170,8 @@ const requiredAuthUiSnippets = [
   "function disableAuthUser",
   "data-auth-action=\"create-user\"",
   "data-auth-disable-user",
-  "confirm(`Disable local auth user",
+  "if (!confirm(confirmMessage)) return;",
+  "Disable local auth user",
   "createdToken"
 ];
 
