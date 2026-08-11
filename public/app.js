@@ -635,7 +635,7 @@ function landingPage() {
           <h1>${c.home.title}</h1>
           <p class="hero-text">${c.home.subtitle}</p>
           <div class="hero-actions">
-            <button class="primary" data-action="sample">${c.home.launch}</button>
+            <button class="primary" data-action="sample" ${state.loading ? "disabled" : ""}>${c.home.launch}</button>
             <button class="secondary" data-page="import">${c.home.importRepo}</button>
           </div>
         </div>
@@ -703,7 +703,7 @@ function importPage() {
           <h1>${c.import.title}</h1>
           <p>${c.import.desc}</p>
         </div>
-        <button class="secondary" data-action="sample">${c.import.sample}</button>
+        <button class="secondary" data-action="sample" ${state.loading ? "disabled" : ""}>${c.import.sample}</button>
       </div>
 
       <div class="import-layout">
@@ -713,7 +713,7 @@ function importPage() {
               <span>${c.import.github}</span>
               <input id="repoUrl" type="url" placeholder="https://github.com/owner/repo" />
             </label>
-            <button class="primary" data-action="import">${c.import.analyze}</button>
+            <button class="primary" data-action="import" ${state.loading ? "disabled" : ""}>${c.import.analyze}</button>
           </div>
           <div class="split-label"><span>${c.import.upload}</span></div>
           <label class="upload-zone">
@@ -1012,7 +1012,7 @@ function qaTab(kind = "qa") {
           <span>${c.chat.topChunks}</span>
           <span>${c.chat.citationsRequired}</span>
         </div>
-        <button class="primary" data-action="${action}">${buttonLabel}</button>
+        <button class="primary" data-action="${action}" ${state.loading ? "disabled" : ""}>${buttonLabel}</button>
       </div>
     </div>
   `;
@@ -1215,8 +1215,6 @@ function renderAgentImpactMessage(message) {
         </div>
 
         ${renderRuntimeStatus(payload)}
-
-        ${renderOptionalRuntimeStatus(payload)}
 
         ${payload.hitl?.paused ? html`
           <div class="hitl-card paused" id="hitl-${escapeHtml(message.answerId)}">
@@ -1878,6 +1876,7 @@ function render() {
 }
 
 async function importRepository({ sample = false } = {}) {
+  if (state.loading) return;
   try {
     state.loading = true;
     state.progress = [];
@@ -1919,6 +1918,7 @@ async function importRepository({ sample = false } = {}) {
     render();
   } finally {
     state.loading = false;
+    render();
   }
 }
 
@@ -1932,9 +1932,11 @@ function fileToBase64(file) {
 }
 
 async function ask(kind = "qa", questionOverride = "") {
+  if (state.loading) return;
   const input = document.querySelector("#questionInput");
   const question = questionOverride || input?.value.trim();
   if (!question) return;
+  state.loading = true;
   state.messages.unshift({
     kind: "local",
     answerId: "pending",
@@ -1956,18 +1958,21 @@ async function ask(kind = "qa", questionOverride = "") {
     });
     await refreshMetrics(false);
     await refreshMemory(false);
-    render();
   } catch (error) {
     showError(error, () => ask(kind, question));
     state.messages = state.messages.filter((item) => item.answerId !== "pending");
+  } finally {
+    state.loading = false;
     render();
   }
 }
 
 async function runAgentImpact(questionOverride = "") {
+  if (state.loading) return;
   const input = document.querySelector("#questionInput");
   const question = questionOverride || input?.value.trim();
   if (!question) return;
+  state.loading = true;
   state.messages.unshift({
     kind: "local",
     answerId: "pending",
@@ -1989,10 +1994,11 @@ async function runAgentImpact(questionOverride = "") {
     });
     await refreshMetrics(false);
     await refreshMemory(false);
-    render();
   } catch (error) {
-    showError(error, () => ask(kind, question));
+    showError(error, () => runAgentImpact(question));
     state.messages = state.messages.filter((item) => item.answerId !== "pending");
+  } finally {
+    state.loading = false;
     render();
   }
 }
@@ -2041,22 +2047,36 @@ async function handleHitlDecision(decision, answerId, runId) {
       method: "POST",
       body: JSON.stringify({ projectId: state.project?.id, runId, decision })
     });
+    state.messages = state.messages.map((message) => {
+      if (message.answerId !== answerId || !message.payload?.hitl) return message;
+      return {
+        ...message,
+        payload: {
+          ...message.payload,
+          hitl: {
+            ...message.payload.hitl,
+            paused: false,
+            approved: decision === "approve",
+            rejected: decision === "reject"
+          }
+        }
+      };
+    });
     if (decision === "approve") {
-      state.messages.push({
+      state.messages.unshift({
         question: "[HITL] Reviewer approved the high-risk change",
         kind: "agent_impact",
         payload: resumed.payload,
         answerId: resumed.answerId
       });
     } else {
-      state.messages.push({
+      state.messages.unshift({
         question: "[HITL] Reviewer rejected the high-risk change",
         kind: "agent_impact",
         payload: resumed.payload,
         answerId: resumed.answerId
       });
     }
-    if (card) card.remove();
     render();
   } catch (error) {
     showError(error);
@@ -2315,8 +2335,9 @@ document.addEventListener("click", (event) => {
 
   const retryButton = event.target.closest("[data-retry]");
   if (retryButton && state.errorBanner?.retryFn) {
+    const retryFn = state.errorBanner.retryFn;
     clearError();
-    state.errorBanner.retryFn();
+    retryFn();
     return;
   }
 
