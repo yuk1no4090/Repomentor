@@ -12,7 +12,9 @@ const state = {
   auth: { users: [], tokens: [], events: [], error: null, createdToken: null },
   authToken: localStorage.getItem("aido-api-token") || "",
   llmStatus: null,
-  lang: localStorage.getItem("aido-lang") || "en"
+  lang: localStorage.getItem("aido-lang") || "en",
+  activeTab: "qa",
+  draftQuestion: ""
 };
 
 const app = document.querySelector("#app");
@@ -1095,13 +1097,15 @@ function chatPage() {
           </div>
         </div>
         <div class="tabs">
-          <button class="tab active" data-tab="qa">Q&A</button>
-          <button class="tab" data-tab="impact">${c.chat.impact}</button>
-          <button class="tab" data-tab="agent">${c.chat.agent}</button>
-          <button class="tab" data-tab="onboarding">${c.chat.onboarding}</button>
+          ${[
+            ["qa", "Q&A"],
+            ["impact", c.chat.impact],
+            ["agent", c.chat.agent],
+            ["onboarding", c.chat.onboarding]
+          ].map(([id, label]) => `<button class="tab ${state.activeTab === id ? "active" : ""}" data-tab="${id}">${label}</button>`).join("")}
         </div>
         <div id="tabContent">
-          ${qaTab()}
+          ${renderTabContent(state.activeTab)}
         </div>
       </section>
 
@@ -1195,6 +1199,13 @@ function renderMemoryManager() {
   `;
 }
 
+function renderTabContent(tab) {
+  if (tab === "impact") return qaTab("impact");
+  if (tab === "agent") return qaTab("agent");
+  if (tab === "onboarding") return onboardingTab();
+  return qaTab("qa");
+}
+
 function qaTab(kind = "qa") {
   const c = t();
   const isImpact = kind === "impact";
@@ -1217,7 +1228,7 @@ function qaTab(kind = "qa") {
       ${state.messages.length ? state.messages.map(renderMessage).join("") : emptyChatState(kind)}
     </div>
     <div class="composer prompt-composer">
-      <textarea id="questionInput" rows="3" placeholder="${placeholder}"></textarea>
+      <textarea id="questionInput" rows="3" placeholder="${placeholder}">${escapeHtml(state.draftQuestion)}</textarea>
       <div class="composer-footer">
         <div class="composer-tools">
           <span>${isAgent ? c.chat.traceable : isImpact ? c.chat.riskAware : c.chat.repoGrounded}</span>
@@ -2069,6 +2080,8 @@ function emptyProject(message) {
 }
 
 function render() {
+  const questionInput = document.querySelector("#questionInput");
+  if (questionInput) state.draftQuestion = questionInput.value;
   const pages = {
     landing: landingPage,
     import: importPage,
@@ -2146,6 +2159,7 @@ async function ask(kind = "qa", questionOverride = "") {
   const input = document.querySelector("#questionInput");
   const question = questionOverride || input?.value.trim();
   if (!question) return;
+  if (input) input.value = "";
   state.loading = true;
   state.messages.unshift({
     kind: "local",
@@ -2182,6 +2196,7 @@ async function runAgentImpact(questionOverride = "") {
   const input = document.querySelector("#questionInput");
   const question = questionOverride || input?.value.trim();
   if (!question) return;
+  if (input) input.value = "";
   state.loading = true;
   state.messages.unshift({
     kind: "local",
@@ -2437,13 +2452,8 @@ async function loadHarnessAudit(runId) {
 }
 
 function switchTab(tab) {
-  document.querySelectorAll(".tab").forEach((button) => button.classList.toggle("active", button.dataset.tab === tab));
-  const target = document.querySelector("#tabContent");
-  if (!target) return;
-  if (tab === "impact") target.innerHTML = qaTab("impact");
-  if (tab === "agent") target.innerHTML = qaTab("agent");
-  if (tab === "qa") target.innerHTML = qaTab("qa");
-  if (tab === "onboarding") target.innerHTML = onboardingTab();
+  state.activeTab = tab;
+  render();
 }
 
 document.addEventListener("click", (event) => {
