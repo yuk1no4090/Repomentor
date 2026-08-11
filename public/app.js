@@ -28,7 +28,7 @@ const progressSteps = [
 const copy = {
   en: {
     brand: "Developer Onboarding Copilot",
-    nav: { landing: "Product", import: "Import", overview: "Overview", chat: "Copilot", dashboard: "Evaluation" },
+    nav: { landing: "Product", import: "Import", overview: "Overview", chat: "Copilot", dashboard: "Evaluation", brandAria: "Go to product page", languageAria: "Language switch" },
     home: {
       title: "Repository onboarding, with evidence.",
       subtitle: "Import a repo, inspect the project map, ask grounded questions, analyze change impact, and measure answer quality.",
@@ -95,6 +95,12 @@ const copy = {
       filesParsed: "files parsed",
       chunksIndexed: "chunks indexed",
       firstReads: "first reads",
+      safety: "Import Safety",
+      safetyReview: "needs review",
+      safetyPassed: "passed",
+      promptRisks: "prompt-risk files",
+      sensitiveFiles: "sensitive files",
+      noRisks: "no risks",
       quickActions: [
         ["Explain architecture", "What are the core business modules?"],
         ["Find order logic", "Where is the order creation logic?"],
@@ -191,6 +197,35 @@ const copy = {
       evidence: "Evidence Used",
       goal: "Goal",
       tasks: "Tasks",
+      hitlPaused: "Human Review Required",
+      hitlApprove: "Approve",
+      hitlReject: "Reject",
+      hitlApproved: "Approved by Reviewer",
+      hitlRejected: "Rejected by Reviewer",
+      hitlSubmitting: "Submitting decision...",
+      hitlDefaultReason: "This high-risk change requires human approval before proceeding.",
+      hitlApprovedMessage: "[HITL] Reviewer approved the high-risk change",
+      hitlRejectedMessage: "[HITL] Reviewer rejected the high-risk change",
+      agentRoster: "Agent Roster",
+      agentHandoff: "Agent Handoff Flow",
+      preferenceMemory: "Preference memory",
+      noSavedPreferences: "No saved preferences",
+      clearAll: "Clear all",
+      removeMemory: "Remove",
+      memoryAudit: "Memory audit",
+      noMemoryEventsYet: "No memory events yet.",
+      longTermMemory: "Long-term memory",
+      noLongTermMemoriesYet: "No long-term memories yet.",
+      agentSuggestions: [
+        "Add partially_refunded to order status and show the agent trace.",
+        "Change payment failure handling and show the agent steps.",
+        "Use the agent to analyze order status dependencies."
+      ],
+      impactSuggestions: [
+        "I want to add partially_refunded to order status. What could be impacted?",
+        "If payment failure handling changes, what tests should QA run?",
+        "What modules depend on order status?"
+      ],
       q: [
         "Explain the user authentication flow.",
         "What are the core business modules?",
@@ -232,6 +267,13 @@ const copy = {
       recentSafety: "Recent Safety Events",
       recentMemory: "Recent Memory Events",
       recentRuns: "Recent Harness Runs",
+      outputRedactions: "Output Redactions",
+      redactedMatches: "Redacted Matches",
+      harnessSnapshots: "Harness Snapshots",
+      importSafetyTitle: "Import Safety",
+      memoryEventsTitle: "Memory Events",
+      recentToolPolicyTitle: "Recent Tool Policy",
+      recentRedactionsTitle: "Recent Redactions",
       recent: "Recent Feedback",
       signals: "Product iteration signals",
       signalItems: [
@@ -241,11 +283,67 @@ const copy = {
       ],
       occurrences: "occurrences"
     },
-    empty: { title: "No repository imported", button: "Go to Import" }
+    auth: {
+      title: "Auth Operations",
+      tokenSet: "token set in this browser",
+      noToken: "no browser token",
+      usersLabel: "users",
+      activeTokensLabel: "active tokens",
+      apiToken: "API token",
+      tokenPlaceholder: "Bearer token for protected APIs",
+      saveToken: "Save token",
+      clear: "Clear",
+      oneTimeToken: "One-time token",
+      createUser: "Create local user",
+      userId: "User ID",
+      scopes: "Scopes",
+      orgId: "Org ID",
+      optional: "optional",
+      issueToken: "Issue token",
+      createUserButton: "Create user",
+      usersHeading: "Users",
+      noUsers: "No users loaded.",
+      noScopes: "no scopes",
+      disable: "Disable",
+      tokensHeading: "Tokens",
+      noTokens: "No store-backed tokens loaded.",
+      recentEvents: "Recent auth events",
+      noEvents: "No auth events loaded.",
+      authButton: "Auth",
+      disableConfirmTemplate: "Disable local auth user \"{user}\" and all store-backed tokens for this user?"
+    },
+    harness: {
+      auditTitle: "Harness Run Audit",
+      runLabel: "run",
+      runtimeLabel: "runtime",
+      modelLabel: "model",
+      schemaLabel: "schema",
+      budgetLabel: "budget",
+      safetyLabel: "safety",
+      fallbackLabel: "fallback",
+      schemaInvalid: "invalid",
+      schemaValid: "valid",
+      budgetContextExceeded: "context exceeded",
+      budgetTimeoutExceeded: "timeout exceeded",
+      budgetStepExceeded: "step exceeded",
+      budgetWithinBudget: "within budget",
+      fallbackTrue: "true",
+      fallbackFalse: "false",
+      riskDetails: "Risk Details",
+      stepFallback: "step",
+      toolFallback: "tool"
+    },
+    empty: {
+      title: "No repository imported",
+      button: "Go to Import",
+      importOverview: "Import a repository to generate a project overview.",
+      importCopilot: "Import a repository before asking the copilot.",
+      importMetrics: "Import a repository before viewing evaluation metrics."
+    }
   },
   zh: {
     brand: "研发知识助手",
-    nav: { landing: "产品", import: "导入", overview: "总览", chat: "Copilot", dashboard: "评估" },
+    nav: { landing: "产品", import: "导入", overview: "总览", chat: "Copilot", dashboard: "评估", brandAria: "前往产品首页", languageAria: "语言切换" },
     home: {
       title: "有证据的代码库入门。",
       subtitle: "导入仓库，查看项目地图，提出有引用的问题，分析变更影响，并衡量 AI 回答质量。",
@@ -312,6 +410,12 @@ const copy = {
       filesParsed: "已解析文件",
       chunksIndexed: "已索引 chunks",
       firstReads: "推荐阅读",
+      safety: "导入安全",
+      safetyReview: "待复核",
+      safetyPassed: "已通过",
+      promptRisks: "存在提示注入风险的文件",
+      sensitiveFiles: "敏感文件",
+      noRisks: "无风险",
       quickActions: [
         ["解释架构", "这个项目的主要业务模块有哪些？"],
         ["查找订单逻辑", "订单创建逻辑在哪里？"],
@@ -408,6 +512,35 @@ const copy = {
       evidence: "使用的证据",
       goal: "目标",
       tasks: "任务",
+      hitlPaused: "需要人工审核",
+      hitlApprove: "通过",
+      hitlReject: "拒绝",
+      hitlApproved: "审核员已通过",
+      hitlRejected: "审核员已拒绝",
+      hitlSubmitting: "正在提交决定…",
+      hitlDefaultReason: "此高风险改动需要人工审核通过后才能继续。",
+      hitlApprovedMessage: "[HITL] 审核员已通过该高风险改动",
+      hitlRejectedMessage: "[HITL] 审核员已拒绝该高风险改动",
+      agentRoster: "Agent 角色列表",
+      agentHandoff: "Agent 交接流程",
+      preferenceMemory: "偏好记忆",
+      noSavedPreferences: "暂无已保存偏好",
+      clearAll: "清空",
+      removeMemory: "删除",
+      memoryAudit: "记忆审计",
+      noMemoryEventsYet: "暂无记忆事件。",
+      longTermMemory: "长期记忆",
+      noLongTermMemoriesYet: "暂无长期记忆。",
+      agentSuggestions: [
+        "新增订单状态 partially_refunded，并展示 agent trace。",
+        "修改支付失败逻辑，Agent 会怎样找影响范围？",
+        "用 Agent 分析订单状态依赖。"
+      ],
+      impactSuggestions: [
+        "我想新增订单状态 partially_refunded，可能影响哪些地方？",
+        "如果修改支付失败逻辑，QA 需要测哪些场景？",
+        "哪些模块依赖订单状态？"
+      ],
       q: [
         "解释用户登录流程。",
         "这个项目的核心业务模块有哪些？",
@@ -449,6 +582,13 @@ const copy = {
       recentSafety: "最近安全事件",
       recentMemory: "最近记忆事件",
       recentRuns: "最近运行",
+      outputRedactions: "输出脱敏次数",
+      redactedMatches: "脱敏命中数",
+      harnessSnapshots: "Harness 快照数",
+      importSafetyTitle: "导入安全",
+      memoryEventsTitle: "记忆事件",
+      recentToolPolicyTitle: "最近工具策略",
+      recentRedactionsTitle: "最近脱敏记录",
       recent: "最近反馈",
       signals: "产品迭代信号",
       signalItems: [
@@ -458,7 +598,63 @@ const copy = {
       ],
       occurrences: "次"
     },
-    empty: { title: "还没有导入仓库", button: "去导入" }
+    auth: {
+      title: "认证运维",
+      tokenSet: "已在浏览器中设置 token",
+      noToken: "浏览器未设置 token",
+      usersLabel: "位用户",
+      activeTokensLabel: "个已激活 token",
+      apiToken: "API 令牌",
+      tokenPlaceholder: "用于受保护接口的 Bearer token",
+      saveToken: "保存 token",
+      clear: "清除",
+      oneTimeToken: "一次性 Token",
+      createUser: "创建本地用户",
+      userId: "用户 ID",
+      scopes: "权限范围",
+      orgId: "组织 ID",
+      optional: "可选",
+      issueToken: "签发 token",
+      createUserButton: "创建用户",
+      usersHeading: "用户列表",
+      noUsers: "暂无用户数据。",
+      noScopes: "无权限范围",
+      disable: "禁用",
+      tokensHeading: "Token 列表",
+      noTokens: "暂无存储中的 token 数据。",
+      recentEvents: "最近认证事件",
+      noEvents: "暂无认证事件数据。",
+      authButton: "认证",
+      disableConfirmTemplate: "确定要禁用本地认证用户 \"{user}\" 及其所有基于存储的 token 吗？"
+    },
+    harness: {
+      auditTitle: "Harness 运行审计",
+      runLabel: "运行",
+      runtimeLabel: "运行时",
+      modelLabel: "模型",
+      schemaLabel: "Schema",
+      budgetLabel: "预算",
+      safetyLabel: "安全",
+      fallbackLabel: "Fallback",
+      schemaInvalid: "无效",
+      schemaValid: "有效",
+      budgetContextExceeded: "上下文超限",
+      budgetTimeoutExceeded: "超时",
+      budgetStepExceeded: "步数超限",
+      budgetWithinBudget: "预算正常",
+      fallbackTrue: "是",
+      fallbackFalse: "否",
+      riskDetails: "风险详情",
+      stepFallback: "步骤",
+      toolFallback: "工具"
+    },
+    empty: {
+      title: "还没有导入仓库",
+      button: "去导入",
+      importOverview: "导入仓库后即可生成项目总览。",
+      importCopilot: "导入仓库后才能向 Copilot 提问。",
+      importMetrics: "导入仓库后才能查看评估指标。"
+    }
   }
 };
 
@@ -518,7 +714,22 @@ async function api(path, options = {}) {
     headers,
     ...fetchOptions
   });
-  const payload = await response.json();
+  const contentType = response.headers.get("content-type") || "";
+  let payload;
+  if (contentType.includes("application/json")) {
+    try {
+      payload = await response.json();
+    } catch {
+      payload = undefined;
+    }
+  }
+  if (payload === undefined) {
+    if (response.ok) return {};
+    const error = new Error(`Request failed with HTTP ${response.status} (non-JSON response).`);
+    error.status = response.status;
+    error.code = "NON_JSON_RESPONSE";
+    throw error;
+  }
   if (!response.ok) {
     const error = new Error(payload.error || "Request failed.");
     error.status = response.status;
@@ -602,7 +813,7 @@ function nav() {
   document.documentElement.lang = state.lang === "zh" ? "zh-CN" : "en";
   return html`
     <header class="topbar">
-      <button class="brand" data-page="landing" aria-label="Go to product page">
+      <button class="brand" data-page="landing" aria-label="${escapeHtml(c.nav.brandAria)}">
         <span class="brand-mark">AI</span>
         <span>${c.brand}</span>
       </button>
@@ -611,10 +822,10 @@ function nav() {
           ${items.map(([page, label]) => `<button class="nav-item ${state.page === page ? "active" : ""}" data-page="${page}">${label}</button>`).join("")}
         </nav>
         <div class="topbar-auth">
-          <input data-auth-token-input type="password" autocomplete="off" value="${escapeHtml(state.authToken || "")}" placeholder="API token">
-          <button data-auth-action="save-token">Auth</button>
+          <input data-auth-token-input type="password" autocomplete="off" value="${escapeHtml(state.authToken || "")}" placeholder="${escapeHtml(c.auth.apiToken)}">
+          <button data-auth-action="save-token">${c.auth.authButton}</button>
         </div>
-        <div class="language-toggle" aria-label="Language switch">
+        <div class="language-toggle" aria-label="${escapeHtml(c.nav.languageAria)}">
           <button class="${state.lang === "en" ? "active" : ""}" data-lang="en">EN</button>
           <button class="${state.lang === "zh" ? "active" : ""}" data-lang="zh">中文</button>
         </div>
@@ -747,7 +958,7 @@ function importPage() {
 }
 
 function overviewPage() {
-  if (!state.project) return emptyProject("Import a repository to generate a project overview.");
+  if (!state.project) return emptyProject(t().empty.importOverview);
   const c = t();
   const { summary } = state.project;
   const safetyReview = summary.safetyReview || {};
@@ -821,7 +1032,7 @@ function overviewPage() {
         <section class="panel evidence-panel">
           <h2>${escapeHtml(c.overview.safety || "Import Safety")}</h2>
           <div class="evidence-stats">
-            <div><strong>${escapeHtml(safetyReview.status === "needs_review" ? (c.overview.safetyReview || "needs review") : (c.overview.safetyPassed || "passed"))}</strong><span>${escapeHtml((safetyReview.risk_types || []).join(", ") || "no risks")}</span></div>
+            <div><strong>${escapeHtml(safetyReview.status === "needs_review" ? (c.overview.safetyReview || "needs review") : (c.overview.safetyPassed || "passed"))}</strong><span>${escapeHtml((safetyReview.risk_types || []).join(", ") || c.overview.noRisks)}</span></div>
             <div><strong>${safetyReview.prompt_injection_file_count || 0}</strong><span>${escapeHtml(c.overview.promptRisks || "prompt-risk files")}</span></div>
             <div><strong>${safetyReview.sensitive_file_count || 0}</strong><span>${escapeHtml(c.overview.sensitiveFiles || "sensitive files")}</span></div>
           </div>
@@ -844,7 +1055,7 @@ function llmModeBadge() {
 }
 
 function chatPage() {
-  if (!state.project) return emptyProject("Import a repository before asking the copilot.");
+  if (!state.project) return emptyProject(t().empty.importCopilot);
   const c = t();
   return html`
     <main class="chat-layout deerflow-inspired">
@@ -930,10 +1141,11 @@ function memoryPreferenceRows(preferences = {}) {
 }
 
 function renderMemoryManager() {
-  const title = state.lang === "zh" ? "偏好记忆" : "Preference memory";
-  const empty = state.lang === "zh" ? "暂无已保存偏好" : "No saved preferences";
-  const clear = state.lang === "zh" ? "清空" : "Clear all";
-  const remove = state.lang === "zh" ? "删除" : "Remove";
+  const c = t();
+  const title = c.chat.preferenceMemory;
+  const empty = c.chat.noSavedPreferences;
+  const clear = c.chat.clearAll;
+  const remove = c.chat.removeMemory;
   const preferences = state.memory?.preferences || {};
   const events = (state.memory?.events || []).slice(0, 5);
   const longTermMemories = (state.memory?.long_term_memories || []).slice(0, 5);
@@ -953,7 +1165,7 @@ function renderMemoryManager() {
         <button class="secondary memory-clear" data-memory-forget-all="true">${clear}</button>
       ` : `<p class="muted">${empty}</p>`}
       <div class="memory-events">
-        <h4>Memory audit</h4>
+        <h4>${c.chat.memoryAudit}</h4>
         ${events.length ? `
           <div class="feedback-log">
             ${events.map((item) => {
@@ -965,10 +1177,10 @@ function renderMemoryManager() {
               </div>`;
             }).join("")}
           </div>
-        ` : `<p class="muted">No memory events yet.</p>`}
+        ` : `<p class="muted">${c.chat.noMemoryEventsYet}</p>`}
       </div>
       <div class="memory-events">
-        <h4>Long-term memory</h4>
+        <h4>${c.chat.longTermMemory}</h4>
         ${longTermMemories.length ? `
           <div class="feedback-log">
             ${longTermMemories.map((item) => `<div>
@@ -977,7 +1189,7 @@ function renderMemoryManager() {
               <span>${escapeHtml(item.confidence || "medium")}</span>
             </div>`).join("")}
           </div>
-        ` : `<p class="muted">No long-term memories yet.</p>`}
+        ` : `<p class="muted">${c.chat.noLongTermMemoriesYet}</p>`}
       </div>
     </div>
   `;
@@ -1021,13 +1233,9 @@ function qaTab(kind = "qa") {
 function emptyChatState(kind) {
   const c = t();
   const items = kind === "agent"
-    ? state.lang === "zh"
-      ? ["新增订单状态 partially_refunded，并展示 agent trace。", "修改支付失败逻辑，Agent 会怎样找影响范围？", "用 Agent 分析订单状态依赖。"]
-      : ["Add partially_refunded to order status and show the agent trace.", "Change payment failure handling and show the agent steps.", "Use the agent to analyze order status dependencies."]
+    ? c.chat.agentSuggestions
     : kind === "impact"
-    ? state.lang === "zh"
-      ? ["我想新增订单状态 partially_refunded，可能影响哪些地方？", "如果修改支付失败逻辑，QA 需要测哪些场景？", "哪些模块依赖订单状态？"]
-      : ["I want to add partially_refunded to order status. What could be impacted?", "If payment failure handling changes, what tests should QA run?", "What modules depend on order status?"]
+    ? c.chat.impactSuggestions
     : c.chat.q.slice(0, 3);
   const title = kind === "agent" ? c.chat.agentReady : kind === "impact" ? c.chat.impactReady : c.chat.ready;
   const body = kind === "agent" ? c.chat.agentReadyText : kind === "impact" ? c.chat.impactReadyText : c.chat.readyText;
@@ -1219,7 +1427,7 @@ function renderAgentImpactMessage(message) {
         ${payload.hitl?.paused ? html`
           <div class="hitl-card paused" id="hitl-${escapeHtml(message.answerId)}">
             <h3>&#9888; ${c.chat.hitlPaused || "Human Review Required"}</h3>
-            <p>${escapeHtml(payload.hitl.reason || "This high-risk change requires human approval before proceeding.")}</p>
+            <p>${escapeHtml(payload.hitl.reason || c.chat.hitlDefaultReason)}</p>
             <div class="hitl-actions">
               <button class="primary" data-hitl-action="approve" data-answer-id="${escapeHtml(message.answerId)}" data-run-id="${escapeHtml(payload.harness?.run_id || "")}">&#10003; ${c.chat.hitlApprove || "Approve"}</button>
               <button class="danger" data-hitl-action="reject" data-answer-id="${escapeHtml(message.answerId)}" data-run-id="${escapeHtml(payload.harness?.run_id || "")}">&#10007; ${c.chat.hitlReject || "Reject"}</button>
@@ -1393,7 +1601,7 @@ function renderOnboardingMessage(message) {
 
 function feedbackBar(answerId) {
   const types = t().feedback;
-  return `<div class="feedback">${types.map(([type, label]) => `<button data-feedback="${type}" data-answer="${answerId}">${label}</button>`).join("")}</div>`;
+  return `<div class="feedback">${types.map(([type, label]) => `<button data-feedback="${type}" data-answer="${escapeHtml(answerId)}">${label}</button>`).join("")}</div>`;
 }
 
 function failureReasons(metrics) {
@@ -1412,7 +1620,7 @@ function failureReasons(metrics) {
         <div class="failure-bar">
           <div>
             <strong>${escapeHtml(item.type.replaceAll("_", " "))}</strong>
-            <span>${item.count} ${c.dashboard.occurrences}</span>
+            <span>${escapeHtml(String(item.count))} ${c.dashboard.occurrences}</span>
           </div>
           <i style="--value:${Math.max(8, Math.round((item.count / max) * 100))}%"></i>
         </div>
@@ -1431,7 +1639,7 @@ function rankedBars(items = []) {
         <div class="failure-bar">
           <div>
             <strong>${escapeHtml(String(item.type).replaceAll("_", " "))}</strong>
-            <span>${item.count} ${c.dashboard.occurrences}</span>
+            <span>${escapeHtml(String(item.count))} ${c.dashboard.occurrences}</span>
           </div>
           <i style="width:${Math.max(6, (item.count / max) * 100)}%"></i>
         </div>
@@ -1473,6 +1681,7 @@ function recentHarnessRuns(items = []) {
 
 function harnessAuditPanel(audit) {
   if (!audit) return "";
+  const c = t();
   const trace = audit.answer?.trace || [];
   const harness = audit.answer?.harness || {};
   const safety = audit.answer?.safety || {};
@@ -1481,28 +1690,28 @@ function harnessAuditPanel(audit) {
   const adapter = audit.run?.model_adapter || harness.model_adapter || {};
   return html`
     <section class="panel span-3">
-      <h2>Harness Run Audit</h2>
+      <h2>${c.harness.auditTitle}</h2>
       <div class="runtime-status">
-        <div><strong>run</strong><span>${escapeHtml(audit.run?.run_id || "")}</span></div>
-        <div><strong>runtime</strong><span>${escapeHtml(audit.run?.runtime || harness.runtime || "")}</span></div>
-        <div><strong>model</strong><span>${escapeHtml([adapter.provider, adapter.model].filter(Boolean).join(" / ") || audit.run?.model_provider || "")}</span></div>
-        <div><strong>schema</strong><span>${escapeHtml((audit.run?.schema_valid ?? harness.schema_valid) === false ? "invalid" : "valid")}</span></div>
-        <div><strong>budget</strong><span>${escapeHtml(budget.context_budget_exceeded ? "context exceeded" : budget.timeout_exceeded ? "timeout exceeded" : budget.step_budget_exceeded ? "step exceeded" : "within budget")}</span></div>
-        <div><strong>safety</strong><span>${escapeHtml(audit.run?.safety_status || safety.status || "unknown")}</span></div>
-        <div><strong>fallback</strong><span>${escapeHtml(audit.run?.fallback_used ? "true" : "false")}</span></div>
+        <div><strong>${c.harness.runLabel}</strong><span>${escapeHtml(audit.run?.run_id || "")}</span></div>
+        <div><strong>${c.harness.runtimeLabel}</strong><span>${escapeHtml(audit.run?.runtime || harness.runtime || "")}</span></div>
+        <div><strong>${c.harness.modelLabel}</strong><span>${escapeHtml([adapter.provider, adapter.model].filter(Boolean).join(" / ") || audit.run?.model_provider || "")}</span></div>
+        <div><strong>${c.harness.schemaLabel}</strong><span>${escapeHtml((audit.run?.schema_valid ?? harness.schema_valid) === false ? c.harness.schemaInvalid : c.harness.schemaValid)}</span></div>
+        <div><strong>${c.harness.budgetLabel}</strong><span>${escapeHtml(budget.context_budget_exceeded ? c.harness.budgetContextExceeded : budget.timeout_exceeded ? c.harness.budgetTimeoutExceeded : budget.step_budget_exceeded ? c.harness.budgetStepExceeded : c.harness.budgetWithinBudget)}</span></div>
+        <div><strong>${c.harness.safetyLabel}</strong><span>${escapeHtml(audit.run?.safety_status || safety.status || c.chat.unknown)}</span></div>
+        <div><strong>${c.harness.fallbackLabel}</strong><span>${escapeHtml(audit.run?.fallback_used ? c.harness.fallbackTrue : c.harness.fallbackFalse)}</span></div>
       </div>
       <div class="trace-list compact-trace">
         ${riskDetails.length ? `
           <div class="trace-step">
-            <strong>Risk Details</strong>
+            <strong>${c.harness.riskDetails}</strong>
             <span>${escapeHtml(riskDetails.map((item) => item.type).join(", "))}</span>
             <p>${escapeHtml(riskDetails.map((item) => item.description).join(" "))}</p>
           </div>
         ` : ""}
         ${renderList(trace, (step) => `
           <div class="trace-step">
-            <strong>${escapeHtml(step.step || step.tool || "step")}</strong>
-            <span>${escapeHtml(step.tool || "tool")}</span>
+            <strong>${escapeHtml(step.step || step.tool || c.harness.stepFallback)}</strong>
+            <span>${escapeHtml(step.tool || c.harness.toolFallback)}</span>
             <p>${escapeHtml(step.purpose || "")}</p>
           </div>
         `)}
@@ -1574,88 +1783,89 @@ function recentMemoryEvents(items = []) {
 }
 
 function renderAuthOperationsPanel() {
+  const c = t();
   const auth = state.auth || {};
   const users = auth.users || [];
   const tokens = auth.tokens || [];
   const events = auth.events || [];
   const activeTokens = tokens.filter((item) => item.status === "active").length;
-  const tokenStatus = state.authToken ? "token set in this browser" : "no browser token";
+  const tokenStatus = state.authToken ? c.auth.tokenSet : c.auth.noToken;
   return html`
     <section class="panel span-3 auth-ops">
       <div class="panel-title-row">
         <div>
-          <h2>Auth Operations</h2>
-          <p>${escapeHtml(tokenStatus)} | ${users.length} users | ${activeTokens} active tokens</p>
+          <h2>${c.auth.title}</h2>
+          <p>${escapeHtml(tokenStatus)} | ${users.length} ${escapeHtml(c.auth.usersLabel)} | ${activeTokens} ${escapeHtml(c.auth.activeTokensLabel)}</p>
         </div>
-        <button class="secondary" data-auth-action="refresh">Refresh</button>
+        <button class="secondary" data-auth-action="refresh">${c.dashboard.refresh}</button>
       </div>
 
       <div class="auth-token-row">
         <label>
-          <span>API token</span>
-          <input data-auth-token-input type="password" autocomplete="off" value="${escapeHtml(state.authToken || "")}" placeholder="Bearer token for protected APIs">
+          <span>${c.auth.apiToken}</span>
+          <input data-auth-token-input type="password" autocomplete="off" value="${escapeHtml(state.authToken || "")}" placeholder="${escapeHtml(c.auth.tokenPlaceholder)}">
         </label>
-        <button data-auth-action="save-token">Save token</button>
-        <button class="secondary" data-auth-action="clear-token">Clear</button>
+        <button data-auth-action="save-token">${c.auth.saveToken}</button>
+        <button class="secondary" data-auth-action="clear-token">${c.auth.clear}</button>
       </div>
 
       ${auth.error ? `<p class="auth-error">${escapeHtml(auth.error)}</p>` : ""}
       ${auth.createdToken ? `<div class="auth-created-token">
-        <strong>One-time token</strong>
+        <strong>${c.auth.oneTimeToken}</strong>
         <code>${escapeHtml(auth.createdToken)}</code>
       </div>` : ""}
 
       <div class="auth-grid">
         <div class="auth-form">
-          <h3>Create local user</h3>
-          <label><span>User ID</span><input id="authUserIdInput" autocomplete="off" placeholder="pm-user"></label>
-          <label><span>Role</span><input id="authRoleInput" autocomplete="off" value="viewer"></label>
-          <label><span>Scopes</span><input id="authScopesInput" autocomplete="off" value="project:read"></label>
-          <label><span>Org ID</span><input id="authOrgInput" autocomplete="off" placeholder="optional"></label>
-          <label class="auth-checkbox"><input id="authIssueTokenInput" type="checkbox" checked><span>Issue token</span></label>
-          <button data-auth-action="create-user">Create user</button>
+          <h3>${c.auth.createUser}</h3>
+          <label><span>${c.auth.userId}</span><input id="authUserIdInput" autocomplete="off" placeholder="pm-user"></label>
+          <label><span>${c.chat.role}</span><input id="authRoleInput" autocomplete="off" value="viewer"></label>
+          <label><span>${c.auth.scopes}</span><input id="authScopesInput" autocomplete="off" value="project:read"></label>
+          <label><span>${c.auth.orgId}</span><input id="authOrgInput" autocomplete="off" placeholder="${escapeHtml(c.auth.optional)}"></label>
+          <label class="auth-checkbox"><input id="authIssueTokenInput" type="checkbox" checked><span>${c.auth.issueToken}</span></label>
+          <button data-auth-action="create-user">${c.auth.createUserButton}</button>
         </div>
 
         <div class="auth-list">
-          <h3>Users</h3>
+          <h3>${c.auth.usersHeading}</h3>
           ${users.length ? users.map((user) => `
             <div>
               <span>
-                <strong>${escapeHtml(user.id || user.userId || "user")}</strong>
+                <strong>${escapeHtml(user.id || user.userId || c.chat.unknown)}</strong>
                 <small>${escapeHtml([user.role, user.source, user.status].filter(Boolean).join(" | "))}</small>
-                <small>${escapeHtml((user.scopes || []).join(", ") || "no scopes")}</small>
+                <small>${escapeHtml((user.scopes || []).join(", ") || c.auth.noScopes)}</small>
               </span>
               ${user.source === "store" && user.status !== "disabled"
-                ? `<button class="text-button danger-text" data-auth-disable-user="${escapeHtml(user.id || user.userId || "")}">Disable</button>`
+                ? `<button class="text-button danger-text" data-auth-disable-user="${escapeHtml(user.id || user.userId || "")}">${c.auth.disable}</button>`
                 : ""}
             </div>
-          `).join("") : `<p class="empty-inline">No users loaded.</p>`}
+          `).join("") : `<p class="empty-inline">${c.auth.noUsers}</p>`}
         </div>
 
         <div class="auth-list">
-          <h3>Tokens</h3>
+          <h3>${c.auth.tokensHeading}</h3>
           ${tokens.length ? tokens.map((token) => `
             <div>
               <span>
-                <strong>${escapeHtml(token.userId || "user")}</strong>
+                <strong>${escapeHtml(token.userId || c.chat.unknown)}</strong>
                 <small>${escapeHtml([token.tokenPrefix, token.status, token.source].filter(Boolean).join(" | "))}</small>
-                <small>${escapeHtml((token.scopes || []).join(", ") || "no scopes")}</small>
+                <small>${escapeHtml((token.scopes || []).join(", ") || c.auth.noScopes)}</small>
               </span>
             </div>
-          `).join("") : `<p class="empty-inline">No store-backed tokens loaded.</p>`}
+          `).join("") : `<p class="empty-inline">${c.auth.noTokens}</p>`}
         </div>
 
         <div class="auth-list">
-          <h3>Recent auth events</h3>
+          <h3>${c.auth.recentEvents}</h3>
           ${events.length ? events.slice(0, 6).map((event) => `
             <div>
               <span>
-                <strong>${escapeHtml(event.status || "unknown")}</strong>
+                <strong>${escapeHtml(event.status || c.chat.unknown)}</strong>
                 <small>${escapeHtml([event.userId, event.requiredScope, event.reason].filter(Boolean).join(" | "))}</small>
                 <small>${escapeHtml(event.pathname || "")}</small>
               </span>
             </div>
-          `).join("") : `<p class="empty-inline">No auth events loaded.</p>`}
+          `).join("") : `<p class="empty-inline">${c.auth.noEvents}</p>`}
         </div>
       </div>
     </section>
@@ -1663,7 +1873,7 @@ function renderAuthOperationsPanel() {
 }
 
 function dashboardPage() {
-  if (!state.project) return emptyProject("Import a repository before viewing evaluation metrics.");
+  if (!state.project) return emptyProject(t().empty.importMetrics);
   const c = t();
   const metrics = state.metrics || {
     total_questions: 0,
@@ -1716,11 +1926,11 @@ function dashboardPage() {
     [c.dashboard.negative, `${metrics.negative_feedback_rate}%`],
     [c.dashboard.highRisk, metrics.high_risk_questions],
     [c.dashboard.guardrailHits, metrics.guardrail_hits || 0],
-    ["Output Redactions", metrics.output_redaction_runs || 0],
-    ["Redacted Matches", metrics.output_redaction_matches || 0],
+    [c.dashboard.outputRedactions, metrics.output_redaction_runs || 0],
+    [c.dashboard.redactedMatches, metrics.output_redaction_matches || 0],
     [c.dashboard.memorySaves, metrics.memory_confirmations || 0],
     [c.dashboard.fallbackRuns, metrics.fallback_runs || 0],
-    ["Harness Snapshots", metrics.harness_run_snapshots || 0],
+    [c.dashboard.harnessSnapshots, metrics.harness_run_snapshots || 0],
     [c.dashboard.avgResponse, `${metrics.average_response_time_ms || 0}ms`]
   ];
   const citationStatusLabel = c.dashboard.citationStatus || "引用状态";
@@ -1749,11 +1959,11 @@ function dashboardPage() {
           ${rankedBars(metrics.safety_risk_counts)}
         </section>
         <section class="panel">
-          <h2>Import Safety</h2>
+          <h2>${c.dashboard.importSafetyTitle}</h2>
           <div class="evidence-stats">
-            <div><strong>${escapeHtml(metrics.import_safety_status || "not_applicable")}</strong><span>${escapeHtml((metrics.import_safety_risk_counts || []).map((item) => item.type).join(", ") || "no risks")}</span></div>
-            <div><strong>${metrics.import_prompt_risk_file_count || 0}</strong><span>prompt-risk files</span></div>
-            <div><strong>${metrics.import_sensitive_file_count || 0}</strong><span>sensitive files</span></div>
+            <div><strong>${escapeHtml(metrics.import_safety_status || "not_applicable")}</strong><span>${escapeHtml((metrics.import_safety_risk_counts || []).map((item) => item.type).join(", ") || c.overview.noRisks)}</span></div>
+            <div><strong>${metrics.import_prompt_risk_file_count || 0}</strong><span>${c.overview.promptRisks}</span></div>
+            <div><strong>${metrics.import_sensitive_file_count || 0}</strong><span>${c.overview.sensitiveFiles}</span></div>
           </div>
         </section>
         <section class="panel">
@@ -1769,7 +1979,7 @@ function dashboardPage() {
           ${rankedBars(metrics.memory_status_counts)}
         </section>
         <section class="panel">
-          <h2>Memory Events</h2>
+          <h2>${c.dashboard.memoryEventsTitle}</h2>
           ${rankedBars(metrics.memory_event_counts)}
         </section>
         <section class="panel">
@@ -1801,7 +2011,7 @@ function dashboardPage() {
           ${rankedBars(metrics.trace_tool_counts)}
         </section>
         <section class="panel span-2">
-          <h2>Recent Tool Policy</h2>
+          <h2>${c.dashboard.recentToolPolicyTitle}</h2>
           ${recentToolPolicyEvents(metrics.recent_tool_policy_events)}
         </section>
         <section class="panel span-2">
@@ -1809,7 +2019,7 @@ function dashboardPage() {
           ${recentSafetyEvents(metrics.recent_safety_events)}
         </section>
         <section class="panel span-2">
-          <h2>Recent Redactions</h2>
+          <h2>${c.dashboard.recentRedactionsTitle}</h2>
           ${recentRedactionEvents(metrics.recent_redaction_events)}
         </section>
         <section class="panel span-2">
@@ -2064,14 +2274,14 @@ async function handleHitlDecision(decision, answerId, runId) {
     });
     if (decision === "approve") {
       state.messages.unshift({
-        question: "[HITL] Reviewer approved the high-risk change",
+        question: c.chat.hitlApprovedMessage,
         kind: "agent_impact",
         payload: resumed.payload,
         answerId: resumed.answerId
       });
     } else {
       state.messages.unshift({
-        question: "[HITL] Reviewer rejected the high-risk change",
+        question: c.chat.hitlRejectedMessage,
         kind: "agent_impact",
         payload: resumed.payload,
         answerId: resumed.answerId
@@ -2201,7 +2411,9 @@ async function createAuthUserFromForm() {
 
 async function disableAuthUser(userId) {
   if (!userId) return;
-  if (!confirm(`Disable local auth user "${userId}" and all store-backed tokens for this user?`)) return;
+  const c = t();
+  const confirmMessage = (c.auth.disableConfirmTemplate || "").replace("{user}", userId);
+  if (!confirm(confirmMessage)) return;
   try {
     await api("/api/auth/users/disable", {
       method: "POST",
@@ -2345,6 +2557,23 @@ document.addEventListener("click", (event) => {
   if (dismissError) {
     clearError();
     return;
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.target?.id === "questionInput") {
+    event.preventDefault();
+    const submitButton = event.target.closest(".composer")?.querySelector("[data-action]");
+    if (submitButton && !submitButton.disabled) submitButton.click();
+    return;
+  }
+
+  if (event.key === "Enter" || event.key === " ") {
+    const workflowCard = event.target.closest?.(".workflow-card[role=\"button\"]");
+    if (workflowCard) {
+      event.preventDefault();
+      setPage(workflowCard.dataset.page);
+    }
   }
 });
 
