@@ -7,6 +7,28 @@ import { DatabaseSync } from "node:sqlite";
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import { MemorySaver } from "@langchain/langgraph-checkpoint";
 
+const ROOT = process.cwd();
+
+function loadEnvFile() {
+  try {
+    const content = readFileSync(path.join(ROOT, ".env"), "utf8");
+    for (const line of content.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eq = trimmed.indexOf("=");
+      if (eq === -1) continue;
+      const key = trimmed.slice(0, eq).trim();
+      const value = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
+      if (!process.env[key]) process.env[key] = value;
+    }
+    console.log("[env] Loaded .env file.");
+  } catch {
+    // .env file is optional
+  }
+}
+
+loadEnvFile();
+
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "127.0.0.1";
 const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
@@ -19,7 +41,6 @@ function log(level, message, extra = {}) {
   if (level === "error") console.error(JSON.stringify(entry));
   else console.log(JSON.stringify(entry));
 }
-const ROOT = process.cwd();
 const PUBLIC_DIR = path.join(ROOT, "public");
 const DATA_DIR = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
@@ -409,10 +430,20 @@ async function ensureStore() {
     const raw = await fs.readFile(STORE_PATH, "utf8");
     return normalizeStore(JSON.parse(raw));
   } catch (error) {
-    await backupCorruptStore(error);
-    const seed = normalizeStore({});
-    await saveStore(seed);
-    return seed;
+    if (error && error.code === "ENOENT") {
+      const seed = normalizeStore({});
+      await saveStore(seed);
+      return seed;
+    }
+    if (error instanceof SyntaxError) {
+      await backupCorruptStore(error);
+      const seed = normalizeStore({});
+      await saveStore(seed);
+      return seed;
+    }
+    // Unexpected error (e.g. transient EBUSY/EPERM on Windows) — fail the
+    // request instead of silently wiping the on-disk store with an empty seed.
+    throw error;
   }
 }
 
@@ -3062,26 +3093,6 @@ function inferQuestionType(question) {
   return "qa";
 }
 
-function loadEnvFile() {
-  try {
-    const content = readFileSync(path.join(ROOT, ".env"), "utf8");
-    for (const line of content.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-      const eq = trimmed.indexOf("=");
-      if (eq === -1) continue;
-      const key = trimmed.slice(0, eq).trim();
-      const value = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
-      if (!process.env[key]) process.env[key] = value;
-    }
-    console.log("[env] Loaded .env file.");
-  } catch {
-    // .env file is optional
-  }
-}
-
-loadEnvFile();
-
 function resolveLlmEndpoint() {
   const base = (process.env.OPENAI_BASE_URL || "https://api.openai.com").replace(/\/+$/, "");
   return `${base}/v1/chat/completions`;
@@ -5126,10 +5137,13 @@ function computeMetrics(store, projectId) {
 }
 
 async function handleApi(req, res, pathname) {
-  if (req.method !== "GET") {
-    return withWriteLock(() => handleApiUnlocked(req, res, pathname));
-  }
-  return handleApiUnlocked(req, res, pathname);
+  // All API requests (including GET) go through the write lock: when
+  // AUTH_REQUIRED is on, GET handlers also record an auth event and persist
+  // the store (see handleApiUnlocked below), so a GET running concurrently
+  // with a POST's load-modify-save cycle could otherwise clobber writes.
+  // Serializing everything through the same in-process queue closes that
+  // race without needing to special-case which GET routes happen to write.
+  return withWriteLock(() => handleApiUnlocked(req, res, pathname));
 }
 
 async function handleApiUnlocked(req, res, pathname) {
@@ -5996,13 +6010,6 @@ async function gracefulShutdown(signal) {
     process.exit(1);
   }, 10_000);
   forceTimer.unref();
-  // Flush store
-  try {
-    await saveStore(store);
-    log("info", "store flushed before shutdown");
-  } catch (e) {
-    log("error", "failed to flush store during shutdown", { error: e.message });
-  }
   // Stop accepting new connections and drain existing ones
   await new Promise((resolve) => server.close(resolve));
   log("info", "http server closed");
