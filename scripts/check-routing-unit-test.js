@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readServerSource } from "./shared/source-reader.js";
 
 /**
  * Unit test for decideNextRoute() routing logic.
@@ -7,7 +7,7 @@ import { readFile } from "node:fs/promises";
  * 2. Simulating the routing logic locally and asserting expected outputs
  */
 
-const serverSource = await readFile("server.js", "utf8");
+const serverSource = await readServerSource();
 
 // Extract the ROUTE_RULES phaseMap from source
 const phaseMapMatch = serverSource.match(/phaseMap:\s*\[([\s\S]*?)\]/);
