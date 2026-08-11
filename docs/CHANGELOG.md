@@ -5,9 +5,9 @@
 
 ---
 
-## 2026-08-11 — 前端确定性 bug 修复 + 工程化清理 + server.js 正确性热修 + 存储基础层拆分
+## 2026-08-11 — 前端确定性 bug 修复 + 工程化清理 + server.js 正确性热修 + 存储基础层拆分 + 样式清理
 
-本轮由多个 worker agent 在独立分支/worktree 并行完成，逐一经 reviewer 审核通过后合并（`Wave1-A`/`Wave1-B`/`Wave1-C`/`W2-1`/`W2-2`），全程 `npm test` 保持全绿。
+本轮由多个 worker agent 在独立分支/worktree 并行完成，逐一经 reviewer 审核通过后合并（`Wave1-A`/`Wave1-B`/`Wave1-C`/`W2-1`/`W2-2`/`F3`），全程 `npm test` 保持全绿。
 
 ### 前端 5 个确定性 bug 修复（39f8335，Wave1-A）
 
@@ -47,6 +47,13 @@
 
 - 纯搬移重构，零逻辑改动，从 `server.js` 抽出 4 个存储基础层模块：`lib/config.js`（环境变量加载 + 全部配置常量 + `apiError`/`normalizeUserId` 两个跨模块共用工具函数）、`lib/store.js`（`ensureStore`/`saveStore`/`normalizeStore`/`backupCorruptStore`/`withWriteLock`，通过 `setStoreRecordNormalizers()` 注入仍留在 `server.js` 的记录归一化函数以避免循环依赖）、`lib/memory-db.js`（SQLite 长期记忆库全部：单例/迁移/FTS/嵌入/向量适配器/CRUD/备份恢复）、`lib/checkpoints.js`（LangGraph checkpoint 序列化/持久化/回放/续跑，通过 `setCheckpointCollaborators()` 注入 `findProject`/`findHarnessRunAudit`/`runAgenticImpactWorkflow`）。
 - `server.js` 6029 行 → 4278 行，新增 `lib/` 共 1959 行。评审已通过（reviewer 通过，零阻塞），`npm test` 全绿，无需同步 `scripts/` 期望，因为 `check-*.js` 均已经由 `scripts/shared/source-reader.js` 读取 `server.js` + `lib/**/*.js` 拼接后的源码。
+
+### F3 — styles.css 清理（1267896，merge 37d1622）
+
+- 删除死样式：`.command-center`/`.command-header`/`.status-dot`（旧版预览，已被 `.figma-preview` 取代，直接复用其容器样式）、`.failure-list` 系列六处（JS 无引用，与 `.feedback-log` 合并处理）、`.center`、媒体查询里的孤儿 `.hero`、`.handoff-end`。
+- `.progress-box` 非 vertical 布局收窄：grep 确认 `app.js` 仅渲染 `"progress-box vertical"`，但基础规则里的 `display: grid` 是 `.vertical` 变体的必需属性，不能整体删除；仅移除恒被覆盖的 `grid-template-columns`/`gap`，并清掉 600px 媒体查询里恒不匹配的 `.progress-box:not(.vertical)`。
+- 补齐 JS 在用但 CSS 缺失的类：`.agent-welcome`/`.agent-avatar`/`.suggestion-grid`（聊天空状态）、`.figma-preview`（沿用原 `.command-center` 容器样式）。
+- 语义色收敛：新增 `--success-text`/`--success-border`/`--warn-text`/`--warn-border` 变量，替换 `.llm-badge`/`.llm-source`/`.risk`/`.agent-header`/`.guardrail-list` 中 5 处 `#15803d` 与 4 处 `#92400e` 硬编码。
 
 ---
 

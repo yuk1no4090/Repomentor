@@ -39,7 +39,7 @@ CI（`.github/workflows/test.yml`）在 push `main` 和 PR 上跑 `npm ci && npm
   - `readFrontendSource()` 读取 `public/app.js`。
   - 两者都会把 CRLF 归一化成 LF，避免 Windows 检出环境下 `\n` 锚定正则误判。
   - `source-reader.js` 本身放在 `scripts/shared/`（不是 `scripts/`），刻意避开 `static-checks.js` 的 `check-*.js` 自动发现，不会被当作一个检查执行。
-- 现有 24 个 `check-*.js` 覆盖：locale 文案一致性、前端 agent UI 契约、文案质量（乱码/BOM 检测）、运行时依赖白名单、API 文档与路由同步、store schema、smoke 可靠性、UI 验收接线、安全护栏契约、安全红队接线、记忆压缩、用户记忆隔离、认证边界、embedding provider、agent benchmark 契约、agent 响应契约、多 Agent 角色契约、supervisor 路由、HITL resume、LangGraph checkpoint、长期记忆、路由单测、工具策略、架构文档、运维文档同步。
+- 现有 24 个 `check-*.js` 覆盖：locale 文案一致性、前端 agent UI 契约、文案质量（乱码/BOM 检测）、运行时依赖白名单、API 文档与路由同步、store schema、smoke 可靠性、UI 验收接线、安全护栏契约、安全红队接线、记忆压缩、用户记忆隔离、认证边界、agent benchmark 契约、agent 响应契约、多 Agent 角色契约、supervisor 路由、HITL resume、LangGraph checkpoint、长期记忆、路由单测、工具策略、架构文档、运维文档同步。注意 `scripts/embedding-provider-test.js` 不属于这份清单——它不是 `check-*.js` 命名，不会被 `static-checks.js` 自动发现，而是独立挂在 `npm run test:embedding` 下（见上表）。
 - 多个 check 脚本对 `README.md`、`docs/*.md` 做**精确子串匹配**（`String.includes()` 命中具体短语、`| METHOD | /api/path |` 格式的路由表行等），不是模糊校验。改动 README/文档正文前务必搜一遍 `scripts/check-*.js` 里是否引用了要改的那段文字，否则很容易在无意间让 `check-api-docs.js`、`check-architecture-docs.js`、`check-operations-docs.js`、`check-runtime-deps.js` 等变红。
 
 ## 代码风格
@@ -55,7 +55,6 @@ CI（`.github/workflows/test.yml`）在 push `main` 和 PR 上跑 `npm ci && npm
 - 不要提交 `data/` 下的运行时数据文件（`store.json`、`memory.sqlite` 及其 `-wal`/`-shm`/`.bak`/`.corrupt-*` 变体）——这些是用户数据，`.gitignore` 已排除，测试/开发时请用 `DATA_DIR`、`STORE_PATH`、`MEMORY_DB_PATH` 指向临时目录。
 - 不要修改 `.workbuddy/`（本地多 Agent 协作工作区状态，不属于产品代码）。
 - 不要为了让某个改动“看起来通过”而弱化或删除 `check-*.js` 里的断言；如果确信某个断言过于脆弱或已经过期（比如绑死了一个会随意调整的数值常量），单独说明原因再改，并在改动后完整跑一遍 `npm test` 确认没有引入回归。
-- 改了代码之后必须跑全量 `npm test` 再提交，不要只跑本地开发时顺手跑的那一两个子命令。
 
 ## 多 Agent 协作约定（本仓库实践）
 
@@ -76,7 +75,7 @@ CI（`.github/workflows/test.yml`）在 push `main` 和 PR 上跑 `npm ci && npm
 
 ## 相关文档索引
 
-- [README.md](README.md) / [README.en.md](README.en.md)：安装、测试、运行时配置、API 表、特性清单（中英双语）。
+- [README.md](README.md) / [README.zh-CN.md](README.zh-CN.md)：安装、测试、运行时配置、API 表、特性清单（英文原版 + 中文翻译）。
 - [docs/AGENT_RUNTIME_ARCHITECTURE.md](docs/AGENT_RUNTIME_ARCHITECTURE.md)：LangGraph、记忆、Harness、安全的实现边界。
 - [docs/OPERATIONS.md](docs/OPERATIONS.md)：部署、认证、长期记忆、备份恢复、向量记忆、安全、验证操作。
 - [docs/PRD.md](docs/PRD.md)：产品需求与路线图。
