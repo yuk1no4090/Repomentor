@@ -5,6 +5,58 @@
 
 ---
 
+## 2026-08-11 — 前端确定性 bug 修复 + 工程化清理 + server.js 正确性热修 + 存储基础层拆分 + 样式清理
+
+本轮由多个 worker agent 在独立分支/worktree 并行完成，逐一经 reviewer 审核通过后合并（`Wave1-A`/`Wave1-B`/`Wave1-C`/`W2-1`/`W2-2`/`F3`），全程 `npm test` 保持全绿。
+
+### 前端 5 个确定性 bug 修复（39f8335，Wave1-A）
+
+- Retry 按钮：先取出 `retryFn` 局部变量再 `clearError()`，避免读取已置空的 `state.errorBanner`。
+- `runAgentImpact` 失败重试改为调用 `runAgentImpact(question)`，不再引用未定义的 `kind`。
+- HITL 审批/驳回后更新原消息 `payload.hitl` 为已决策状态，避免全量 render 时按钮复活；`state.messages.push` 统一改为 `unshift`。
+- `renderAgentImpactMessage` 中移除重复的 `renderOptionalRuntimeStatus(payload)` 调用，运行时状态卡片只渲染一次。
+- 接入 `state.loading`：`import`/`ask`/`runAgentImpact` 入口加防重入守卫，对应提交按钮渲染时按 `loading` 置 `disabled`，完成/失败后在 `finally` 中复位并重渲染。
+
+### 工程化清理（53f64d2，Wave1-B）
+
+- 新增 `.dockerignore`，排除 `node_modules`/`.git`/`data`/`nocode`/`scripts`/`docs` 等，避免 55MB `node_modules` 及含用户数据的 `data/memory.sqlite` 进入构建上下文。
+- `Dockerfile`：`HEALTHCHECK` 改用 shell 形式 `${PORT:-3000}` 而非硬编码 `3000`；移除生产镜像里不需要的 `COPY scripts/`。
+- CI：`test.yml` 按 `ref` 加 `concurrency` 分组 + `cancel-in-progress`，避免同一 PR 连续 push 堆积运行。
+- `README.md` 测试命令代码块补齐遗漏的 `npm run test:smoke`。
+- 删除初始提交遗留的 Vite+React 原型 `nocode/`（84 个文件，提交共 −8930 行，零引用零改动），同步清理 `docs/MULTI_AGENT_PLAN.md` 与 `docs/USER_GUIDE.md` 中指向该目录的文字。
+
+### server.js 四处正确性热修（0efc2e2 + d4abe97，Wave1-C）
+
+- `loadEnvFile` 移至文件最顶部（imports 之后、任何读 `process.env` 的常量之前），修复 `.env` 中 `PORT`/`HOST`/`AUTH_REQUIRED`/`RATE_LIMIT_MAX`/`LLM_REQUEST_TIMEOUT_MS` 等配置此前因加载时机太晚而静默失效的问题（含鉴权开关，属安全问题）。
+- `ensureStore` 收窄灾难恢复范围：仅 `ENOENT` 视为新建；`SyntaxError` 时先 `backupCorruptStore` 再重建；其余错误（如 Windows 瞬时 `EBUSY`/`EPERM`）直接向上抛出，不再用空 seed 静默覆盖磁盘上的真实数据。
+- 删除优雅关机中引用未定义全局变量 `store` 的死代码（`await saveStore(store)`），该行必抛 `ReferenceError` 并被 catch 吞掉，原本没有实际效果。
+- 写锁范围修复分两步：先让 `handleApi` 统一所有方法（含 GET）都经过 `withWriteLock`，修复 `AUTH_REQUIRED` 下 GET 路径的 `recordAuthEvent`+`saveStore` 与写锁内 POST 的 load-modify-save 并发互相覆盖丢数据的问题；reviewer 指出无差别加锁会让 `/api/health` 与并发 agent 请求（单次可持锁 30s+）抢同一把 FIFO 锁、拖慢 Dockerfile 的 5s 超时健康检查，随后收窄为：非 GET 一律走锁，GET 仅在 `AUTH_REQUIRED && pathname !== "/api/health"` 时走锁，其余 GET（含 `/api/health`）不入队直接处理。
+
+### 其他 chore
+
+- `.gitattributes`（ada821a）：强制 `*.js`/`*.md`/`*.css`/`*.html`/`*.json`/`*.yml` 以 LF 检出，修复 worktree 下 CRLF 导致部分 `\n` 锚定正则误判的静态检查误报。
+- `.gitignore`（036ed87）：忽略 `.claude/` 本地 worktree 目录。
+
+### 测试脚本读源解耦（f542025，merge ceff627，W2-1）
+
+- 新增 `scripts/shared/source-reader.js` 作为读取后端/前端源码的统一入口：`readServerSource()` 拼接 `server.js` + `lib/**/*.js`（目录不存在则跳过，按路径排序），`readFrontendSource()` 读取 `public/app.js`；两者都会把 CRLF 归一化为 LF。
+- 18 个原先直接 `readFile("server.js"/"public/app.js")` 的 `check-*.js` 改为调用上述函数，断言内容不变，只换数据源，为 server.js 模块化拆分铺路。
+- 裁剪 3 处已确认的脆性断言：`check-smoke-reliability.js` 删除对 `const REQUEST_TIMEOUT_MS = 20_000` 精确数值的断言，改为宽松正则确认"存在显式数字超时常量"；`check-langgraph-checkpoints.js` 的 `.compile({ checkpointer })` 与 `check-frontend-agent-ui.js` 的 `JSON.stringify({ suggestionId, projectId: ... })` 从精确字符串匹配改为容忍空白差异的正则，验证的事实不变。
+
+### 架构拆分——存储基础层（2ac3734，merge cdca7f6，W2-2）
+
+- 纯搬移重构，零逻辑改动，从 `server.js` 抽出 4 个存储基础层模块：`lib/config.js`（环境变量加载 + 全部配置常量 + `apiError`/`normalizeUserId` 两个跨模块共用工具函数）、`lib/store.js`（`ensureStore`/`saveStore`/`normalizeStore`/`backupCorruptStore`/`withWriteLock`，通过 `setStoreRecordNormalizers()` 注入仍留在 `server.js` 的记录归一化函数以避免循环依赖）、`lib/memory-db.js`（SQLite 长期记忆库全部：单例/迁移/FTS/嵌入/向量适配器/CRUD/备份恢复）、`lib/checkpoints.js`（LangGraph checkpoint 序列化/持久化/回放/续跑，通过 `setCheckpointCollaborators()` 注入 `findProject`/`findHarnessRunAudit`/`runAgenticImpactWorkflow`）。
+- `server.js` 6029 行 → 4278 行，新增 `lib/` 共 1959 行。评审已通过（reviewer 通过，零阻塞），`npm test` 全绿，无需同步 `scripts/` 期望，因为 `check-*.js` 均已经由 `scripts/shared/source-reader.js` 读取 `server.js` + `lib/**/*.js` 拼接后的源码。
+
+### F3 — styles.css 清理（1267896，merge 37d1622）
+
+- 删除死样式：`.command-center`/`.command-header`/`.status-dot`（旧版预览，已被 `.figma-preview` 取代，直接复用其容器样式）、`.failure-list` 系列六处（JS 无引用，与 `.feedback-log` 合并处理）、`.center`、媒体查询里的孤儿 `.hero`、`.handoff-end`。
+- `.progress-box` 非 vertical 布局收窄：grep 确认 `app.js` 仅渲染 `"progress-box vertical"`，但基础规则里的 `display: grid` 是 `.vertical` 变体的必需属性，不能整体删除；仅移除恒被覆盖的 `grid-template-columns`/`gap`，并清掉 600px 媒体查询里恒不匹配的 `.progress-box:not(.vertical)`。
+- 补齐 JS 在用但 CSS 缺失的类：`.agent-welcome`/`.agent-avatar`/`.suggestion-grid`（聊天空状态）、`.figma-preview`（沿用原 `.command-center` 容器样式）。
+- 语义色收敛：新增 `--success-text`/`--success-border`/`--warn-text`/`--warn-border` 变量，替换 `.llm-badge`/`.llm-source`/`.risk`/`.agent-header`/`.guardrail-list` 中 5 处 `#15803d` 与 4 处 `#92400e` 硬编码。
+
+---
+
 ## 2026-08-07 — 多 Agent 协同 + 生产就绪完善
 
 ### scene#17「Agent 应用」多 Agent 协同（4c32ed1）
