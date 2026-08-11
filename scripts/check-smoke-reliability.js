@@ -6,7 +6,6 @@ const [smokeSource, readme] = await Promise.all([
 ]);
 
 const requiredSnippets = [
-  "const REQUEST_TIMEOUT_MS = 20_000",
   "new AbortController()",
   "controller.abort()",
   "function requestTo",
@@ -48,11 +47,17 @@ const staleMatches = stalePatterns
   .filter(({ pattern }) => pattern.test(smokeSource))
   .map(({ name }) => name);
 
-if (missingSnippets.length || missingReadmeSnippets.length || staleMatches.length) {
+// Structural anchor only: requests must declare an explicit numeric timeout constant
+// (guards against silently dropping the timeout), without pinning the tunable value
+// itself — retuning REQUEST_TIMEOUT_MS should not fail this check.
+const hasExplicitRequestTimeoutConstant = /const REQUEST_TIMEOUT_MS = [\d_]+;/.test(smokeSource);
+
+if (missingSnippets.length || missingReadmeSnippets.length || staleMatches.length || !hasExplicitRequestTimeoutConstant) {
   console.error(JSON.stringify({
     missingSnippets,
     missingReadmeSnippets,
-    staleMatches
+    staleMatches,
+    hasExplicitRequestTimeoutConstant
   }, null, 2));
   throw new Error("Smoke test reliability contract is incomplete.");
 }

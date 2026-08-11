@@ -1,9 +1,10 @@
 import { readFile } from "node:fs/promises";
+import { readServerSource } from "./shared/source-reader.js";
 
 const [packageJsonRaw, packageLockRaw, serverSource, readme, nvmrc] = await Promise.all([
   readFile("package.json", "utf8"),
   readFile("package-lock.json", "utf8"),
-  readFile("server.js", "utf8"),
+  readServerSource(),
   readFile("README.md", "utf8"),
   readFile(".nvmrc", "utf8")
 ]);

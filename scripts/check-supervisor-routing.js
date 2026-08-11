@@ -1,7 +1,7 @@
-import { readFile } from "node:fs/promises";
 import { ok as assert } from "node:assert/strict";
+import { readServerSource } from "./shared/source-reader.js";
 
-const serverSource = await readFile("server.js", "utf8");
+const serverSource = await readServerSource();
 
 // ── 1. ROUTE_RULES existence and structure ──
 assert(serverSource.includes("const ROUTE_RULES = Object.freeze({"), "ROUTE_RULES constant not found");

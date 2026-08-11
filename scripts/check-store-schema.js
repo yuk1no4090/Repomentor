@@ -1,6 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { readServerSource } from "./shared/source-reader.js";
 
-const serverSource = await readFile("server.js", "utf8");
+const serverSource = await readServerSource();
 
 const requiredTopLevelFields = [
   "projects",

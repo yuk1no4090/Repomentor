@@ -1,8 +1,9 @@
 import { readFile } from "node:fs/promises";
+import { readServerSource } from "./shared/source-reader.js";
 
 const [packageJsonRaw, serverSource, redteamSource, readme, architectureDoc] = await Promise.all([
   readFile("package.json", "utf8"),
-  readFile("server.js", "utf8"),
+  readServerSource(),
   readFile("scripts/safety-redteam.js", "utf8"),
   readFile("README.md", "utf8"),
   readFile("docs/AGENT_RUNTIME_ARCHITECTURE.md", "utf8")

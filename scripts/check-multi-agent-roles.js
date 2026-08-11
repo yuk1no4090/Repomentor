@@ -1,6 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { readServerSource } from "./shared/source-reader.js";
 
-const serverSource = await readFile("server.js", "utf8");
+const serverSource = await readServerSource();
 
 // Extract AGENT_TOOL_REGISTRY array content
 const registryMatch = serverSource.match(/const AGENT_TOOL_REGISTRY = \[([\s\S]*?)\];/);

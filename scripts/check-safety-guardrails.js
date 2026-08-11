@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
+import { readServerSource } from "./shared/source-reader.js";
 
 const [serverSource, architectureDoc, readme] = await Promise.all([
-  readFile("server.js", "utf8"),
+  readServerSource(),
   readFile("docs/AGENT_RUNTIME_ARCHITECTURE.md", "utf8"),
   readFile("README.md", "utf8")
 ]);
