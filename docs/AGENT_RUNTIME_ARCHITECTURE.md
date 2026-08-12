@@ -10,6 +10,31 @@ This document records the first production-shaped implementation boundary for th
 - The harness is the runtime boundary around model calls, graph execution, tool policy, budgets, trace, schema validation, fallback, and errors.
 - AI safety is application-level guardrails. It is not a compliance certification.
 
+## Code Organization
+
+`server.js` is now a thin HTTP layer only: `handleApi`/`handleApiUnlocked` route dispatch, `serveStatic`, a small number of helpers that stay coupled to routing (`sendJson`, `readBody`, `findHarnessRunAudit`), and process bootstrap (wiring `setStoreRecordNormalizers()` / `setCheckpointCollaborators()`, `http.createServer`, graceful shutdown). It shrank from 6,029 lines to roughly 1,200 lines across three decomposition passes — a storage-layer pass, then two domain-layer passes — that moved logic into `lib/` with no behavior changes.
+
+All application logic lives in 12 single-purpose modules under `lib/`:
+
+- `lib/config.js` — env loading, all configuration constants, and the shared `apiError`/`normalizeUserId` helpers.
+- `lib/store.js` — `ensureStore`/`saveStore`/`normalizeStore`/`backupCorruptStore`/`withWriteLock`, plus a resident in-memory store cache keyed on an `fs.stat` mtime+size signature.
+- `lib/memory-db.js` — the SQLite long-term memory store: singleton connection, schema migrations, FTS5, embeddings, vector index adapters, CRUD, and backup/restore.
+- `lib/checkpoints.js` — LangGraph checkpoint serialization, persistence, replay, and resume.
+- `lib/auth.js` — token/identity resolution, auth user and event CRUD, and scope checks.
+- `lib/importer.js` — repository import: ZIP parsing, GitHub fetch, `createProject`, tech-stack/tree inference, and import-time safety scanning.
+- `lib/retrieval.js` — tokenization, query expansion, file chunking, and chunk retrieval.
+- `lib/safety.js` — input, retrieval, and output safety scanning and redaction.
+- `lib/llm.js` — model provider resolution and `runModelAdapter()`.
+- `lib/answers.js` — the QA/impact/onboarding deterministic answer generators, preference apply/CRUD, and memory suggestion generation.
+- `lib/agent-graph.js` — `decideNextRoute`/`ROUTE_RULES`, trace and tool-registry helpers, the harness report builders (`buildAgentHarnessReport`, `buildChatHarnessReport`, `buildOnboardingHarnessReport`), the `StateGraph` node definitions, and `runAgenticImpactWorkflow`.
+- `lib/metrics.js` — `computeMetrics()` and `FEEDBACK_TYPES`.
+
+Dependencies between `lib/` modules are unidirectional and acyclic: `lib/agent-graph.js` depends on `lib/llm.js`, `lib/answers.js`, `lib/retrieval.js`, `lib/safety.js`, `lib/memory-db.js`, and `lib/checkpoints.js`; `lib/answers.js` depends on `lib/memory-db.js` (only `normalizeMemorySuggestion`); `lib/metrics.js` depends on `lib/agent-graph.js` (reusing `createHarnessRunSnapshot`) plus `lib/memory-db.js`, `lib/checkpoints.js`, and `lib/safety.js`; `lib/importer.js` depends on `lib/retrieval.js` and `lib/safety.js`; `lib/llm.js` depends only on `lib/config.js` and `lib/safety.js`. No `lib/` module imports back up toward `server.js`.
+
+Two injection points keep `lib/store.js` and `lib/checkpoints.js` decoupled from the domain modules that own the record shapes they normalize or the handlers they call, avoiding circular imports: `server.js` imports the actual normalizer functions from `lib/auth.js`, `lib/answers.js`, `lib/agent-graph.js`, and `lib/memory-db.js`, then calls `setStoreRecordNormalizers()` once at bootstrap; `setCheckpointCollaborators()` similarly injects `findProject`, `findHarnessRunAudit`, and `runAgenticImpactWorkflow` (from `lib/agent-graph.js`) into `lib/checkpoints.js` before the HTTP server starts.
+
+A `test/` directory holds pure-function unit tests on Node's built-in `node:test` runner (`routing.test.js`, `safety.test.js`, `retrieval.test.js`; 41 cases total) that import and exercise the real functions exported by `lib/agent-graph.js`, `lib/safety.js`, and `lib/retrieval.js` directly, instead of re-implementing the logic under test. `scripts/check-unit-tests.js` runs `node --test test/**/*.js` and is picked up automatically by `static-checks.js`'s `scripts/check-*.js` auto-discovery, so it participates in `npm test` with no separate wiring.
+
 ## Graph Nodes
 
 ### Default mode: Supervisor routing (`AGENT_GRAPH_MODE=supervisor`)
@@ -226,6 +251,7 @@ Static checks cover:
 - locale key sync
 - text quality
 - agent benchmark contract
+- pure-function unit tests under `test/` (`node --test test/**/*.js`, 41 cases covering routing, safety, and retrieval)
 
 Smoke tests cover:
 

@@ -5,6 +5,58 @@
 
 ---
 
+## 2026-08-12 — 前端 i18n/状态修复 + 领域层拆分完成（server.js → 1213 行）+ 性能改造 + node:test 单元测试
+
+本轮同样由多个 worker agent 在独立分支/worktree 并行完成，逐一经 reviewer 审核通过后合并（`F1`/`F2`/`W2-3a`/`W2-3b`/`W2-4`/`W2-5`），全程 `npm test` 保持全绿。
+
+### F1 — 前端 i18n 补全 + 转义修复 + Enter 提交（651f1ec，merge 2a4df29）
+
+- 补齐 HITL 审批卡片、Agent 角色/交接、导入安全面板等此前"被引用但未定义"的 copy 键（中英双语），修复中文模式下的英文兜底/undefined 显示；Auth Operations 面板、Harness Run Audit 面板、dashboard 混排标题等整块英文硬编码收编进 copy 双语体系。
+- 修复 `feedbackBar`/`failureReasons`/`rankedBars` 中未转义的 `data-answer`/`item.count`，补齐 XSS 防护。
+- `api()` 增加 content-type 检测与 try/catch，非 JSON 响应抛出带 HTTP 状态码的可读错误，替代原始 `SyntaxError`。
+- 问题输入框支持 Enter 提交（Shift+Enter 换行），复用现有按钮点击处理器与 loading 防重入；`workflow-card` 补充 keydown（Enter/Space）键盘可达性。
+
+### F2 — 标签页状态入 state（2128e1e，merge 9ef4ce6）
+
+- `state` 新增 `activeTab`/`draftQuestion`；`switchTab()` 从直接操作 DOM（`innerHTML` 替换 + `classList.toggle`）改为写 state 后调用统一 `render()`，修复整页重渲染时标签页跳回 Q&A 的问题。
+- `render()` 开头把当前 `#questionInput` 的值写回 `state.draftQuestion` 再重渲染；`ask()`/`runAgentImpact()` 提交成功后清空输入框，修复重渲染时用户已输入但未提交的内容丢失的问题。
+
+### W2-3a — 领域层拆分一：lib/auth、importer、retrieval、safety（d394c61，merge 23572f3）
+
+- 纯搬移零逻辑改动，从 server.js 抽出四个领域模块：`lib/auth.js`（token/身份解析、认证用户与事件 CRUD、scope 校验）、`lib/importer.js`（仓库导入，单向依赖 `lib/retrieval.js` 与 `lib/safety.js`）、`lib/retrieval.js`（分词/查询扩展/分块/检索）、`lib/safety.js`（输入/检索/输出三级安全扫描与脱敏，`SAFETY_POLICY` 改从 `lib/config.js` 导入）。
+- 顺手清理 `lib/safety.js` 中声明后从未使用的死正则，同步 `check-safety-guardrails.js` 里依赖该死代码文本的一条过期期望。
+- server.js 4278 → 3186 行；路由/LLM/answers/agent-graph/metrics 尚未拆分。
+
+### W2-3b — 领域层拆分二：lib/llm、answers、agent-graph、metrics（d6cd778，merge 1b2384f）
+
+- 延续前两阶段模式，纯搬移零逻辑改动。server.js 从 3186 行降至 **1213 行**，只剩 HTTP 路由分发（`handleApi`/`handleApiUnlocked`/`serveStatic`）+ 少量仍与路由强耦合的辅助函数（`sendJson`/`readBody`/`findHarnessRunAudit`）+ bootstrap（`setStoreRecordNormalizers`/`setCheckpointCollaborators` 接线、`http.createServer`、优雅关机）。
+- 新增 `lib/llm.js`（provider 解析 + `maybeCallOpenAI` + `runModelAdapter`）、`lib/answers.js`（QA/impact/onboarding 确定性答案生成器、偏好增删查、记忆建议生成、答案 schema 校验）、`lib/agent-graph.js`（路由决策 `decideNextRoute`、trace/工具注册表辅助、harness 报告构造器、`StateGraph` 节点定义、`runAgenticImpactWorkflow`）、`lib/metrics.js`（`computeMetrics` + `FEEDBACK_TYPES`）。
+- 依赖方向确认单向无环：`agent-graph` → `llm`/`answers`/`retrieval`/`safety`/`memory-db`/`checkpoints`；`answers` → `memory-db`（仅 `normalizeMemorySuggestion`）；`metrics` → `agent-graph`（复用 `createHarnessRunSnapshot`）+ `memory-db`/`checkpoints`/`safety`；`llm` 只依赖 `config`/`safety`。
+- 搬移过程用脚本对全部约 55 个搬移片段与原 server.js 做逐字节比对确认零逻辑改动；`node --check` 通过 server.js 与全部 `lib/*.js`，`npm test` 全绿。
+
+### W2-4 — 性能改造：store 常驻内存缓存 + SQLite 事务化 + FTS 条件重建（5ee8fc1，merge 57c99d8）
+
+- `lib/store.js`：`ensureStore()` 缓存已解析的 store 实例，用 `fs.stat` 的 mtime+size 签名判断磁盘文件是否被外部改动，未变化时跳过整份 read+JSON.parse+normalizeStore；`saveStore()` 写盘后直接刷新缓存，避免同进程内"写完自己再读一遍"。24MB 量级 `store.json` 下 `ensureStore()` 稳态耗时从 ~56ms/次降到 ~0.4ms/次（约 140 倍读加速）。新增 `flushStore()` 由 `gracefulShutdown()` 调用以等待关机时可能仍在途的写入；未采用字面意义的定时防抖落盘——`scripts/smoke-test.js` 会在子进程运行期间从测试进程直接改写 `store.json` 并期望下一次请求立刻感知，落盘时机改为异步会破坏这一跨进程契约。
+- `lib/memory-db.js`/`lib/checkpoints.js`：新增 `getCachedStatement()`/`runInSqliteTransaction()`，检索路径批量 `UPDATE` 复用单条 prepared statement；多行写操作包进 `BEGIN`/`COMMIT`（异常 `ROLLBACK`）；语句缓存随 `closeMemoryDatabase()` 一起失效。
+- `lib/memory-db.js`：FTS 索引启动时按需重建（表不存在或行数与 `memory_items` 不一致才 `DROP`+`CREATE`+rebuild），`/api/memory/status` 改用 `fs.statSync` 取 DB 文件大小而非整份 `readFileSync`。
+- `lib/config.js`：`rateBuckets` 清理改为每 1000 次请求确定性触发一次（原为概率触发）。
+- `lib/agent-graph.js`：LangGraph 回退路径对同一 query 的 `retrieveChunks` 只调用一次，结果复用于 fallback 摘要与 `related_files`。
+- reviewer 通过，附带 2 项非阻塞跟进（见下方「已知跟进项」）。
+
+### W2-5 — node:test 纯函数单测，41 例，删除 simulateRoute 镜像副本（9c96fa8，merge 20c6d98）
+
+- 新增 `test/{routing,safety,retrieval}.test.js`，直接从 `lib/agent-graph.js`、`lib/safety.js`、`lib/retrieval.js` 导入真函数做单测（`node:test` 内置运行器，零新增依赖）。`routing.test.js` 移植 `check-routing-unit-test.js` 原 13 条 `simulateRoute` 用例并补 5 条边界用例；`decideNextRoute` 依赖进程启动时按环境变量固化的 `AGENT_HITL_ENABLED` 常量，HITL-enabled 分支通过子进程注入环境变量后调用真函数验证。
+- 新增 `scripts/check-unit-tests.js`，spawn `node --test test/**/*.js` 按子进程退出码产出 `{ ok }`，被 `static-checks.js` 的 `readdir` 自动发现纳入 check 脚本清单（24 → 25 个），无需改动 `package.json`。
+- 改造 `check-routing-unit-test.js`：删除 `simulateRoute` 镜像副本及其用例执行逻辑，改为直接 import 真实 `decideNextRoute`/`ROUTE_RULES` 做存在性与结构断言，并对 `test/routing.test.js` 做覆盖回归防护（缺失任一原始场景描述则报错），避免与 `check-unit-tests.js` 重复执行同一组用例。
+- `lib/agent-graph.js` 追加 `ROUTE_RULES` 具名导出（仅导出列表变更，函数体未改）供测试与 check 脚本直接引用真实路由表。
+
+### 已知跟进项（非阻塞）
+
+- **store 缓存签名的时钟粒度盲区**：`lib/store.js` 的常驻缓存用 `fs.stat` 的 mtime+size 判断磁盘文件是否被外部改动；如果外部进程用完全相同字节数覆写 `store.json`，且覆写发生在文件系统 mtime 分辨率粒度之内（Windows 实测存在这一窗口），签名可能保持不变，导致 `ensureStore()` 继续返回缓存中的旧内容而不是重新读盘。
+- **`AUTH_REQUIRED=false` 时 GET 不走写锁，可能读到共享内存中间态**：Wave1-C 把写锁范围收窄为"非 GET 一律走锁，GET 仅在 `AUTH_REQUIRED` 且路径不是 `/api/health` 时走锁"。默认的 `AUTH_REQUIRED=false` 下 GET 请求不入队，如果与一次跨多个 `await` 边界的并发 POST 写请求重叠，理论上可能读到 store 常驻内存对象处于该次写入的部分修改中间态，而不是写入前或写入后的完整快照。
+
+---
+
 ## 2026-08-11 — 前端确定性 bug 修复 + 工程化清理 + server.js 正确性热修 + 存储基础层拆分 + 样式清理
 
 本轮由多个 worker agent 在独立分支/worktree 并行完成，逐一经 reviewer 审核通过后合并（`Wave1-A`/`Wave1-B`/`Wave1-C`/`W2-1`/`W2-2`/`F3`），全程 `npm test` 保持全绿。
