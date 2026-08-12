@@ -1,119 +1,72 @@
-import { readServerSource } from "./shared/source-reader.js";
+import { readFile } from "node:fs/promises";
+import assert from "node:assert/strict";
+import { decideNextRoute, ROUTE_RULES } from "../lib/agent-graph.js";
 
 /**
- * Unit test for decideNextRoute() routing logic.
- * Since decideNextRoute is not exported, we test it by:
- * 1. Verifying the source code contains the correct routing rules
- * 2. Simulating the routing logic locally and asserting expected outputs
+ * decideNextRoute() used to have no real unit test: server.js exported nothing,
+ * so this script carried its own hand-maintained copy of the routing logic
+ * (simulateRoute(), "mirrored from server.js") just to have something to
+ * assert against -- it tested a copy, not the real function.
+ *
+ * lib/agent-graph.js now exports the real decideNextRoute and ROUTE_RULES, and
+ * the 13 original scenarios (plus new boundary cases) live as real node:test
+ * cases in test/routing.test.js, which is executed for real via
+ * scripts/check-unit-tests.js (part of `npm test`). Re-running those same 13
+ * cases here too would just be duplicate execution of the same real function
+ * against the same inputs, so this script instead does two cheap, non-mirrored
+ * checks:
+ *   1. The real wiring exists: lib/agent-graph.js exports a decideNextRoute
+ *      function and a ROUTE_RULES.phaseMap with the correct 9 phases, checked
+ *      by importing and asserting on the actual exported values (no source
+ *      text parsing, no simulateRoute copy).
+ *   2. test/routing.test.js has not silently lost coverage of the original 13
+ *      ported scenarios (a text-presence regression guard, not a logic copy).
  */
 
-const serverSource = await readServerSource();
+assert.equal(typeof decideNextRoute, "function", "lib/agent-graph.js must export a decideNextRoute function");
 
-// Extract the ROUTE_RULES phaseMap from source
-const phaseMapMatch = serverSource.match(/phaseMap:\s*\[([\s\S]*?)\]/);
-if (!phaseMapMatch) throw new Error("Could not extract phaseMap from ROUTE_RULES");
+assert.deepEqual(ROUTE_RULES.phaseMap, [
+  "input_safety",
+  "memory",
+  "classify",
+  "retrieve",
+  "expand_context",
+  "impact_analysis",
+  "qa_plan",
+  "guardrails",
+  "synthesize"
+], "ROUTE_RULES.phaseMap must have the 9 expected phases in order");
 
-const phaseMap = phaseMapMatch[1]
-  .split(",")
-  .map((s) => s.replace(/\/\/.*$/gm, "").trim().replace(/"/g, ""))
-  .filter(Boolean);
+console.log("[OK] lib/agent-graph.js exports decideNextRoute and a 9-phase ROUTE_RULES.phaseMap.");
 
-if (phaseMap.length !== 9) {
-  throw new Error(`phaseMap should have 9 entries, got ${phaseMap.length}`);
-}
+const routingTestSource = await readFile("test/routing.test.js", "utf8");
 
-const expectedPhases = ["input_safety", "memory", "classify", "retrieve", "expand_context", "impact_analysis", "qa_plan", "guardrails", "synthesize"];
-for (let i = 0; i < expectedPhases.length; i++) {
-  if (phaseMap[i] !== expectedPhases[i]) {
-    throw new Error(`phaseMap[${i}] should be "${expectedPhases[i]}", got "${phaseMap[i]}"`);
-  }
-}
-console.log("[OK] phaseMap has correct 9 phases in order.");
-
-// ── Simulate decideNextRoute logic for various states ──
-
-// The routing function logic (mirrored from server.js for testing):
-function simulateRoute(state) {
-  const phase = state.trace.length;
-
-  // Terminal condition: finalPayload exists → END
-  if (state.finalPayload) return "__end__";
-
-  // After human_review with high risk → synthesize
-  if (state.hitlRequest?.node === "human_review" && state.riskLevel === "high") {
-    return "synthesize";
-  }
-
-  // Phases 0-8: follow linear path
-  if (phase < phaseMap.length) {
-    const nextNode = phaseMap[phase];
-
-    // Override: HITL decision exists → synthesize (skip qa_plan, checked BEFORE HITL gate)
-    if (nextNode === "qa_plan" && state.hitlRequest?.decision) {
-      return "synthesize";
-    }
-
-    // Override: high risk + HITL enabled → human_review (instead of qa_plan)
-    if (nextNode === "qa_plan" && state.riskLevel === "high" && state.hitlEnabled) {
-      return "human_review";
-    }
-
-    return nextNode;
-  }
-
-  // Phase >= 9 → END
-  return "__end__";
-}
-
-// ── Test cases ──
-const tests = [
-  // Normal flow (no HITL): should follow linear path
-  { name: "phase 0 → input_safety", state: { trace: [], riskLevel: "low", hitlEnabled: false }, expected: "input_safety" },
-  { name: "phase 1 → memory", state: { trace: [{}], riskLevel: "low", hitlEnabled: false }, expected: "memory" },
-  { name: "phase 2 → classify", state: { trace: [{}, {}], riskLevel: "low", hitlEnabled: false }, expected: "classify" },
-  { name: "phase 5 → impact_analysis", state: { trace: [{}, {}, {}, {}, {}], riskLevel: "low", hitlEnabled: false }, expected: "impact_analysis" },
-  { name: "phase 6 → qa_plan (low risk)", state: { trace: [{}, {}, {}, {}, {}, {}], riskLevel: "low", hitlEnabled: false }, expected: "qa_plan" },
-  { name: "phase 8 → synthesize", state: { trace: [{}, {}, {}, {}, {}, {}, {}, {}], riskLevel: "low", hitlEnabled: false }, expected: "synthesize" },
-  { name: "phase 9 → END", state: { trace: [{}, {}, {}, {}, {}, {}, {}, {}, {}], riskLevel: "low", hitlEnabled: false }, expected: "__end__" },
-
-  // HITL enabled + high risk: should route to human_review instead of qa_plan
-  { name: "phase 6 + high risk + HITL → human_review", state: { trace: [{}, {}, {}, {}, {}, {}], riskLevel: "high", hitlEnabled: true }, expected: "human_review" },
-
-  // HITL disabled + high risk: should still go to qa_plan (normal flow)
-  { name: "phase 6 + high risk + HITL disabled → qa_plan", state: { trace: [{}, {}, {}, {}, {}, {}], riskLevel: "high", hitlEnabled: false }, expected: "qa_plan" },
-
-  // After human_review: should route to synthesize
-  { name: "post-human_review → synthesize", state: { trace: [{}, {}, {}, {}, {}, {}, {}], riskLevel: "high", hitlEnabled: true, hitlRequest: { node: "human_review", decision: null } }, expected: "synthesize" },
-
-  // HITL resume with approve: should route to synthesize (skip qa_plan)
-  { name: "phase 6 + HITL approve → synthesize", state: { trace: [{}, {}, {}, {}, {}, {}], riskLevel: "high", hitlEnabled: true, hitlRequest: { decision: "approve" } }, expected: "synthesize" },
-  { name: "phase 6 + HITL reject → synthesize", state: { trace: [{}, {}, {}, {}, {}, {}], riskLevel: "high", hitlEnabled: true, hitlRequest: { decision: "reject" } }, expected: "synthesize" },
-
-  // Terminal: finalPayload exists → END (prevents infinite loop)
-  { name: "finalPayload set → END", state: { trace: [{}, {}, {}, {}, {}, {}, {}, {}], riskLevel: "high", hitlEnabled: true, hitlRequest: { node: "human_review" }, finalPayload: {} }, expected: "__end__" },
+const requiredScenarios = [
+  "phase 0 -> input_safety",
+  "phase 1 -> memory",
+  "phase 2 -> classify",
+  "phase 5 -> impact_analysis",
+  "phase 6 -> qa_plan (low risk)",
+  "phase 8 -> synthesize",
+  "phase 9 -> END (__end__)",
+  "phase 6 + high risk + HITL enabled -> human_review",
+  "phase 6 + high risk + HITL disabled (default) -> qa_plan",
+  "post-human_review (high risk) -> synthesize",
+  "phase 6 + HITL approve -> synthesize",
+  "phase 6 + HITL reject -> synthesize",
+  "finalPayload set -> END (__end__), prevents infinite loop"
 ];
 
-let passed = 0;
-let failed = 0;
-for (const test of tests) {
-  const result = simulateRoute(test.state);
-  if (result === test.expected) {
-    passed++;
-  } else {
-    failed++;
-    console.error(`[FAIL] ${test.name}: expected "${test.expected}", got "${result}"`);
-  }
+const missingScenarios = requiredScenarios.filter((name) => !routingTestSource.includes(name));
+if (missingScenarios.length) {
+  console.error(JSON.stringify({ missingScenarios }, null, 2));
+  throw new Error("test/routing.test.js is missing coverage for routing scenarios that check-routing-unit-test.js used to test directly via simulateRoute().");
 }
 
-console.log(`[OK] ${passed}/${tests.length} routing test cases passed.`);
-if (failed > 0) {
-  throw new Error(`${failed} routing test cases failed.`);
-}
+console.log(`[OK] test/routing.test.js covers all ${requiredScenarios.length} ported routing scenarios.`);
 
-// ── Verify source code has the finalPayload terminal condition ──
-if (!serverSource.includes("state.finalPayload")) {
-  throw new Error("decideNextRoute must check state.finalPayload for terminal condition (bug #1 fix)");
-}
-console.log("[OK] finalPayload terminal condition present in source.");
-
-console.log("[PASS] All decideNextRoute unit tests passed.");
+console.log(JSON.stringify({
+  ok: true,
+  phaseCount: ROUTE_RULES.phaseMap.length,
+  portedScenarios: requiredScenarios.length
+}, null, 2));
