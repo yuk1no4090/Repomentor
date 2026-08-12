@@ -116,6 +116,59 @@ curl http://localhost:3000/api/health
 
 未配置 API key 时，应用会回退到基于检索的确定性回答生成器。演示仍然可以正常运行，但回答会是模板化的而非 AI 生成的。UI 会显示 "AI-enhanced mode" 或 "Offline retrieval mode"，让当前所处的模式始终清晰可见。
 
+## MCP Server
+
+除了 Web UI，本项目还提供了一个 [MCP](https://modelcontextprotocol.io)（Model Context Protocol）server（`mcp-server.js`），让 Claude Code、Cursor、Claude Desktop 等 AI coding agent 可以把仓库问答、影响分析和 onboarding 计划生成作为工具（tools）通过 stdio 调用。
+
+`mcp-server.js` 是一个瘦代理：它不会直接读写 `data/store.json`，也不会直接 import `lib/` 下的模块（store 采用单进程写锁 + 常驻内存缓存的设计，第二个进程直接写入会与主服务竞争并可能丢数据）。每次工具调用都通过 `fetch` 访问已经在运行的 HTTP API，因此会复用与 Web UI 相同的安全护栏、harness 记录和认证边界。**必须先启动主服务**（`npm start` 或 `npm run dev`）；MCP server 启动时会发起一次 `GET /api/health` 探测，如果 API 不可达，会给出清晰、可操作的错误信息并退出，而不是注册一批注定无法成功调用的工具。
+
+启动方式：
+
+```bash
+npm start          # 终端一：主 HTTP API + Web UI
+npm run mcp        # 终端二：MCP stdio server
+```
+
+环境变量：
+
+| 变量 | 默认值 | 用途 |
+| --- | --- | --- |
+| `AI_PM_BASE_URL` | `http://127.0.0.1:3000` | 正在运行的 AI PM HTTP API 的 base URL。 |
+| `AI_PM_API_TOKEN` | 未设置 | 可选 token，会以 `Authorization: Bearer <token>` 的形式透传；仅当主服务以 `AI_PM_AUTH_REQUIRED=true` 运行时才需要。 |
+| `AI_PM_PROJECT_ID` | 未设置 | 可选的默认 `projectId`，配置后导入仓库完成即可省略工具调用中的该参数。 |
+
+`mcpServers` 配置示例（Claude Code 的 `.mcp.json`、Cursor 的 `mcp.json`、Claude Desktop 的 `claude_desktop_config.json` 等）：
+
+```json
+{
+  "mcpServers": {
+    "ai-pm": {
+      "command": "node",
+      "args": ["/absolute/path/to/mcp-server.js"],
+      "env": {
+        "AI_PM_BASE_URL": "http://127.0.0.1:3000",
+        "AI_PM_PROJECT_ID": "your-imported-project-id"
+      }
+    }
+  }
+}
+```
+
+暴露的工具：
+
+| MCP 工具 | 对应接口 | 使用场景 |
+| --- | --- | --- |
+| `list_projects` | `GET /api/projects` | 列出已导入的仓库（id、名称、来源、文件/代码块数、技术栈），用于获取 `projectId`。 |
+| `ask_codebase` | `POST /api/chat` | 就某个仓库的代码或行为提出问题，返回带引用的、有事实依据的回答。 |
+| `analyze_impact` | `POST /api/agent-impact` | 运行完整的多 Agent LangGraph 变更影响分析工作流：受影响模块、风险级别、测试建议、执行 trace。 |
+| `get_onboarding_plan` | `POST /api/onboarding` | 生成按角色区分的、按天规划的 onboarding 阅读计划。 |
+
+当前 API 面没有独立的仓库检索/搜索接口——检索只发生在 `/api/chat` 和 `/api/agent-impact` 内部（`lib/retrieval.js` 里的 `retrieveChunks()` 只在这两个路由处理函数内部被调用，没有单独暴露路由）——因此没有额外新增第五个纯检索类工具，以免为此在第二个进程里直接调用 `lib/`，破坏“瘦 HTTP 代理”的设计。
+
+工具的返回内容是紧凑的、面向 agent 的文本（而不是原始 JSON），明确列出文件引用、不确定性/风险级别和安全状态。工具级别的失败（未知 `projectId`、缺少必填参数、上游 HTTP 错误）会以 `isError: true` 的内容返回，说明 HTTP 状态和原因，而不是抛出协议层异常，便于调用方 agent 观察并作出反应。
+
+由 `npm run test:mcp`（`scripts/mcp-server-test.js`）覆盖：该测试会启动一个真实的服务器、导入示例仓库，通过 stdio 依次发送 `initialize` -> `tools/list` -> `tools/call` 驱动真实的 `mcp-server.js`，并验证 API 不可达时的启动报错路径。
+
 ## 说明
 
 - 运行时使用 Node.js 加 LangGraph 系列包实现 agent 工作流，并用 `@langchain/langgraph-checkpoint` 实现 checkpoint 兼容的图执行。

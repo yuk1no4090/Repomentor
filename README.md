@@ -116,6 +116,59 @@ The response shows whether the LLM is configured, which provider/model is active
 
 Without an API key, the app falls back to a deterministic retrieval-based answer generator. The demo still works, but answers will be template-based rather than AI-generated. The UI shows "AI-enhanced mode" or "Offline retrieval mode" so it is always clear which mode is active.
 
+## MCP Server
+
+Besides the web UI, this project ships an [MCP](https://modelcontextprotocol.io) (Model Context Protocol) server (`mcp-server.js`) so AI coding agents such as Claude Code, Cursor, or Claude Desktop can call repository Q&A, impact analysis, and onboarding-plan generation as tools over stdio.
+
+`mcp-server.js` is a thin proxy: it does not read `data/store.json` or import from `lib/` directly (the store uses a single-process write lock plus an in-memory cache, so a second process writing directly could race the main server and lose data). Instead every tool call goes through `fetch` against the already-running HTTP API, reusing the same safety guardrails, harness recording, and auth boundary as the web UI. **The main server must already be running** (`npm start` or `npm run dev`); on startup the MCP server sends one `GET /api/health` probe and exits with a clear, actionable error if the API is unreachable instead of registering tools that could never succeed.
+
+Run it:
+
+```bash
+npm start          # terminal 1: the main HTTP API + web UI
+npm run mcp        # terminal 2: the MCP stdio server
+```
+
+Environment variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `AI_PM_BASE_URL` | `http://127.0.0.1:3000` | Base URL of the running AI PM HTTP API. |
+| `AI_PM_API_TOKEN` | unset | Optional token sent as `Authorization: Bearer <token>`; only needed when the main server runs with `AI_PM_AUTH_REQUIRED=true`. |
+| `AI_PM_PROJECT_ID` | unset | Optional default `projectId` so tool calls can omit it once a repository has been imported. |
+
+Example `mcpServers` configuration (Claude Code `.mcp.json`, Cursor `mcp.json`, Claude Desktop `claude_desktop_config.json`, etc.):
+
+```json
+{
+  "mcpServers": {
+    "ai-pm": {
+      "command": "node",
+      "args": ["/absolute/path/to/mcp-server.js"],
+      "env": {
+        "AI_PM_BASE_URL": "http://127.0.0.1:3000",
+        "AI_PM_PROJECT_ID": "your-imported-project-id"
+      }
+    }
+  }
+}
+```
+
+Tools exposed:
+
+| MCP Tool | Wraps | When to use |
+| --- | --- | --- |
+| `list_projects` | `GET /api/projects` | List imported repositories (id, name, source, file/chunk counts, tech stack) to find a `projectId`. |
+| `ask_codebase` | `POST /api/chat` | Ask a grounded, citation-backed question about one repository's code or behavior. |
+| `analyze_impact` | `POST /api/agent-impact` | Run the full multi-agent LangGraph change-impact workflow: impacted modules, risk level, testing suggestions, execution trace. |
+| `get_onboarding_plan` | `POST /api/onboarding` | Generate a role-based, day-by-day onboarding reading plan. |
+
+The current API surface has no standalone repository-search/retrieval endpoint — retrieval only happens inside `/api/chat` and `/api/agent-impact` (`retrieveChunks()` in `lib/retrieval.js` is called from those two route handlers, not exposed on its own route) — so a fifth, retrieval-only tool was intentionally left out rather than reimplemented against `lib/` from a second process, which would break the "thin HTTP proxy" design.
+
+Tool responses are compact, agent-friendly text (not raw JSON) with an explicit file-references list, uncertainty/risk level, and safety status. Tool-level failures (unknown `projectId`, missing required argument, upstream HTTP error) come back as `isError: true` content describing the HTTP status and reason instead of a thrown protocol-level exception, so the calling agent can see and react to the failure.
+
+Covered by `npm run test:mcp` (`scripts/mcp-server-test.js`), which starts a real server, imports the sample repository, drives `mcp-server.js` over stdio through `initialize` -> `tools/list` -> `tools/call`, and verifies the startup error path when the API is unreachable.
+
 ## Notes
 
 - The runtime uses Node.js plus LangGraph packages for the agent workflow and `@langchain/langgraph-checkpoint` for checkpoint-compatible graph execution.

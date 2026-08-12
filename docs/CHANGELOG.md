@@ -5,6 +5,18 @@
 
 ---
 
+## 2026-08-12 — 新增 MCP Server（仓库问答/影响分析/onboarding 暴露为 AI agent 可调用的 MCP tools）
+
+作品集新亮点：产品同时服务人类 Web UI 和 AI agent。架构决策为瘦代理而非直接读写 store——`lib/store.js` 是单进程写锁 + 常驻内存缓存设计，第二个进程直接写会与主服务竞争并可能丢数据；走 HTTP API 则复用现有 guardrails/harness 记录/鉴权。
+
+- 新增 `mcp-server.js`：基于官方 `@modelcontextprotocol/sdk`（Node，stdio transport）的瘦代理，不直接 import `lib/` 任何模块。全部工具调用通过 `fetch` 打到已经在运行的本地 HTTP API（`AI_PM_BASE_URL`，默认 `http://127.0.0.1:3000`；可选 `AI_PM_API_TOKEN` 透传为 `Authorization: Bearer`；可选 `AI_PM_PROJECT_ID` 作为默认项目）。启动时探测一次 `GET /api/health`，不可达时打印可操作的错误指引（提示 `npm start`）并以退出码 1 结束，而不是注册一批注定调用失败的工具。
+- 暴露 4 个工具，均为对应 API 端点的直接映射：`list_projects`（`GET /api/projects`）、`ask_codebase`（`POST /api/chat`）、`analyze_impact`（`POST /api/agent-impact`，完整多 Agent LangGraph 影响分析工作流）、`get_onboarding_plan`（`POST /api/onboarding`）。当前 API 面没有独立的检索/搜索端点——`retrieveChunks()`（`lib/retrieval.js`）只在 `/api/chat`、`/api/agent-impact` 内部被调用——因此按计划未新增第五个纯检索工具。每个工具的 `description` 面向调用它的 AI agent 撰写，说明与其它工具的选用边界（例如 `ask_codebase` 的 `kind=impact` 与 `analyze_impact` 的差异）。响应转成紧凑文本（含文件引用列表、不确定性/风险级别、安全状态），出错时返回带 HTTP 状态与错误码的 `isError: true` 内容而非抛裸异常。
+- `package.json` 新增依赖 `@modelcontextprotocol/sdk@^1.30.0`（本仓库刻意精简依赖策略下的一次有意扩项，是官方 MCP TypeScript SDK，随附约 92 个传递依赖，其中 `zod` 作为 SDK 自身依赖被间接安装，`mcp-server.js` 未直接 import 它——改用低层 `Server`/`StdioServerTransport` API + 手写 JSON Schema 定义 `inputSchema`，避免再引入一个显式的顶层依赖）；新增 `npm run mcp` 与 `npm run test:mcp` 脚本，`test:mcp` 追加进 `npm test` 串联链末尾；`scripts/check-runtime-deps.js` 依赖白名单同步加入新依赖。
+- 新增 `scripts/mcp-server-test.js`：仿照 `scripts/smoke-test.js` 模式拉起真实 `server.js`（临时端口 + 隔离 `DATA_DIR`）并导入 sample 项目，再以子进程方式启动 `mcp-server.js`，通过手写的、模拟 `StdioServerTransport` 换行分帧协议的 JSON-RPC 客户端完成 `initialize` → `notifications/initialized` → `tools/list` → `tools/call` 全链路实调。断言：工具数量恰为 4 且名称集合匹配、`ask_codebase` 返回非空文件引用列表、`analyze_impact` 返回 harness run 元数据、未知工具名触发协议级 RPC 错误、缺少必填参数返回 `isError: true` 而非协议异常，以及主服务未启动时的启动报错路径（子进程退出码 1，stderr 包含可操作的 `npm start` 提示）。
+- README.md / README.zh-CN.md 各新增「MCP Server」小节：启动方式（`npm start` + `npm run mcp` 两个终端）、环境变量表、Claude Code/Cursor/Claude Desktop 的 `mcpServers` 配置 JSON 示例、工具清单表（工具名/映射端点/使用场景）。
+
+---
+
 ## 2026-08-12 — 前端 i18n/状态修复 + 领域层拆分完成（server.js → 1213 行）+ 性能改造 + node:test 单元测试
 
 本轮同样由多个 worker agent 在独立分支/worktree 并行完成，逐一经 reviewer 审核通过后合并（`F1`/`F2`/`W2-3a`/`W2-3b`/`W2-4`/`W2-5`），全程 `npm test` 保持全绿。
