@@ -15,7 +15,8 @@ const packageLock = JSON.parse(packageLockRaw);
 const requiredDependencies = [
   "@langchain/core",
   "@langchain/langgraph",
-  "@langchain/langgraph-checkpoint"
+  "@langchain/langgraph-checkpoint",
+  "@modelcontextprotocol/sdk"
 ];
 
 const missingPackageDeps = requiredDependencies.filter((name) => {
