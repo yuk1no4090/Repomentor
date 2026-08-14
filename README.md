@@ -1,5 +1,9 @@
 [English](README.md) | [中文](README.zh-CN.md)
 
+<p align="center">
+  <img src="docs/assets/banner.svg" alt="AI Developer Onboarding Copilot — cited answers, impact briefings, built-in evals" width="920">
+</p>
+
 # AI Developer Onboarding Copilot
 
 _An MVP web app for helping new engineers, technical PMs, and QA understand a repository with AI-style repository summaries, codebase Q&A, impact analysis, an agentic impact workflow, onboarding plans, citations, feedback, and evaluation metrics._
@@ -100,6 +104,8 @@ export OPENAI_MODEL=gpt-4o-mini
 
 ## Features
 
+<img src="docs/assets/mascot-explore.svg" align="right" width="132" alt="Robot mascot exploring a repository">
+
 - Repository import from public GitHub URL, ZIP upload, or built-in sample repository.
 - Project overview with inferred stack, directory tree, core modules, README summary, and recommended first reads.
 - Import-time safety review with prompt-risk and sensitive-content file counts in the project overview.
@@ -114,6 +120,8 @@ export OPENAI_MODEL=gpt-4o-mini
 - Evaluation dashboard with total questions, agent runs, helpful rate, citation coverage, citation status distribution, uncertainty rate, negative feedback, high-risk questions, guardrail hits, memory confirmations, memory status distribution, recent memory events, fallback runs, harness snapshot count, average response time, safety risk and status distribution, import safety risk/status, recent safety events, harness runtime, model mode, tool policy, budget status, schema status, LLM usage, and trace tool distribution, fallback reason distribution, recent harness runs, and recent feedback correlated with harness run ids.
 
 ## MCP Server
+
+<img src="docs/assets/mascot-quality.svg" align="right" width="132" alt="Robot mascot holding a quality checklist">
 
 Besides the web UI, this project ships an [MCP](https://modelcontextprotocol.io) (Model Context Protocol) server (`mcp-server.js`) so AI coding agents such as Claude Code, Cursor, or Claude Desktop can call repository Q&A, impact analysis, and onboarding-plan generation as tools over stdio.
 

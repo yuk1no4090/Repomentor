@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-label="Robot mascot exploring a repository">
+  <!-- ground shadow -->
+  <ellipse cx="120" cy="220" rx="72" ry="9" fill="#6366f1" opacity="0.18"/>
+
+  <!-- folder it stands on -->
+  <g transform="translate(56,168)">
+    <path d="M0 14 q0 -8 8 -8 h30 l10 -8 h72 q8 0 8 8 v34 q0 8 -8 8 h-112 q-8 0 -8 -8 z" fill="#818cf8"/>
+    <rect x="0" y="16" width="128" height="32" rx="8" fill="#a5b4fc"/>
+  </g>
+
+  <!-- antenna -->
+  <line x1="112" y1="26" x2="112" y2="46" stroke="#a5b4fc" stroke-width="6" stroke-linecap="round"/>
+  <circle cx="112" cy="20" r="9" fill="#fbbf24"/>
+
+  <!-- head -->
+  <rect x="66" y="46" width="92" height="70" rx="22" fill="#6366f1"/>
+  <rect x="77" y="58" width="70" height="46" rx="14" fill="#312e81"/>
+  <circle cx="98" cy="78" r="8" fill="#ffffff"/>
+  <circle cx="126" cy="78" r="8" fill="#ffffff"/>
+  <circle cx="100" cy="80" r="3.5" fill="#312e81"/>
+  <circle cx="128" cy="80" r="3.5" fill="#312e81"/>
+  <path d="M104 92 Q112 98 120 92" stroke="#ffffff" stroke-width="3" fill="none" stroke-linecap="round"/>
+  <ellipse cx="86" cy="90" rx="5" ry="3.5" fill="#f9a8d4"/>
+  <ellipse cx="138" cy="90" rx="5" ry="3.5" fill="#f9a8d4"/>
+  <rect x="55" y="70" width="11" height="24" rx="5.5" fill="#a5b4fc"/>
+  <rect x="158" y="70" width="11" height="24" rx="5.5" fill="#a5b4fc"/>
+
+  <!-- body -->
+  <rect x="74" y="122" width="76" height="58" rx="18" fill="#6366f1"/>
+  <g font-family="ui-monospace, Consolas, monospace" font-size="17" font-weight="700" fill="#e0e7ff">
+    <text x="92" y="156">&lt;/&gt;</text>
+  </g>
+
+  <!-- left arm on hip -->
+  <path d="M74 136 Q52 144 56 162" stroke="#6366f1" stroke-width="12" fill="none" stroke-linecap="round"/>
+
+  <!-- right arm with magnifier -->
+  <path d="M150 132 Q176 122 184 100" stroke="#6366f1" stroke-width="12" fill="none" stroke-linecap="round"/>
+  <g transform="translate(168,54)">
+    <circle cx="18" cy="18" r="20" fill="#eef2ff" stroke="#fbbf24" stroke-width="6"/>
+    <text x="10" y="26" font-family="ui-monospace, Consolas, monospace" font-size="19" font-weight="700" fill="#4f46e5">{ }</text>
+    <line x1="32" y1="34" x2="44" y2="48" stroke="#fbbf24" stroke-width="8" stroke-linecap="round"/>
+  </g>
+
+  <!-- legs -->
+  <rect x="88" y="180" width="14" height="14" rx="6" fill="#a5b4fc"/>
+  <rect x="122" y="180" width="14" height="14" rx="6" fill="#a5b4fc"/>
+
+  <!-- sparkles -->
+  <path d="M42 44 l4 9 9 4 -9 4 -4 9 -4 -9 -9 -4 9 -4 z" fill="#fbbf24" opacity="0.85"/>
+  <path d="M204 150 l3 7 7 3 -7 3 -3 7 -3 -7 -7 -3 7 -3 z" fill="#c4b5fd" opacity="0.9"/>
+</svg>

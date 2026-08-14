@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-label="Robot mascot holding a quality checklist">
+  <ellipse cx="120" cy="221" rx="70" ry="9" fill="#7c3aed" opacity="0.18"/>
+
+  <!-- antenna -->
+  <line x1="120" y1="24" x2="120" y2="44" stroke="#c4b5fd" stroke-width="6" stroke-linecap="round"/>
+  <circle cx="120" cy="18" r="9" fill="#34d399"/>
+
+  <!-- head -->
+  <rect x="74" y="44" width="92" height="70" rx="22" fill="#7c3aed"/>
+  <rect x="85" y="56" width="70" height="46" rx="14" fill="#3b0764"/>
+  <path d="M100 74 q6 -8 12 0" stroke="#ffffff" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+  <path d="M128 74 q6 -8 12 0" stroke="#ffffff" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+  <path d="M110 90 Q120 97 130 90" stroke="#ffffff" stroke-width="3" fill="none" stroke-linecap="round"/>
+  <ellipse cx="94" cy="88" rx="5" ry="3.5" fill="#f9a8d4"/>
+  <ellipse cx="146" cy="88" rx="5" ry="3.5" fill="#f9a8d4"/>
+  <rect x="63" y="68" width="11" height="24" rx="5.5" fill="#c4b5fd"/>
+  <rect x="166" y="68" width="11" height="24" rx="5.5" fill="#c4b5fd"/>
+
+  <!-- body -->
+  <rect x="82" y="120" width="76" height="58" rx="18" fill="#7c3aed"/>
+  <circle cx="120" cy="149" r="13" fill="#3b0764"/>
+  <path d="M114 149 l4 5 9 -10" stroke="#34d399" stroke-width="3.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- clipboard held by both arms -->
+  <path d="M82 134 Q56 140 50 118" stroke="#7c3aed" stroke-width="12" fill="none" stroke-linecap="round"/>
+  <path d="M158 134 Q184 140 190 118" stroke="#7c3aed" stroke-width="12" fill="none" stroke-linecap="round"/>
+  <g transform="translate(28,52)">
+    <rect x="0" y="10" width="52" height="64" rx="8" fill="#eef2ff"/>
+    <rect x="16" y="4" width="20" height="12" rx="5" fill="#a5b4fc"/>
+    <path d="M8 30 l5 6 10 -11" stroke="#34d399" stroke-width="3.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <line x1="28" y1="28" x2="45" y2="28" stroke="#a5b4fc" stroke-width="3" stroke-linecap="round"/>
+    <path d="M8 46 l5 6 10 -11" stroke="#34d399" stroke-width="3.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <line x1="28" y1="44" x2="45" y2="44" stroke="#a5b4fc" stroke-width="3" stroke-linecap="round"/>
+    <path d="M8 62 l5 6 10 -11" stroke="#34d399" stroke-width="3.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <line x1="28" y1="60" x2="45" y2="60" stroke="#a5b4fc" stroke-width="3" stroke-linecap="round"/>
+  </g>
+
+  <!-- trophy in right hand -->
+  <g transform="translate(178,84)">
+    <path d="M8 0 h24 v10 q0 14 -12 14 q-12 0 -12 -14 z" fill="#fbbf24"/>
+    <path d="M4 2 q-8 2 -2 12 q3 5 8 4" stroke="#fbbf24" stroke-width="4" fill="none"/>
+    <path d="M36 2 q8 2 2 12 q-3 5 -8 4" stroke="#fbbf24" stroke-width="4" fill="none"/>
+    <rect x="15" y="24" width="10" height="8" fill="#f59e0b"/>
+    <rect x="9" y="32" width="22" height="6" rx="3" fill="#f59e0b"/>
+  </g>
+
+  <!-- legs -->
+  <rect x="96" y="178" width="14" height="14" rx="6" fill="#c4b5fd"/>
+  <rect x="130" y="178" width="14" height="14" rx="6" fill="#c4b5fd"/>
+
+  <path d="M198 44 l4 9 9 4 -9 4 -4 9 -4 -9 -9 -4 9 -4 z" fill="#34d399" opacity="0.85"/>
+  <path d="M36 150 l3 7 7 3 -7 3 -3 7 -3 -7 -7 -3 7 -3 z" fill="#fbbf24" opacity="0.9"/>
+</svg>

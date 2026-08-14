@@ -1,5 +1,9 @@
 [English](README.md) | [中文](README.zh-CN.md)
 
+<p align="center">
+  <img src="docs/assets/banner.svg" alt="AI Developer Onboarding Copilot — 带引用的问答、影响简报、内置评估" width="920">
+</p>
+
 # AI Developer Onboarding Copilot
 
 _一个帮助新工程师、技术 PM 和 QA 快速理解代码仓库的 MVP Web 应用：提供 AI 风格的仓库摘要、代码问答、影响分析、agentic 影响分析工作流、onboarding 计划、引用、反馈以及评估指标。_
@@ -100,6 +104,8 @@ export OPENAI_MODEL=gpt-4o-mini
 
 ## 功能特性
 
+<img src="docs/assets/mascot-explore.svg" align="right" width="132" alt="探索仓库的机器人吉祥物">
+
 - 支持从公开 GitHub URL、ZIP 上传或内置示例仓库导入项目。
 - 项目概览包含推断出的技术栈、目录树、核心模块、README 摘要，以及推荐的首批阅读文件。
 - 导入时的安全审查会在项目概览中给出 prompt 风险和敏感内容文件的计数。
@@ -114,6 +120,8 @@ export OPENAI_MODEL=gpt-4o-mini
 - 评估 dashboard 展示总问题数、agent 运行次数、有帮助率、引用覆盖率、引用状态分布、不确定率、负面反馈、高风险问题、guardrail 命中数、记忆确认数、记忆状态分布、最近记忆事件、fallback 运行数、harness 快照数、平均响应时间、安全风险与状态分布、导入安全风险/状态、最近安全事件、harness runtime、model mode、工具策略、预算状态、schema 状态、LLM 用量、trace 工具分布、fallback 原因分布、最近 harness run，以及与 harness run id 关联的最近反馈。
 
 ## MCP Server
+
+<img src="docs/assets/mascot-quality.svg" align="right" width="132" alt="拿着质检清单的机器人吉祥物">
 
 除了 Web UI，本项目还提供了一个 [MCP](https://modelcontextprotocol.io)（Model Context Protocol）server（`mcp-server.js`），让 Claude Code、Cursor、Claude Desktop 等 AI coding agent 可以把仓库问答、影响分析和 onboarding 计划生成作为工具（tools）通过 stdio 调用。
 
