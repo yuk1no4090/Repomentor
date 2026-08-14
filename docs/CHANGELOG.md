@@ -5,6 +5,17 @@
 
 ---
 
+## 2026-08-14 — README 作品集化：定位头部 + Mermaid 架构图 + 双语重排
+
+背景：本仓库是公开的求职作品集，面试官平均停留 2 分钟，但原 README（英文 310 行/中文对应镜像）是纯运维手册结构（Run/Test/Config/Docker/MCP/Notes/Features/Architecture/API），前 50 行看不出"这是什么、为什么值得看、质量如何"。本轮改造把定位信息前置，内容全部保留、只做移位与新增。
+
+- README.md / README.zh-CN.md 顶部新增头部区块：一句话定位 + 2 句问题陈述（口径取自 [docs/POSITIONING.md](docs/POSITIONING.md) 与 [docs/PRD.md](docs/PRD.md) 第 15 节，未发明新定位）、4 条亮点（LangGraph 多 Agent 编排/supervisor 路由/HITL/checkpoint 续跑；面向 PM/QA 的改动影响简报；产品内置 AI 质量看板；MCP Server 4 tools）、一行经核实的质量证据（41 条 `node:test` 单测、25 项静态检查门禁、9 套运行时黑盒测试套件、无需 API key 端到端运行）、指向 POSITIONING/AGENT_RUNTIME_ARCHITECTURE/PRD/CHANGELOG 的导航行。
+- 新增「Architecture」（中文「架构」）小节，含两张 GitHub 原生渲染的 Mermaid 图：一张按 `server.js` 路由层 → `lib/` 12 模块（config/存储/领域三组）→ 数据层（`data/store.json`/`data/memory.sqlite`）分层，事实来源为 [docs/AGENT_RUNTIME_ARCHITECTURE.md 的 Code Organization 小节](docs/AGENT_RUNTIME_ARCHITECTURE.md#code-organization)；另一张为简化版 Agent 工作流图（分类 → 检索 → 影响分析 → 安全护栏 → 合成），标出高风险变更触发 HITL（`human_review` 暂停、经 `POST /api/langgraph-resume` 续跑）与 checkpoint（MemorySaver → SQLite `langgraph_checkpoints`）的位置。
+- 正文重排为：定位/亮点/架构图 → Quick Start（原 Run 小节改名，追加"无需 API key + 3 个可选环境变量"提示）→ Features（原 Current MVP Features 改名）→ MCP Server → Operations & Reference（完整 Test/Runtime Configuration/Docker Deployment/Notes/Agent Runtime Architecture/API Surface 原样顺延后移，仅移位不删减）。
+- 改造前逐条提取了 `scripts/check-api-docs.js`、`check-runtime-deps.js`、`check-architecture-docs.js`、`check-operations-docs.js`、`check-agent-benchmark.js`、`check-agent-contract.js`、`check-langgraph-checkpoints.js`、`check-long-term-memory.js`、`check-memory-compaction.js`、`check-safety-guardrails.js`、`check-safety-redteam.js`、`check-smoke-reliability.js`、`check-tool-policy.js`、`check-ui-acceptance.js`、`check-auth-boundary.js`、`check-user-memory-isolation.js` 对 README.md 的全部逐字子串/路由表断言，确认这些断言都是位置无关的 `String.includes()` 或 `matchAll()` 扫描；采用"只做整段搬移，不改动任何既有字符"的重排策略，因此无需改动任何 `check-*.js` 断言。`npm test` 全量回归通过（10 个子命令、41 条单测全绿）。
+
+---
+
 ## 2026-08-12 — 新增 MCP Server（仓库问答/影响分析/onboarding 暴露为 AI agent 可调用的 MCP tools）
 
 作品集新亮点：产品同时服务人类 Web UI 和 AI agent。架构决策为瘦代理而非直接读写 store——`lib/store.js` 是单进程写锁 + 常驻内存缓存设计，第二个进程直接写会与主服务竞争并可能丢数据；走 HTTP API 则复用现有 guardrails/harness 记录/鉴权。

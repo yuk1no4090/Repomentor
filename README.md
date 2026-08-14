@@ -2,9 +2,86 @@
 
 # AI Developer Onboarding Copilot
 
-An MVP web app for helping new engineers, technical PMs, and QA understand a repository with AI-style repository summaries, codebase Q&A, impact analysis, an agentic impact workflow, onboarding plans, citations, feedback, and evaluation metrics.
+_An MVP web app for helping new engineers, technical PMs, and QA understand a repository with AI-style repository summaries, codebase Q&A, impact analysis, an agentic impact workflow, onboarding plans, citations, feedback, and evaluation metrics._
 
-## Run
+**A codebase-understanding copilot for new engineers, technical PMs, and QA.** Import a repository and get citation-backed code Q&A, a change-impact briefing written for people who don't read code, and a personalized onboarding plan — backed by an in-product AI quality dashboard you can audit instead of having to trust.
+
+New hires typically take days to weeks to build working context on an unfamiliar codebase, documentation goes stale, and knowledge stays scattered across people's heads. Product managers and QA are usually locked out of impact-analysis tooling entirely, so they can't tell what a change will touch or what to test before it ships.
+
+**Highlights**
+
+- **Multi-agent LangGraph orchestration** — a supervisor node dynamically routes between classify / retrieve / impact-analysis / QA-planning / synthesis, with human-in-the-loop approval gating high-risk changes and MemorySaver checkpoints that let a run resume mid-graph instead of restarting.
+- **Change-impact briefings for PMs and QA** — one plain-language requirement in, impacted modules / business paths / risk level / testing focus out, in language a non-engineer can act on. Backed by market research on where this gap actually exists (see [docs/POSITIONING.md](docs/POSITIONING.md)).
+- **An AI quality dashboard built into the product, not bolted on** — citation coverage, answer-schema compliance, and guardrail hit rates are first-class product UI instead of an external LLMOps tool a PM has to ask an engineer to open.
+- **An MCP Server** exposing 4 tools (repository Q&A, impact analysis, onboarding plans, project listing) so AI coding agents such as Claude Code or Cursor can consume this project's analysis directly.
+
+**Quality bar:** 41 `node:test` unit tests, 25 static-check gates, and 9 runtime black-box test suites — all running end-to-end with zero API key required (`npm test`).
+
+More: [docs/POSITIONING.md](docs/POSITIONING.md) (positioning + market validation) · [docs/AGENT_RUNTIME_ARCHITECTURE.md](docs/AGENT_RUNTIME_ARCHITECTURE.md) (implementation boundary) · [docs/PRD.md](docs/PRD.md) (requirements + scope decisions) · [docs/CHANGELOG.md](docs/CHANGELOG.md) (development log)
+
+## Architecture
+
+**Module layering.** `server.js` is a thin ~1,200-line HTTP routing layer; all application logic lives in 12 single-purpose modules under `lib/`, grouped below by config / storage / domain. Dependencies between `lib/` modules are unidirectional and acyclic — see [docs/AGENT_RUNTIME_ARCHITECTURE.md § Code Organization](docs/AGENT_RUNTIME_ARCHITECTURE.md#code-organization) for the full dependency list.
+
+```mermaid
+flowchart TD
+    HTTP["server.js<br/>HTTP routing layer (~1,200 lines)<br/>handleApi / handleApiUnlocked / serveStatic<br/>bootstrap: setStoreRecordNormalizers(), setCheckpointCollaborators()"]
+
+    subgraph LIB["lib/ — 12 single-purpose modules"]
+        direction LR
+        subgraph CFG["config"]
+            C1["lib/config.js"]
+        end
+        subgraph STORE["storage"]
+            S1["lib/store.js"]
+            S2["lib/memory-db.js"]
+            S3["lib/checkpoints.js"]
+        end
+        subgraph DOMAIN["domain"]
+            D1["lib/auth.js"]
+            D2["lib/importer.js"]
+            D3["lib/retrieval.js"]
+            D4["lib/safety.js"]
+            D5["lib/llm.js"]
+            D6["lib/answers.js"]
+            D7["lib/agent-graph.js"]
+            D8["lib/metrics.js"]
+        end
+    end
+
+    DATA1[("data/store.json")]
+    DATA2[("data/memory.sqlite")]
+
+    HTTP --> LIB
+    CFG --> STORE
+    CFG --> DOMAIN
+    DOMAIN --> STORE
+    S1 --> DATA1
+    S2 --> DATA2
+    S3 --> DATA2
+```
+
+**Agent workflow.** The default `AGENT_GRAPH_MODE=supervisor` graph routes dynamically through more steps than shown here (see [docs/AGENT_RUNTIME_ARCHITECTURE.md § Graph Nodes](docs/AGENT_RUNTIME_ARCHITECTURE.md#graph-nodes)); this is the core path with HITL and checkpoint positions marked:
+
+```mermaid
+flowchart LR
+    Classify["Classify"] --> Retrieve["Retrieve"]
+    Retrieve --> Impact["Impact Analysis"]
+    Impact -->|"high risk + AGENT_HITL_ENABLED"| HITL{{"human_review<br/>(paused — resume via POST /api/langgraph-resume)"}}
+    Impact -->|"else"| Guardrails["Safety Guardrails"]
+    HITL -->|"decision: approve"| Guardrails
+    HITL -->|"decision: reject"| Stop["Run ends (rejected)"]
+    Guardrails --> Synthesize["Synthesize"]
+
+    CP[("Checkpoint<br/>MemorySaver → SQLite<br/>langgraph_checkpoints")]
+    Classify -.-> CP
+    Retrieve -.-> CP
+    Impact -.-> CP
+    Guardrails -.-> CP
+    Synthesize -.-> CP
+```
+
+## Quick Start
 
 ```bash
 npm install
@@ -12,6 +89,86 @@ npm run dev
 ```
 
 Then open `http://localhost:3000`.
+
+No API key is required for this Quick Start — the app runs fully offline with a deterministic retrieval-based answer generator. To turn on AI-enhanced answers, set three environment variables (full list in [Runtime Configuration](#runtime-configuration)):
+
+```bash
+export OPENAI_API_KEY=sk-...
+export OPENAI_BASE_URL=https://api.openai.com   # or any OpenAI-compatible provider
+export OPENAI_MODEL=gpt-4o-mini
+```
+
+## Features
+
+- Repository import from public GitHub URL, ZIP upload, or built-in sample repository.
+- Project overview with inferred stack, directory tree, core modules, README summary, and recommended first reads.
+- Import-time safety review with prompt-risk and sensitive-content file counts in the project overview.
+- Repository Q&A with related files, uncertainty, suggested next questions, feedback buttons, lightweight harness metadata, safety status, guardrail details, and pending memory suggestions.
+- Impact analysis with impacted modules, risk level, testing suggestions, and open questions.
+- Agent Workflow tab backed by a LangGraph StateGraph with classifier, retriever, context expansion, impact analysis, QA planning, memory, safety guardrails, structured synthesis, and MemorySaver checkpointing.
+- Onboarding plans run through a lightweight deterministic harness with trace, safety, guardrails, citations, and pending memory suggestions.
+- Optional token-bound auth with user, role, scope, local store-backed tokens, and audit metadata. `/api/auth/me` returns the current resolved identity, `/api/auth/users` lists configured and local users, `POST /api/auth/users` creates a local user and returns a one-time visible token, `POST /api/auth/users/disable` disables a local user and its tokens, and `/api/auth/events` lists recent auth decisions without exposing token values. This is not a password-login or session-management system.
+- User preference memory suggestions that require explicit confirmation before being saved. Confirmed preferences are scoped by `userId`, defaulting to `local-user` for local/backward-compatible use. API clients can pass `userId` in JSON bodies or the `X-User-Id` header. Confirmed preferences can shape both impact analysis and ordinary Q&A emphasis; confirmed memory is also written to SQLite long-term memory for searchable reuse across later Agent Workflow and Direct Chat runs. Memory suggestions carry user and project ownership so confirmation/ignore actions can verify the active boundary. Ignored suggestions suppress the same key/value suggestion from being repeated for that user. The Copilot inspector includes a lightweight preference and long-term memory manager for viewing, removing one preference value, or clearing all preferences.
+- Application-level AI safety checks for prompt injection, system/developer prompt leakage requests, secret requests, read-only tool boundaries, retrieved sensitive content, citation validation, uncited impact areas, sensitive output, and overconfidence.
+- A centralized safety policy is exposed as `safety_policy` on `/api/health` and covered by red-team tests.
+- Evaluation dashboard with total questions, agent runs, helpful rate, citation coverage, citation status distribution, uncertainty rate, negative feedback, high-risk questions, guardrail hits, memory confirmations, memory status distribution, recent memory events, fallback runs, harness snapshot count, average response time, safety risk and status distribution, import safety risk/status, recent safety events, harness runtime, model mode, tool policy, budget status, schema status, LLM usage, and trace tool distribution, fallback reason distribution, recent harness runs, and recent feedback correlated with harness run ids.
+
+## MCP Server
+
+Besides the web UI, this project ships an [MCP](https://modelcontextprotocol.io) (Model Context Protocol) server (`mcp-server.js`) so AI coding agents such as Claude Code, Cursor, or Claude Desktop can call repository Q&A, impact analysis, and onboarding-plan generation as tools over stdio.
+
+`mcp-server.js` is a thin proxy: it does not read `data/store.json` or import from `lib/` directly (the store uses a single-process write lock plus an in-memory cache, so a second process writing directly could race the main server and lose data). Instead every tool call goes through `fetch` against the already-running HTTP API, reusing the same safety guardrails, harness recording, and auth boundary as the web UI. **The main server must already be running** (`npm start` or `npm run dev`); on startup the MCP server sends one `GET /api/health` probe and exits with a clear, actionable error if the API is unreachable instead of registering tools that could never succeed.
+
+Run it:
+
+```bash
+npm start          # terminal 1: the main HTTP API + web UI
+npm run mcp        # terminal 2: the MCP stdio server
+```
+
+Environment variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `AI_PM_BASE_URL` | `http://127.0.0.1:3000` | Base URL of the running AI PM HTTP API. |
+| `AI_PM_API_TOKEN` | unset | Optional token sent as `Authorization: Bearer <token>`; only needed when the main server runs with `AI_PM_AUTH_REQUIRED=true`. |
+| `AI_PM_PROJECT_ID` | unset | Optional default `projectId` so tool calls can omit it once a repository has been imported. |
+
+Example `mcpServers` configuration (Claude Code `.mcp.json`, Cursor `mcp.json`, Claude Desktop `claude_desktop_config.json`, etc.):
+
+```json
+{
+  "mcpServers": {
+    "ai-pm": {
+      "command": "node",
+      "args": ["/absolute/path/to/mcp-server.js"],
+      "env": {
+        "AI_PM_BASE_URL": "http://127.0.0.1:3000",
+        "AI_PM_PROJECT_ID": "your-imported-project-id"
+      }
+    }
+  }
+}
+```
+
+Tools exposed:
+
+| MCP Tool | Wraps | When to use |
+| --- | --- | --- |
+| `list_projects` | `GET /api/projects` | List imported repositories (id, name, source, file/chunk counts, tech stack) to find a `projectId`. |
+| `ask_codebase` | `POST /api/chat` | Ask a grounded, citation-backed question about one repository's code or behavior. |
+| `analyze_impact` | `POST /api/agent-impact` | Run the full multi-agent LangGraph change-impact workflow: impacted modules, risk level, testing suggestions, execution trace. |
+| `get_onboarding_plan` | `POST /api/onboarding` | Generate a role-based, day-by-day onboarding reading plan. |
+
+The current API surface has no standalone repository-search/retrieval endpoint — retrieval only happens inside `/api/chat` and `/api/agent-impact` (`retrieveChunks()` in `lib/retrieval.js` is called from those two route handlers, not exposed on its own route) — so a fifth, retrieval-only tool was intentionally left out rather than reimplemented against `lib/` from a second process, which would break the "thin HTTP proxy" design.
+
+Tool responses are compact, agent-friendly text (not raw JSON) with an explicit file-references list, uncertainty/risk level, and safety status. Tool-level failures (unknown `projectId`, missing required argument, upstream HTTP error) come back as `isError: true` content describing the HTTP status and reason instead of a thrown protocol-level exception, so the calling agent can see and react to the failure.
+
+Covered by `npm run test:mcp` (`scripts/mcp-server-test.js`), which starts a real server, imports the sample repository, drives `mcp-server.js` over stdio through `initialize` -> `tools/list` -> `tools/call`, and verifies the startup error path when the API is unreachable.
+
+## Operations & Reference
+
+The rest of this document covers the full test suite, runtime configuration, Docker deployment, the API surface, and other operational detail.
 
 ## Test
 
@@ -116,80 +273,12 @@ The response shows whether the LLM is configured, which provider/model is active
 
 Without an API key, the app falls back to a deterministic retrieval-based answer generator. The demo still works, but answers will be template-based rather than AI-generated. The UI shows "AI-enhanced mode" or "Offline retrieval mode" so it is always clear which mode is active.
 
-## MCP Server
-
-Besides the web UI, this project ships an [MCP](https://modelcontextprotocol.io) (Model Context Protocol) server (`mcp-server.js`) so AI coding agents such as Claude Code, Cursor, or Claude Desktop can call repository Q&A, impact analysis, and onboarding-plan generation as tools over stdio.
-
-`mcp-server.js` is a thin proxy: it does not read `data/store.json` or import from `lib/` directly (the store uses a single-process write lock plus an in-memory cache, so a second process writing directly could race the main server and lose data). Instead every tool call goes through `fetch` against the already-running HTTP API, reusing the same safety guardrails, harness recording, and auth boundary as the web UI. **The main server must already be running** (`npm start` or `npm run dev`); on startup the MCP server sends one `GET /api/health` probe and exits with a clear, actionable error if the API is unreachable instead of registering tools that could never succeed.
-
-Run it:
-
-```bash
-npm start          # terminal 1: the main HTTP API + web UI
-npm run mcp        # terminal 2: the MCP stdio server
-```
-
-Environment variables:
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `AI_PM_BASE_URL` | `http://127.0.0.1:3000` | Base URL of the running AI PM HTTP API. |
-| `AI_PM_API_TOKEN` | unset | Optional token sent as `Authorization: Bearer <token>`; only needed when the main server runs with `AI_PM_AUTH_REQUIRED=true`. |
-| `AI_PM_PROJECT_ID` | unset | Optional default `projectId` so tool calls can omit it once a repository has been imported. |
-
-Example `mcpServers` configuration (Claude Code `.mcp.json`, Cursor `mcp.json`, Claude Desktop `claude_desktop_config.json`, etc.):
-
-```json
-{
-  "mcpServers": {
-    "ai-pm": {
-      "command": "node",
-      "args": ["/absolute/path/to/mcp-server.js"],
-      "env": {
-        "AI_PM_BASE_URL": "http://127.0.0.1:3000",
-        "AI_PM_PROJECT_ID": "your-imported-project-id"
-      }
-    }
-  }
-}
-```
-
-Tools exposed:
-
-| MCP Tool | Wraps | When to use |
-| --- | --- | --- |
-| `list_projects` | `GET /api/projects` | List imported repositories (id, name, source, file/chunk counts, tech stack) to find a `projectId`. |
-| `ask_codebase` | `POST /api/chat` | Ask a grounded, citation-backed question about one repository's code or behavior. |
-| `analyze_impact` | `POST /api/agent-impact` | Run the full multi-agent LangGraph change-impact workflow: impacted modules, risk level, testing suggestions, execution trace. |
-| `get_onboarding_plan` | `POST /api/onboarding` | Generate a role-based, day-by-day onboarding reading plan. |
-
-The current API surface has no standalone repository-search/retrieval endpoint — retrieval only happens inside `/api/chat` and `/api/agent-impact` (`retrieveChunks()` in `lib/retrieval.js` is called from those two route handlers, not exposed on its own route) — so a fifth, retrieval-only tool was intentionally left out rather than reimplemented against `lib/` from a second process, which would break the "thin HTTP proxy" design.
-
-Tool responses are compact, agent-friendly text (not raw JSON) with an explicit file-references list, uncertainty/risk level, and safety status. Tool-level failures (unknown `projectId`, missing required argument, upstream HTTP error) come back as `isError: true` content describing the HTTP status and reason instead of a thrown protocol-level exception, so the calling agent can see and react to the failure.
-
-Covered by `npm run test:mcp` (`scripts/mcp-server-test.js`), which starts a real server, imports the sample repository, drives `mcp-server.js` over stdio through `initialize` -> `tools/list` -> `tools/call`, and verifies the startup error path when the API is unreachable.
-
 ## Notes
 
 - The runtime uses Node.js plus LangGraph packages for the agent workflow and `@langchain/langgraph-checkpoint` for checkpoint-compatible graph execution.
 - GitHub imports use public repository ZIP downloads.
 - ZIP uploads are parsed locally by the server.
 - Runtime data is stored in `data/store.json` by default. Override with `DATA_DIR` or `STORE_PATH` for isolated runs and tests. Confirmed long-term memory is additionally stored in SQLite at `MEMORY_DB_PATH` using a `memory_items` table plus FTS search when available and `embedding_json` vectors for similarity ranking. By default embeddings are deterministic local `local-hash-v1`; setting `MEMORY_EMBEDDING_PROVIDER=openai` switches memory write/query paths to an OpenAI-compatible `/v1/embeddings` endpoint with local fallback on provider failure. Setting `MEMORY_VECTOR_INDEX_PROVIDER=http` and `MEMORY_VECTOR_INDEX_URL` additionally mirrors long-term memory vectors to an HTTP-compatible vector index and queries it before local SQLite vector ranking; `qdrant` uses Qdrant point upsert/search endpoints with the namespace as collection name; `pinecone` uses Pinecone upsert/query endpoints on the configured index host. Remote failures fall back to SQLite. SQLite schema and data backfills are audited in `schema_migrations`. Non-GET API requests run through a write queue. Store saves write a same-directory temporary file and rename it into place to reduce partial-write corruption. If an existing store contains invalid JSON, it is moved aside with a `.corrupt-` suffix before a fresh normalized store is created.
-
-## Current MVP Features
-
-- Repository import from public GitHub URL, ZIP upload, or built-in sample repository.
-- Project overview with inferred stack, directory tree, core modules, README summary, and recommended first reads.
-- Import-time safety review with prompt-risk and sensitive-content file counts in the project overview.
-- Repository Q&A with related files, uncertainty, suggested next questions, feedback buttons, lightweight harness metadata, safety status, guardrail details, and pending memory suggestions.
-- Impact analysis with impacted modules, risk level, testing suggestions, and open questions.
-- Agent Workflow tab backed by a LangGraph StateGraph with classifier, retriever, context expansion, impact analysis, QA planning, memory, safety guardrails, structured synthesis, and MemorySaver checkpointing.
-- Onboarding plans run through a lightweight deterministic harness with trace, safety, guardrails, citations, and pending memory suggestions.
-- Optional token-bound auth with user, role, scope, local store-backed tokens, and audit metadata. `/api/auth/me` returns the current resolved identity, `/api/auth/users` lists configured and local users, `POST /api/auth/users` creates a local user and returns a one-time visible token, `POST /api/auth/users/disable` disables a local user and its tokens, and `/api/auth/events` lists recent auth decisions without exposing token values. This is not a password-login or session-management system.
-- User preference memory suggestions that require explicit confirmation before being saved. Confirmed preferences are scoped by `userId`, defaulting to `local-user` for local/backward-compatible use. API clients can pass `userId` in JSON bodies or the `X-User-Id` header. Confirmed preferences can shape both impact analysis and ordinary Q&A emphasis; confirmed memory is also written to SQLite long-term memory for searchable reuse across later Agent Workflow and Direct Chat runs. Memory suggestions carry user and project ownership so confirmation/ignore actions can verify the active boundary. Ignored suggestions suppress the same key/value suggestion from being repeated for that user. The Copilot inspector includes a lightweight preference and long-term memory manager for viewing, removing one preference value, or clearing all preferences.
-- Application-level AI safety checks for prompt injection, system/developer prompt leakage requests, secret requests, read-only tool boundaries, retrieved sensitive content, citation validation, uncited impact areas, sensitive output, and overconfidence.
-- A centralized safety policy is exposed as `safety_policy` on `/api/health` and covered by red-team tests.
-- Evaluation dashboard with total questions, agent runs, helpful rate, citation coverage, citation status distribution, uncertainty rate, negative feedback, high-risk questions, guardrail hits, memory confirmations, memory status distribution, recent memory events, fallback runs, harness snapshot count, average response time, safety risk and status distribution, import safety risk/status, recent safety events, harness runtime, model mode, tool policy, budget status, schema status, LLM usage, and trace tool distribution, fallback reason distribution, recent harness runs, and recent feedback correlated with harness run ids.
 
 ## Agent Runtime Architecture
 
