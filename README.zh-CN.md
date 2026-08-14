@@ -2,9 +2,86 @@
 
 # AI Developer Onboarding Copilot
 
-一个帮助新工程师、技术 PM 和 QA 快速理解代码仓库的 MVP Web 应用：提供 AI 风格的仓库摘要、代码问答、影响分析、agentic 影响分析工作流、onboarding 计划、引用、反馈以及评估指标。
+_一个帮助新工程师、技术 PM 和 QA 快速理解代码仓库的 MVP Web 应用：提供 AI 风格的仓库摘要、代码问答、影响分析、agentic 影响分析工作流、onboarding 计划、引用、反馈以及评估指标。_
 
-## 运行
+**面向新入职工程师、技术 PM 和 QA 的代码库理解 Copilot**：导入仓库即获得带引用的代码问答、非工程师可读的改动影响简报、个性化 onboarding 计划——并用产品内置的 AI 质量看板证明自己可信。
+
+新成员建立项目上下文平均需要数天到数周；文档过期、知识散落在个人脑中。PM/QA 通常完全被挡在影响分析工具之外，无法判断"这个需求会动到哪里、该测什么"。
+
+**亮点**
+
+- **LangGraph 多 Agent 编排** —— supervisor 节点在分类/检索/影响分析/QA 规划/合成之间动态路由，高风险变更触发人工审批（HITL），MemorySaver checkpoint 支持从图中断点续跑而不是从头重来。
+- **面向 PM/QA 的改动影响简报** —— 输入一句自然语言需求描述，输出受影响模块、业务链路、风险级别、测试重点，非工程师可直接读懂。这一差异化切入有调研背书（见 [docs/POSITIONING.md](docs/POSITIONING.md)）。
+- **产品内置的 AI 质量看板，而非外挂工具** —— 引用覆盖率、答案 schema 合规率、guardrail 命中率是产品 UI 的一部分，而不是需要工程介入才能打开的外部 LLMOps 工具。
+- **MCP Server** 暴露 4 个工具（仓库问答、影响分析、onboarding 计划生成、项目列表），让 Claude Code、Cursor 等 AI coding agent 可以直接消费本项目的分析能力。
+
+**质量证据**：41 条 `node:test` 单元测试、25 项静态检查门禁、9 套运行时黑盒测试套件——全部无需 API key 即可端到端运行（`npm test`）。
+
+延伸阅读：[docs/POSITIONING.md](docs/POSITIONING.md)（定位与市场验证）· [docs/AGENT_RUNTIME_ARCHITECTURE.md](docs/AGENT_RUNTIME_ARCHITECTURE.md)（实现边界）· [docs/PRD.md](docs/PRD.md)（需求与取舍决策）· [docs/CHANGELOG.md](docs/CHANGELOG.md)（开发日志）
+
+## 架构
+
+**模块分层。** `server.js` 是一个约 1200 行的瘦 HTTP 路由层；全部业务逻辑位于 `lib/` 下 12 个单一职责模块中，下图按 config / 存储 / 领域三组呈现。`lib/` 模块间依赖单向无环——完整依赖清单见 [docs/AGENT_RUNTIME_ARCHITECTURE.md 的 Code Organization 小节](docs/AGENT_RUNTIME_ARCHITECTURE.md#code-organization)。
+
+```mermaid
+flowchart TD
+    HTTP["server.js<br/>HTTP 路由层（约 1200 行）<br/>handleApi / handleApiUnlocked / serveStatic<br/>bootstrap: setStoreRecordNormalizers(), setCheckpointCollaborators()"]
+
+    subgraph LIB["lib/ —— 12 个单一职责模块"]
+        direction LR
+        subgraph CFG["config"]
+            C1["lib/config.js"]
+        end
+        subgraph STORE["存储"]
+            S1["lib/store.js"]
+            S2["lib/memory-db.js"]
+            S3["lib/checkpoints.js"]
+        end
+        subgraph DOMAIN["领域逻辑"]
+            D1["lib/auth.js"]
+            D2["lib/importer.js"]
+            D3["lib/retrieval.js"]
+            D4["lib/safety.js"]
+            D5["lib/llm.js"]
+            D6["lib/answers.js"]
+            D7["lib/agent-graph.js"]
+            D8["lib/metrics.js"]
+        end
+    end
+
+    DATA1[("data/store.json")]
+    DATA2[("data/memory.sqlite")]
+
+    HTTP --> LIB
+    CFG --> STORE
+    CFG --> DOMAIN
+    DOMAIN --> STORE
+    S1 --> DATA1
+    S2 --> DATA2
+    S3 --> DATA2
+```
+
+**Agent 工作流。** 默认的 `AGENT_GRAPH_MODE=supervisor` 图实际路由步骤更多（完整节点见 [docs/AGENT_RUNTIME_ARCHITECTURE.md 的 Graph Nodes 小节](docs/AGENT_RUNTIME_ARCHITECTURE.md#graph-nodes)）；下图是核心路径，标出了 HITL 与 checkpoint 的位置：
+
+```mermaid
+flowchart LR
+    Classify["分类"] --> Retrieve["检索"]
+    Retrieve --> Impact["影响分析"]
+    Impact -->|"高风险 + AGENT_HITL_ENABLED"| HITL{{"human_review<br/>（暂停，经 POST /api/langgraph-resume 续跑）"}}
+    Impact -->|"其他情况"| Guardrails["安全护栏"]
+    HITL -->|"decision: approve"| Guardrails
+    HITL -->|"decision: reject"| Stop["运行终止（被拒绝）"]
+    Guardrails --> Synthesize["合成"]
+
+    CP[("Checkpoint<br/>MemorySaver → SQLite<br/>langgraph_checkpoints")]
+    Classify -.-> CP
+    Retrieve -.-> CP
+    Impact -.-> CP
+    Guardrails -.-> CP
+    Synthesize -.-> CP
+```
+
+## 快速开始
 
 ```bash
 npm install
@@ -12,6 +89,86 @@ npm run dev
 ```
 
 然后打开 `http://localhost:3000`。
+
+本快速开始步骤无需任何 API key——应用完全离线运行，使用确定性的检索式回答生成器。如需开启 AI 增强回答，设置以下三个环境变量（完整清单见[运行时配置](#运行时配置)）：
+
+```bash
+export OPENAI_API_KEY=sk-...
+export OPENAI_BASE_URL=https://api.openai.com   # 或任意 OpenAI-compatible 提供方
+export OPENAI_MODEL=gpt-4o-mini
+```
+
+## 功能特性
+
+- 支持从公开 GitHub URL、ZIP 上传或内置示例仓库导入项目。
+- 项目概览包含推断出的技术栈、目录树、核心模块、README 摘要，以及推荐的首批阅读文件。
+- 导入时的安全审查会在项目概览中给出 prompt 风险和敏感内容文件的计数。
+- 仓库问答提供相关文件、不确定性说明、建议的后续问题、反馈按钮、轻量 harness 元数据、安全状态、护栏详情，以及待处理的记忆建议。
+- 影响分析提供受影响模块、风险级别、测试建议和待澄清问题。
+- Agent Workflow 标签页由一个 LangGraph StateGraph 驱动，包含分类器、检索器、上下文扩展、影响分析、问答规划、记忆、安全护栏、结构化综合，以及 MemorySaver checkpoint。
+- Onboarding 计划通过一个轻量的确定性 harness 生成，带有 trace、安全、护栏、引用和待处理记忆建议。
+- 可选的、绑定 token 的认证支持用户、角色、scope、本地 store 存储的 token 以及审计元数据。`/api/auth/me` 返回当前解析出的身份，`/api/auth/users` 列出配置和本地用户，`POST /api/auth/users` 创建本地用户并返回一次性可见的 token，`POST /api/auth/users/disable` 禁用一个本地用户及其 token，`/api/auth/events` 列出最近的认证决策而不暴露 token 值。这不是一套密码登录或 session 管理系统。
+- 用户偏好记忆建议需要显式确认才会保存。已确认的偏好按 `userId` 隔离，未提供时默认使用 `local-user`，以保持本地/向后兼容的使用方式。API 客户端可以在 JSON body 或 `X-User-Id` 请求头中传入 `userId`。已确认的偏好可以同时影响影响分析和普通问答的侧重点；已确认的记忆也会写入 SQLite 长期记忆，供后续的 Agent Workflow 和 Direct Chat 运行复用检索。记忆建议携带用户和项目归属信息，便于确认/忽略操作校验当前生效的边界。被忽略的建议会抑制该用户下相同 key/value 建议的重复出现。Copilot inspector 内置一个轻量的偏好和长期记忆管理器，可查看、移除单个偏好值，或清空全部偏好。
+- 应用级 AI 安全检查覆盖 prompt injection、system/developer prompt 泄露请求、密钥请求、只读工具边界、检索到的敏感内容、引用校验、未引用的影响区域、敏感输出，以及过度自信。
+- 集中化的安全策略以 `safety_policy` 的形式暴露在 `/api/health` 上，并有红队测试覆盖。
+- 评估 dashboard 展示总问题数、agent 运行次数、有帮助率、引用覆盖率、引用状态分布、不确定率、负面反馈、高风险问题、guardrail 命中数、记忆确认数、记忆状态分布、最近记忆事件、fallback 运行数、harness 快照数、平均响应时间、安全风险与状态分布、导入安全风险/状态、最近安全事件、harness runtime、model mode、工具策略、预算状态、schema 状态、LLM 用量、trace 工具分布、fallback 原因分布、最近 harness run，以及与 harness run id 关联的最近反馈。
+
+## MCP Server
+
+除了 Web UI，本项目还提供了一个 [MCP](https://modelcontextprotocol.io)（Model Context Protocol）server（`mcp-server.js`），让 Claude Code、Cursor、Claude Desktop 等 AI coding agent 可以把仓库问答、影响分析和 onboarding 计划生成作为工具（tools）通过 stdio 调用。
+
+`mcp-server.js` 是一个瘦代理：它不会直接读写 `data/store.json`，也不会直接 import `lib/` 下的模块（store 采用单进程写锁 + 常驻内存缓存的设计，第二个进程直接写入会与主服务竞争并可能丢数据）。每次工具调用都通过 `fetch` 访问已经在运行的 HTTP API，因此会复用与 Web UI 相同的安全护栏、harness 记录和认证边界。**必须先启动主服务**（`npm start` 或 `npm run dev`）；MCP server 启动时会发起一次 `GET /api/health` 探测，如果 API 不可达，会给出清晰、可操作的错误信息并退出，而不是注册一批注定无法成功调用的工具。
+
+启动方式：
+
+```bash
+npm start          # 终端一：主 HTTP API + Web UI
+npm run mcp        # 终端二：MCP stdio server
+```
+
+环境变量：
+
+| 变量 | 默认值 | 用途 |
+| --- | --- | --- |
+| `AI_PM_BASE_URL` | `http://127.0.0.1:3000` | 正在运行的 AI PM HTTP API 的 base URL。 |
+| `AI_PM_API_TOKEN` | 未设置 | 可选 token，会以 `Authorization: Bearer <token>` 的形式透传；仅当主服务以 `AI_PM_AUTH_REQUIRED=true` 运行时才需要。 |
+| `AI_PM_PROJECT_ID` | 未设置 | 可选的默认 `projectId`，配置后导入仓库完成即可省略工具调用中的该参数。 |
+
+`mcpServers` 配置示例（Claude Code 的 `.mcp.json`、Cursor 的 `mcp.json`、Claude Desktop 的 `claude_desktop_config.json` 等）：
+
+```json
+{
+  "mcpServers": {
+    "ai-pm": {
+      "command": "node",
+      "args": ["/absolute/path/to/mcp-server.js"],
+      "env": {
+        "AI_PM_BASE_URL": "http://127.0.0.1:3000",
+        "AI_PM_PROJECT_ID": "your-imported-project-id"
+      }
+    }
+  }
+}
+```
+
+暴露的工具：
+
+| MCP 工具 | 对应接口 | 使用场景 |
+| --- | --- | --- |
+| `list_projects` | `GET /api/projects` | 列出已导入的仓库（id、名称、来源、文件/代码块数、技术栈），用于获取 `projectId`。 |
+| `ask_codebase` | `POST /api/chat` | 就某个仓库的代码或行为提出问题，返回带引用的、有事实依据的回答。 |
+| `analyze_impact` | `POST /api/agent-impact` | 运行完整的多 Agent LangGraph 变更影响分析工作流：受影响模块、风险级别、测试建议、执行 trace。 |
+| `get_onboarding_plan` | `POST /api/onboarding` | 生成按角色区分的、按天规划的 onboarding 阅读计划。 |
+
+当前 API 面没有独立的仓库检索/搜索接口——检索只发生在 `/api/chat` 和 `/api/agent-impact` 内部（`lib/retrieval.js` 里的 `retrieveChunks()` 只在这两个路由处理函数内部被调用，没有单独暴露路由）——因此没有额外新增第五个纯检索类工具，以免为此在第二个进程里直接调用 `lib/`，破坏“瘦 HTTP 代理”的设计。
+
+工具的返回内容是紧凑的、面向 agent 的文本（而不是原始 JSON），明确列出文件引用、不确定性/风险级别和安全状态。工具级别的失败（未知 `projectId`、缺少必填参数、上游 HTTP 错误）会以 `isError: true` 的内容返回，说明 HTTP 状态和原因，而不是抛出协议层异常，便于调用方 agent 观察并作出反应。
+
+由 `npm run test:mcp`（`scripts/mcp-server-test.js`）覆盖：该测试会启动一个真实的服务器、导入示例仓库，通过 stdio 依次发送 `initialize` -> `tools/list` -> `tools/call` 驱动真实的 `mcp-server.js`，并验证 API 不可达时的启动报错路径。
+
+## 运维与参考
+
+本文档后续部分是完整的测试套件、运行时配置、Docker 部署、API 一览及其他运维细节。
 
 ## 测试
 
@@ -116,80 +273,12 @@ curl http://localhost:3000/api/health
 
 未配置 API key 时，应用会回退到基于检索的确定性回答生成器。演示仍然可以正常运行，但回答会是模板化的而非 AI 生成的。UI 会显示 "AI-enhanced mode" 或 "Offline retrieval mode"，让当前所处的模式始终清晰可见。
 
-## MCP Server
-
-除了 Web UI，本项目还提供了一个 [MCP](https://modelcontextprotocol.io)（Model Context Protocol）server（`mcp-server.js`），让 Claude Code、Cursor、Claude Desktop 等 AI coding agent 可以把仓库问答、影响分析和 onboarding 计划生成作为工具（tools）通过 stdio 调用。
-
-`mcp-server.js` 是一个瘦代理：它不会直接读写 `data/store.json`，也不会直接 import `lib/` 下的模块（store 采用单进程写锁 + 常驻内存缓存的设计，第二个进程直接写入会与主服务竞争并可能丢数据）。每次工具调用都通过 `fetch` 访问已经在运行的 HTTP API，因此会复用与 Web UI 相同的安全护栏、harness 记录和认证边界。**必须先启动主服务**（`npm start` 或 `npm run dev`）；MCP server 启动时会发起一次 `GET /api/health` 探测，如果 API 不可达，会给出清晰、可操作的错误信息并退出，而不是注册一批注定无法成功调用的工具。
-
-启动方式：
-
-```bash
-npm start          # 终端一：主 HTTP API + Web UI
-npm run mcp        # 终端二：MCP stdio server
-```
-
-环境变量：
-
-| 变量 | 默认值 | 用途 |
-| --- | --- | --- |
-| `AI_PM_BASE_URL` | `http://127.0.0.1:3000` | 正在运行的 AI PM HTTP API 的 base URL。 |
-| `AI_PM_API_TOKEN` | 未设置 | 可选 token，会以 `Authorization: Bearer <token>` 的形式透传；仅当主服务以 `AI_PM_AUTH_REQUIRED=true` 运行时才需要。 |
-| `AI_PM_PROJECT_ID` | 未设置 | 可选的默认 `projectId`，配置后导入仓库完成即可省略工具调用中的该参数。 |
-
-`mcpServers` 配置示例（Claude Code 的 `.mcp.json`、Cursor 的 `mcp.json`、Claude Desktop 的 `claude_desktop_config.json` 等）：
-
-```json
-{
-  "mcpServers": {
-    "ai-pm": {
-      "command": "node",
-      "args": ["/absolute/path/to/mcp-server.js"],
-      "env": {
-        "AI_PM_BASE_URL": "http://127.0.0.1:3000",
-        "AI_PM_PROJECT_ID": "your-imported-project-id"
-      }
-    }
-  }
-}
-```
-
-暴露的工具：
-
-| MCP 工具 | 对应接口 | 使用场景 |
-| --- | --- | --- |
-| `list_projects` | `GET /api/projects` | 列出已导入的仓库（id、名称、来源、文件/代码块数、技术栈），用于获取 `projectId`。 |
-| `ask_codebase` | `POST /api/chat` | 就某个仓库的代码或行为提出问题，返回带引用的、有事实依据的回答。 |
-| `analyze_impact` | `POST /api/agent-impact` | 运行完整的多 Agent LangGraph 变更影响分析工作流：受影响模块、风险级别、测试建议、执行 trace。 |
-| `get_onboarding_plan` | `POST /api/onboarding` | 生成按角色区分的、按天规划的 onboarding 阅读计划。 |
-
-当前 API 面没有独立的仓库检索/搜索接口——检索只发生在 `/api/chat` 和 `/api/agent-impact` 内部（`lib/retrieval.js` 里的 `retrieveChunks()` 只在这两个路由处理函数内部被调用，没有单独暴露路由）——因此没有额外新增第五个纯检索类工具，以免为此在第二个进程里直接调用 `lib/`，破坏“瘦 HTTP 代理”的设计。
-
-工具的返回内容是紧凑的、面向 agent 的文本（而不是原始 JSON），明确列出文件引用、不确定性/风险级别和安全状态。工具级别的失败（未知 `projectId`、缺少必填参数、上游 HTTP 错误）会以 `isError: true` 的内容返回，说明 HTTP 状态和原因，而不是抛出协议层异常，便于调用方 agent 观察并作出反应。
-
-由 `npm run test:mcp`（`scripts/mcp-server-test.js`）覆盖：该测试会启动一个真实的服务器、导入示例仓库，通过 stdio 依次发送 `initialize` -> `tools/list` -> `tools/call` 驱动真实的 `mcp-server.js`，并验证 API 不可达时的启动报错路径。
-
 ## 说明
 
 - 运行时使用 Node.js 加 LangGraph 系列包实现 agent 工作流，并用 `@langchain/langgraph-checkpoint` 实现 checkpoint 兼容的图执行。
 - GitHub 导入使用公开仓库的 ZIP 下载。
 - ZIP 上传由服务器在本地解析。
 - 运行时数据默认存储在 `data/store.json`。可以用 `DATA_DIR` 或 `STORE_PATH` 覆盖，便于隔离运行和测试。已确认的长期记忆额外存储在 `MEMORY_DB_PATH` 指定的 SQLite 数据库中，使用 `memory_items` 表，在可用时配合 FTS 全文搜索，并用 `embedding_json` 向量做相似度排序。默认使用确定性的本地 `local-hash-v1` embedding；设置 `MEMORY_EMBEDDING_PROVIDER=openai` 会把记忆的读写路径切换到 OpenAI-compatible 的 `/v1/embeddings` 接口，provider 调用失败时回退到本地实现。设置 `MEMORY_VECTOR_INDEX_PROVIDER=http` 和 `MEMORY_VECTOR_INDEX_URL` 后，长期记忆向量还会额外镜像到一个 HTTP 兼容的外部向量索引，并在本地 SQLite 向量排序之前先查询它；`qdrant` 使用 Qdrant 的 point upsert/search 接口，以 namespace 作为 collection 名；`pinecone` 在配置的 index host 上使用 Pinecone 的 upsert/query 接口。远程调用失败会回退到 SQLite。SQLite schema 和数据回填都记录在 `schema_migrations` 中供审计。非 GET 的 API 请求都会经过写队列。Store 保存时会先写入同目录下的临时文件再原子性地 rename 到目标路径，以降低写入过程中损坏的概率。如果已有 store 文件中是非法 JSON，会先以 `.corrupt-` 后缀移走，再创建一份全新的规范化 store。
-
-## 当前 MVP 功能
-
-- 支持从公开 GitHub URL、ZIP 上传或内置示例仓库导入项目。
-- 项目概览包含推断出的技术栈、目录树、核心模块、README 摘要，以及推荐的首批阅读文件。
-- 导入时的安全审查会在项目概览中给出 prompt 风险和敏感内容文件的计数。
-- 仓库问答提供相关文件、不确定性说明、建议的后续问题、反馈按钮、轻量 harness 元数据、安全状态、护栏详情，以及待处理的记忆建议。
-- 影响分析提供受影响模块、风险级别、测试建议和待澄清问题。
-- Agent Workflow 标签页由一个 LangGraph StateGraph 驱动，包含分类器、检索器、上下文扩展、影响分析、问答规划、记忆、安全护栏、结构化综合，以及 MemorySaver checkpoint。
-- Onboarding 计划通过一个轻量的确定性 harness 生成，带有 trace、安全、护栏、引用和待处理记忆建议。
-- 可选的、绑定 token 的认证支持用户、角色、scope、本地 store 存储的 token 以及审计元数据。`/api/auth/me` 返回当前解析出的身份，`/api/auth/users` 列出配置和本地用户，`POST /api/auth/users` 创建本地用户并返回一次性可见的 token，`POST /api/auth/users/disable` 禁用一个本地用户及其 token，`/api/auth/events` 列出最近的认证决策而不暴露 token 值。这不是一套密码登录或 session 管理系统。
-- 用户偏好记忆建议需要显式确认才会保存。已确认的偏好按 `userId` 隔离，未提供时默认使用 `local-user`，以保持本地/向后兼容的使用方式。API 客户端可以在 JSON body 或 `X-User-Id` 请求头中传入 `userId`。已确认的偏好可以同时影响影响分析和普通问答的侧重点；已确认的记忆也会写入 SQLite 长期记忆，供后续的 Agent Workflow 和 Direct Chat 运行复用检索。记忆建议携带用户和项目归属信息，便于确认/忽略操作校验当前生效的边界。被忽略的建议会抑制该用户下相同 key/value 建议的重复出现。Copilot inspector 内置一个轻量的偏好和长期记忆管理器，可查看、移除单个偏好值，或清空全部偏好。
-- 应用级 AI 安全检查覆盖 prompt injection、system/developer prompt 泄露请求、密钥请求、只读工具边界、检索到的敏感内容、引用校验、未引用的影响区域、敏感输出，以及过度自信。
-- 集中化的安全策略以 `safety_policy` 的形式暴露在 `/api/health` 上，并有红队测试覆盖。
-- 评估 dashboard 展示总问题数、agent 运行次数、有帮助率、引用覆盖率、引用状态分布、不确定率、负面反馈、高风险问题、guardrail 命中数、记忆确认数、记忆状态分布、最近记忆事件、fallback 运行数、harness 快照数、平均响应时间、安全风险与状态分布、导入安全风险/状态、最近安全事件、harness runtime、model mode、工具策略、预算状态、schema 状态、LLM 用量、trace 工具分布、fallback 原因分布、最近 harness run，以及与 harness run id 关联的最近反馈。
 
 ## Agent Runtime 架构
 
