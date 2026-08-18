@@ -55,7 +55,24 @@ const requiredPaths = [
   "chat.techDetails",
   "dashboard.guardrailHits",
   "dashboard.memorySaves",
-  "dashboard.fallbackRuns"
+  "dashboard.fallbackRuns",
+  "dashboard.qualitySummary.title",
+  "dashboard.qualitySummary.empty",
+  "dashboard.qualitySummary.citation",
+  "dashboard.qualitySummary.guardrail",
+  "dashboard.qualitySummary.fallback",
+  "dashboard.qualitySummary.feedback",
+  "dashboard.groups.trust.title",
+  "dashboard.groups.trust.desc",
+  "dashboard.groups.safety.title",
+  "dashboard.groups.safety.desc",
+  "dashboard.groups.reliability.title",
+  "dashboard.groups.reliability.desc",
+  "dashboard.groups.usage.title",
+  "dashboard.groups.usage.desc",
+  "dashboard.methodology.title",
+  "dashboard.methodology.intro",
+  "dashboard.methodology.link"
 ];
 
 for (const locale of ["en", "zh"]) {

@@ -2347,6 +2347,72 @@ code {
   font-size: 12px;
 }
 
+/* ---- Dashboard: Quality Summary + Narrative Metric Groups ---- */
+.quality-summary {
+  border: 1px solid #c7d2fe;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(160deg, var(--accent-light), #fafbff);
+  padding: 20px 22px;
+  margin-bottom: 24px;
+}
+
+.quality-summary h2 {
+  margin-top: 0;
+  color: var(--ink);
+}
+
+.quality-summary ul {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+
+.quality-summary li {
+  color: var(--ink);
+  font-size: 14.5px;
+  line-height: 1.6;
+}
+
+.metric-group {
+  margin-bottom: 28px;
+}
+
+.metric-group-head {
+  margin-bottom: 14px;
+}
+
+.metric-group-head h2 {
+  margin: 0 0 4px;
+}
+
+.metric-group-head p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.metric-group .metrics-grid {
+  margin-bottom: 16px;
+}
+
+.methodology-card summary {
+  font-size: 13.5px;
+}
+
+.methodology-card ul {
+  margin: 10px 0;
+  padding-left: 20px;
+}
+
+.methodology-card li {
+  color: var(--ink);
+  font-size: 13.5px;
+  line-height: 1.6;
+  margin-bottom: 6px;
+}
+
 /* ---- Empty States ---- */
 .muted {
   color: var(--muted);

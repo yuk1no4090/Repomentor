@@ -161,7 +161,22 @@ const requiredDashboardSnippets = [
   "item.fallback_used",
   "item.safety_status",
   "item.harness_run_id",
-  "item.answer_kind"
+  "item.answer_kind",
+  // Quality summary band + narrative metric groups + evaluation methodology card
+  // (dashboard storytelling: 30+ flat metrics regrouped into a trust/safety/
+  // reliability/usage narrative, with a top summary derived from existing fields).
+  "function qualitySummaryLines",
+  "c.dashboard.qualitySummary",
+  "class=\"quality-summary\"",
+  "function metricGroup",
+  "data-metric-group=",
+  "c.dashboard.groups.trust",
+  "c.dashboard.groups.safety",
+  "c.dashboard.groups.reliability",
+  "c.dashboard.groups.usage",
+  "function evaluationMethodologyCard",
+  "c.dashboard.methodology",
+  "AGENT_RUNTIME_ARCHITECTURE.md"
 ];
 
 const missingDashboardSnippets = requiredDashboardSnippets.filter((snippet) => {
@@ -211,7 +226,10 @@ const requiredStyleSnippets = [
   ".impact-briefing",
   ".flow-card",
   ".briefing-risk",
-  ".tech-details"
+  ".tech-details",
+  ".quality-summary",
+  ".metric-group",
+  ".metric-group-head"
 ];
 
 const staleFrontendTerms = [
