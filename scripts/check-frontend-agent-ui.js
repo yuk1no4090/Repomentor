@@ -47,7 +47,21 @@ const requiredChatRuntimeSnippets = [
   "prompt_injection_file_count",
   "sensitive_file_count",
   "state.llmStatus?.llm?.request_timeout_ms",
-  "timeoutTitle"
+  "timeoutTitle",
+  // PM/QA business impact briefing: summary/affected_flows/testing_focus/risk_note
+  // rendered top-of-message, with the old technical list collapsed behind <details>.
+  "function renderImpactBriefing",
+  "payload.briefing",
+  "briefing.affected_flows",
+  "briefing.testing_focus",
+  "briefing.risk_note",
+  "c.chat.briefingTitle",
+  "c.chat.briefingFlows",
+  "c.chat.briefingTesting",
+  "c.chat.briefingRisk",
+  "c.chat.techDetails",
+  "class=\"tech-details\"",
+  "<summary>"
 ];
 
 const missingChatRuntimeSnippets = requiredChatRuntimeSnippets.filter((snippet) => {
@@ -193,14 +207,21 @@ const requiredStyleSnippets = [
   ".topbar-auth",
   ".auth-ops",
   ".auth-grid",
-  ".auth-created-token"
+  ".auth-created-token",
+  ".impact-briefing",
+  ".flow-card",
+  ".briefing-risk",
+  ".tech-details"
 ];
 
 const staleFrontendTerms = [
   "single-agent tool workflow",
   "alert(error.message)",
   "Updated preference memory. Run the agent again to apply it.",
-  "memory_used: action === \"confirm\""
+  "memory_used: action === \"confirm\"",
+  // Renamed to "Repomentor" (see nav brand copy); this old display name should not
+  // reappear in app.js's UI copy system.
+  "Developer Onboarding Copilot"
 ].filter((term) => appSource.includes(term));
 
 const missingStyleSnippets = requiredStyleSnippets.filter((snippet) => {

@@ -1600,6 +1600,122 @@ code {
   margin-top: 0;
 }
 
+/* ---- PM/QA Business Impact Briefing ---- */
+.impact-briefing {
+  border: 1px solid #c7d2fe;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(160deg, var(--accent-light), #fafbff);
+  padding: 18px 20px;
+  margin: 16px 0;
+}
+
+.impact-briefing h3 {
+  margin-top: 0;
+  color: var(--ink);
+}
+
+.impact-briefing h4 {
+  margin: 14px 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.briefing-summary {
+  font-size: 15.5px;
+  line-height: 1.6;
+  color: var(--ink);
+  margin: 4px 0 0;
+}
+
+.flow-list {
+  display: grid;
+  gap: 8px;
+}
+
+.flow-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 12px 14px;
+}
+
+.flow-card strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--ink);
+}
+
+.flow-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.briefing-testing {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.briefing-testing li {
+  color: var(--ink);
+  line-height: 1.6;
+  font-size: 13.5px;
+  margin-bottom: 6px;
+}
+
+.briefing-risk {
+  border-radius: var(--radius);
+  background: var(--warn-light);
+  border: 1px solid var(--warn-border);
+  padding: 12px 14px;
+  margin-top: 4px;
+}
+
+.briefing-risk h4 {
+  margin: 0 0 6px;
+  color: var(--warn-text);
+}
+
+.briefing-risk p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+/* ---- Collapsed technical detail (raw impact_areas/citations/trace) ---- */
+.tech-details {
+  margin-top: 16px;
+  border-top: 1px dashed var(--line-strong);
+  padding-top: 12px;
+}
+
+.tech-details summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 750;
+  font-size: 12.5px;
+  list-style: none;
+}
+
+.tech-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.tech-details summary::before {
+  content: "\25B8";
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform var(--transition);
+}
+
+.tech-details[open] summary::before {
+  transform: rotate(90deg);
+}
+
 .runtime-status,
 .memory-suggestions {
   display: grid;
