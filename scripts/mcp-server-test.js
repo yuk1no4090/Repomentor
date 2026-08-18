@@ -269,6 +269,16 @@ async function main() {
     const impactText = impactResult.content?.[0]?.text || "";
     assert(impactText.includes("Overall risk level:"), "analyze_impact output did not include an overall risk level");
     assert(impactText.includes("Harness: run_id="), "analyze_impact output did not include harness run metadata");
+    // analyze_impact 的响应必须把 lib/answers.js 的 buildImpactBriefing() PM/QA
+    // 简报渲染在技术细节之前（agent-friendly 紧凑文本）。
+    assert(impactText.includes("PM/QA briefing:"), "analyze_impact output did not include the PM/QA briefing section");
+    assert(impactText.includes("Affected flows:"), "analyze_impact output did not include the briefing's affected flows");
+    assert(impactText.includes("What to verify:"), "analyze_impact output did not include the briefing's testing focus");
+    assert(impactText.includes("Risk & recommendation:"), "analyze_impact output did not include the briefing's risk note");
+    assert(
+      impactText.indexOf("PM/QA briefing:") < impactText.indexOf("Summary:"),
+      "analyze_impact output should render the PM/QA briefing before the technical summary/details"
+    );
 
     const onboardingResult = await rpc.request("tools/call", {
       name: "get_onboarding_plan",

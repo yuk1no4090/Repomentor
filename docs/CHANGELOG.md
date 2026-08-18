@@ -5,6 +5,43 @@
 
 ---
 
+## 2026-08-18 下午 — 影响简报 briefing + 无界增长治理 + 看板故事化 + 写锁粒度收窄
+
+本轮同样由多个 worker agent 在独立分支/worktree 并行完成，逐一经 reviewer 审核通过后合并（`A`/`G`/`B`/`D`），全程 `npm test` 保持全绿。
+
+### A — 影响分析新增 PM/QA 业务简报 briefing（`d6693a9`，merge `8bb2cad`，reviewer 通过，零阻塞）
+
+- `lib/answers.js` 新增 `buildImpactBriefing(impactAreas)`：纯规则确定性构建器，从 `impact_areas` 推出 `{ summary, affected_flows, testing_focus, risk_note }`。两层映射识别业务流程——`BUSINESS_FLOW_RULES` 先按文件路径关键词识别具体业务域（如 `auth` → "Login & permissions"），命中不了再用 `AREA_FLOW_FALLBACK` 按技术层兜底。
+- **开发中发现的 bug**：最初设计打算用带 `\b` 单词边界的正则做关键词匹配，但真实文件名常见 `authService.ts`/`userController.ts` 这类驼峰拼接——`\bauth\b` 这种边界锚点在 `"auth"` 和紧跟着的大写字母之间没有单词边界，会完全匹配不上。改为子串匹配（沿用本文件 `generateImpactAnswer` 里 `areaRules` 的既有写法）并补了测试覆盖这一场景。
+- `applyPreferencesToImpact()` 新增兜底：LLM 提供的 `briefing` 形状合法则保留，否则（旧数据/LLM 未提供/形状不合法）从最终 `impact_areas` 确定性重建，保证 `/api/chat` 与 `lib/agent-graph.js` 的 agent 工作流两条路径产出的 impact payload 都一定带一份可用的 briefing；`validateImpactPayload()` 新增可选校验（不带 briefing 不算 schema 违规，带了就必须形状合法）。`lib/llm.js` 的 schema 指令同步追加 briefing 完整形状声明。
+- 前端 `public/app.js` 新增 `renderImpactBriefing()`，置顶渲染业务叙事；原技术清单（agent 元信息/trace/impact_areas/引用/测试建议/开放问题）收进 `<details class="tech-details">` 折叠区，旧数据（无 briefing）逐字节回退原始铺开渲染。
+- 新增 `test/briefing.test.js`（25 例），`npm test` 全量通过。
+
+### G — 无界增长治理：store 上限裁剪 + checkpoint 保留窗口（`ce83b60`，merge `e05915c`，reviewer 通过，零阻塞）
+
+- `store.json` 的 `questions`/`answers`/`harnessRuns`/`memoryEvents` 此前只增不减，SQLite 的 `langgraph_checkpoints`/`langgraph_checkpoint_payloads` 每次 persist 都写入一份 base64 全量快照且从不清理，长期运行会无界膨胀。
+- `lib/config.js` 新增 `STORE_MAX_QUESTIONS`/`STORE_MAX_ANSWERS`（默认 500）、`STORE_MAX_HARNESS_RUNS`/`STORE_MAX_MEMORY_EVENTS`（默认 200）、`CHECKPOINT_MAX_RUNS`（默认 50），均可通过同名环境变量覆盖。`lib/store.js` 的 `normalizeStore()` 按时间序裁剪，并过滤引用了已被裁掉的 answer 的孤儿 feedback 记录；`lib/checkpoints.js` 新增 `pruneOldLangGraphCheckpointRuns()`，按 run 维度只保留最近 `CHECKPOINT_MAX_RUNS` 个 run 的快照。
+- 新增 `test/limits.test.js`（10 例），`npm test` 全绿连跑两遍。
+
+### B — 评估看板故事化：质量摘要 + 四组重排 + 评估体系说明卡（`502d0bf`，merge `4b83b0e`，reviewer 通过，零阻塞）
+
+- 看板顶部新增「质量摘要」区，从 `computeMetrics` 既有字段拼出 en/zh 自然语言结论；原来铺开的 14 张数字卡片 + 20 个排行/事件面板按叙事重组为「可信度」「安全」「可靠性」「使用与反馈」四个小节；尾部新增「评估体系」折叠说明卡（复用 A 卡 briefing 引入的 `<details class="tech-details">` 模式）。纯前端重组，`lib/metrics.js` 字段不增不减。
+
+### D — 写锁粒度收窄至 store 临界区 + LangGraph 超时取消（`b9f3a64` + `a0c7b43`，merge `0e236a5`，reviewer 两轮通过）
+
+- 背景：`handleApi()` 曾把整个请求处理（含 4 个重路由 30 秒级的 LLM/LangGraph 调用）串行化在一个全局 `withWriteLock` 里，一个慢请求会阻塞所有其他 POST（及 `AUTH_REQUIRED` 下的所有 GET）；`withWorkflowTimeout` 超时返回 fallback 后也不取消底层 `graph.invoke`。首轮改造把 4 个重路由改为「短 gate 锁（store 初始化 + 鉴权审计）→ 锁外检索/LLM/LangGraph 计算 → 短 commit 锁（重新校验项目仍存在 + 写入）」，并给 `withWorkflowTimeout` 加了可选 `AbortController`，超时时先 `abort()` 再 `reject`。
+- **首轮评审 BLOCK**：reviewer 发现锁粒度收窄后，4 条重路由的锁外计算阶段仍存在两处隐藏 store 写入，与并发请求竞态——(1) `getUserPreferences()` 首次访问某 `userId` 时会惰性写入 `store.userPreferencesByUser[userId]`，命中 `/api/chat`、`createMemorySuggestions()`、agent-graph 的 memory 节点等全部 4 条重路由；(2) 4 条重路由体内第二次调用 `resolveAuthenticatedUserId` 发生在 gate 锁释放后，对 store-backed token 会再次在锁外写 `tokenRecord.lastUsedAt`。
+- 修复（`a0c7b43`）：`getUserPreferences()` 改为纯读——缺项直接返回规范化默认值，不再回写 store，`setUserPreferences()` 保持是唯一写入点；新增 `resolveHeavyRouteUserId(req, body)`（无 `store` 参数，结构上不可能碰 store）复用 gate 锁内 `requireAuthScope` 已解析的 `req.auth`，只在锁外做一致性校验，不再重新派生身份写 `lastUsedAt`。新增 `test/preferences.test.js`（7 例，断言调用前后 store 序列化完全一致）与 `scripts/check-store-schema.js` 结构性回归门禁后，二轮评审通过。
+- 并发验证（`scripts/concurrency-smoke.js`，手动运行）：重构前旧代码下，轻量 `POST /api/onboarding` 被并发的慢 `/api/agent-impact` 阻塞约 **2854ms**；修复后锁粒度收益仍在，`light_post_onboarding_ms≈9ms`（< 10ms）。
+- `npm test` 全量（10 个子命令）连跑两遍，退出码均为 0；`node --test "test/**/*.js"` 80/80 通过。
+
+### 已知跟进项（非阻塞）
+
+- **G × D 叠加下高并发时 HITL checkpoint 可能被保留窗口裁剪**：G 卡的 `pruneOldLangGraphCheckpointRuns()` 按 run 维度只保留最近 `CHECKPOINT_MAX_RUNS`（默认 50）个 run；D 卡把重路由的计算阶段移到锁外、耗时可达 30 秒级。如果同一时间窗口内有 `CHECKPOINT_MAX_RUNS` 个以上其他 run 持续写入 checkpoint，一个已暂停等待人工审核（`human_review`）的高风险 run 理论上可能在被 resume 之前就被裁剪出保留窗口。当前无自动豁免机制，缓解手段是调大环境变量 `CHECKPOINT_MAX_RUNS`。
+- **LLM fetch 在 abort 后仍有一个受 `LLM_REQUEST_TIMEOUT_MS` 约束的残余窗口**：D 卡的 `runAgenticImpactWorkflow()` 超时会 `abort()` LangGraph 的 `graph.invoke()`（pregel loop 原生支持 `config.signal`，当前 in-flight 节点结束后立即停止调度后续 superstep），但 `lib/llm.js` 单个 LLM fetch 自身的 `AbortController` 未接入这个外部 signal，仍受自己的 `LLM_REQUEST_TIMEOUT_MS` 约束——已在途的那一次 LLM 调用可能跑满自己的超时窗口才真正终止。这是有限、已知的残留窗口，而非无界的后台执行。
+
+---
+
 ## 2026-08-18 — 品牌定名 Repomentor + Live Demo 上线 + LLM schema 校验修复
 
 背景：项目对外可见度提升（README 作品集化、MCP Server 上线）后统一品牌名称，避免仓库/文档里新旧命名混用；同时产品已部署上线，README 补充可直接访问的 live demo 链接。
