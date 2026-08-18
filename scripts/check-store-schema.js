@@ -109,6 +109,21 @@ const requiredMemoryEndpointSnippets = [
   "let writeQueue = Promise.resolve()",
   "function withWriteLock",
   "return withWriteLock(() => handleApiUnlocked(req, res, pathname))",
+  // Fine-grained locking for the 30s-class LLM/LangGraph routes: a request-wide
+  // withWriteLock() around handleApiUnlocked() (asserted just above) is still
+  // how every *lightweight* route is locked, but /api/chat, /api/agent-impact,
+  // /api/onboarding and /api/langgraph-resume opt out of that single lock and
+  // instead take two short locks of their own (a "gate" around store setup +
+  // auth bookkeeping, and a "commit" around the final store mutation + save),
+  // with the actual retrieval/LLM/graph work running unlocked in between. If
+  // this gets refactored away again (e.g. those routes going back to a single
+  // request-wide lock, or a rename of the helpers below), update these
+  // snippets to match rather than deleting them outright.
+  "function isHeavyMutationRoute",
+  "const HEAVY_MUTATION_PATHS = new Set(",
+  "function loadStoreWithAuthGate",
+  "await withWriteLock(() => loadStoreWithAuthGate(req, pathname))",
+  "const commitStore = await ensureStore()",
   "function backupCorruptStore",
   "error instanceof SyntaxError",
   ".corrupt-",
