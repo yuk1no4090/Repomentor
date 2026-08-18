@@ -174,8 +174,34 @@ function formatChatAnswer(payload = {}) {
   return lines.join("\n");
 }
 
+// PM/QA business briefing (see lib/answers.js's buildImpactBriefing): a
+// plain-language narrative meant for a non-engineer reader. When present,
+// render it compactly and place it before the technical impact-analyst
+// details below, mirroring how public/app.js puts the briefing card above
+// the collapsed "tech-details" section in the web UI. Absent (older payload
+// shape) it is skipped entirely and formatAgentImpact's output is unchanged.
+function formatBriefing(briefing) {
+  const lines = [];
+  lines.push("PM/QA briefing:");
+  lines.push(briefing.summary);
+  if (briefing.affected_flows?.length) {
+    lines.push("", "Affected flows:");
+    briefing.affected_flows.forEach((flow) => lines.push(`- ${flow.flow}: ${flow.why}`));
+  }
+  if (briefing.testing_focus?.length) {
+    lines.push("", "What to verify:");
+    briefing.testing_focus.forEach((item) => lines.push(`- ${item}`));
+  }
+  if (briefing.risk_note) lines.push("", `Risk & recommendation: ${briefing.risk_note}`);
+  return lines.join("\n");
+}
+
 function formatAgentImpact(payload = {}) {
   const lines = [];
+  if (payload.briefing) {
+    lines.push(formatBriefing(payload.briefing));
+    lines.push("", "── Technical details ──");
+  }
   lines.push(`Summary: ${payload.summary || "(no summary returned)"}`);
   const areas = payload.impact_areas || [];
   const overallRisk = areas.some((area) => area.risk_level === "high")
@@ -301,7 +327,7 @@ const TOOLS = [
   {
     name: "analyze_impact",
     description:
-      "Run the full multi-agent LangGraph change-impact workflow for a proposed code change against one imported repository. Returns impacted modules grouped by area with risk levels (low/medium/high), targeted testing suggestions, open questions to resolve before implementing, safety-guardrail status, and an execution trace across the classifier/retriever/impact-analyst/QA-planner/synthesizer agents. Use this before making a non-trivial change, or when asked \"what would break if I changed X\". Maps to POST /api/agent-impact.",
+      "Run the full multi-agent LangGraph change-impact workflow for a proposed code change against one imported repository. Returns a plain-language PM/QA briefing (business summary, affected flows, what to verify, risk note) up front, followed by the technical details: impacted modules grouped by area with risk levels (low/medium/high), targeted testing suggestions, open questions to resolve before implementing, safety-guardrail status, and an execution trace across the classifier/retriever/impact-analyst/QA-planner/synthesizer agents. Use this before making a non-trivial change, or when asked \"what would break if I changed X\". Maps to POST /api/agent-impact.",
     inputSchema: {
       type: "object",
       properties: {
