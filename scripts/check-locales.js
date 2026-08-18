@@ -48,6 +48,11 @@ const requiredPaths = [
   "chat.memorySuggestions",
   "chat.saveMemory",
   "chat.ignoreMemory",
+  "chat.briefingTitle",
+  "chat.briefingFlows",
+  "chat.briefingTesting",
+  "chat.briefingRisk",
+  "chat.techDetails",
   "dashboard.guardrailHits",
   "dashboard.memorySaves",
   "dashboard.fallbackRuns"

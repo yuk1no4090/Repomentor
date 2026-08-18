@@ -105,7 +105,15 @@ const requiredRuntimeSnippets = [
   "uncited_impact_areas",
   "Uncited impact areas:",
   "const AGENT_TOOL_REGISTRY =",
-  "function validateTraceToolUse"
+  "function validateTraceToolUse",
+  // PM/QA business briefing (pure addition to the impact payload; see lib/answers.js).
+  "function buildImpactBriefing",
+  "function isValidBriefingShape",
+  "briefing: buildImpactBriefing(areas)",
+  "briefing: fallbackImpact.briefing",
+  "briefing: state.impact.briefing",
+  "next.briefing = isValidBriefingShape(next.briefing)",
+  "briefing must be an object with summary (string), affected_flows ([{flow, why}]), testing_focus ([string]), and risk_note (string)"
 ];
 
 const missingRuntimeSnippets = requiredRuntimeSnippets.filter((snippet) => !serverSource.includes(snippet));

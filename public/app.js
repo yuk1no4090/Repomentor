@@ -29,7 +29,7 @@ const progressSteps = [
 
 const copy = {
   en: {
-    brand: "Developer Onboarding Copilot",
+    brand: "Repomentor",
     nav: { landing: "Product", import: "Import", overview: "Overview", chat: "Copilot", dashboard: "Evaluation", brandAria: "Go to product page", languageAria: "Language switch" },
     home: {
       title: "Repository onboarding, with evidence.",
@@ -174,6 +174,11 @@ const copy = {
       impactAreas: "Impact Areas",
       tests: "Testing Suggestions",
       openQuestions: "Open Questions",
+      briefingTitle: "Business Impact Briefing",
+      briefingFlows: "Affected Flows",
+      briefingTesting: "What to Verify",
+      briefingRisk: "Risk & Recommendation",
+      techDetails: "Technical details (modules, citations, trace)",
       agentTrace: "Agent Trace",
       agentInstructions: "Agent Instructions",
       frameworkConcepts: "Framework Concepts",
@@ -344,7 +349,7 @@ const copy = {
     }
   },
   zh: {
-    brand: "研发知识助手",
+    brand: "Repomentor",
     nav: { landing: "产品", import: "导入", overview: "总览", chat: "Copilot", dashboard: "评估", brandAria: "前往产品首页", languageAria: "语言切换" },
     home: {
       title: "有证据的代码库入门。",
@@ -489,6 +494,11 @@ const copy = {
       impactAreas: "影响范围",
       tests: "测试建议",
       openQuestions: "开放问题",
+      briefingTitle: "业务影响简报",
+      briefingFlows: "受影响的业务流程",
+      briefingTesting: "需要验证什么",
+      briefingRisk: "风险与建议",
+      techDetails: "技术详情（模块、引用、执行轨迹）",
       agentTrace: "Agent 执行轨迹",
       agentInstructions: "Agent 指令",
       frameworkConcepts: "框架概念",
@@ -1418,9 +1428,107 @@ function renderMemorySuggestions(suggestions = []) {
   `;
 }
 
+// PM/QA 简报卡片：置顶展示 lib/answers.js 生成的 payload.briefing（业务视角的自然语言
+// 叙事/受影响流程/验证重点/风险建议），不依赖 payload 是否来自 LLM 还是确定性回退。
+// 调用方必须先判断 payload.briefing 是否存在（旧数据没有这个字段），本函数本身不做回退。
+function renderImpactBriefing(briefing, c) {
+  return html`
+    <div class="impact-briefing">
+      <h3>${c.chat.briefingTitle}</h3>
+      <p class="briefing-summary">${escapeHtml(briefing.summary)}</p>
+      <h4>${c.chat.briefingFlows}</h4>
+      <div class="flow-list">
+        ${renderList(briefing.affected_flows, (flow) => `
+          <div class="flow-card">
+            <strong>${escapeHtml(flow.flow)}</strong>
+            <p>${escapeHtml(flow.why)}</p>
+          </div>
+        `)}
+      </div>
+      <h4>${c.chat.briefingTesting}</h4>
+      <ul class="briefing-testing">${renderList(briefing.testing_focus, (item) => `<li>${escapeHtml(item)}</li>`)}</ul>
+      <div class="briefing-risk">
+        <h4>${c.chat.briefingRisk}</h4>
+        <p>${escapeHtml(briefing.risk_note)}</p>
+      </div>
+    </div>
+  `;
+}
+
 function renderAgentImpactMessage(message) {
   const c = t();
   const payload = message.payload;
+  const hasBriefing = !!payload.briefing;
+  const memorySuggestionsHtml = renderMemorySuggestions(payload.memory_suggestions);
+  // technicalDetails 保留原来的完整技术清单（摘要/agent 元信息/trace/impact 区域/guardrails/
+  // 证据引用/测试建议/开放问题/不确定性）。有 briefing 时它被收进 <details> 折叠区，
+  // memory suggestions 挪到简报卡片旁边（更显眼，不跟技术清单一起被折叠）；
+  // 没有 briefing（旧数据）时整段原样铺开，且 memory suggestions 留在原来的位置，
+  // 与改动前的渲染逐字节一致 —— 这就是任务要求的"优雅回退到原渲染"。
+  const technicalDetails = html`
+    <h3>${c.chat.impactSummary}</h3>
+    <p>${escapeHtml(payload.summary)}</p>
+
+    <div class="agent-meta-grid">
+      <section>
+        <h3>${c.chat.agentInstructions}</h3>
+        <ul>${renderList(payload.agent?.instructions, (item) => `<li>${escapeHtml(item)}</li>`)}</ul>
+      </section>
+      <section>
+        <h3>${c.chat.frameworkConcepts}</h3>
+        <div class="tag-list">${renderList(payload.agent?.framework_concepts, (item) => `<span>${escapeHtml(item)}</span>`)}</div>
+      </section>
+    </div>
+
+    <h3>${c.chat.agentTrace}</h3>
+    <div class="trace-list">
+      ${renderList(payload.trace, (step) => html`
+        <div class="trace-step">
+          <strong>${escapeHtml(step.step)}</strong>
+          ${step.agent_role ? html`<span class="agent-role-badge">${escapeHtml(step.agent_role)}</span>` : ""}
+          <code>${escapeHtml(step.tool)}</code>
+          <p>${escapeHtml(step.purpose)}</p>
+          <small>${escapeHtml(renderJsonSummary(step.output))}</small>
+          ${(step.citations || []).length ? `<div class="compact-files">${step.citations.map((file) => `<code>${escapeHtml(file)}</code>`).join("")}</div>` : ""}
+        </div>
+      `)}
+    </div>
+
+    <h3>${c.chat.impactAreas}</h3>
+    <div class="impact-list">
+      ${renderList(payload.impact_areas, (area) => `
+        <div>
+          <strong>${escapeHtml(area.area)} <span class="risk ${escapeHtml(area.risk_level)}">${escapeHtml(area.risk_level)}</span></strong>
+          <p>${escapeHtml(area.reason)}</p>
+          <div class="compact-files">${(area.files || []).map((file) => `<code>${escapeHtml(file)}</code>`).join("")}</div>
+        </div>
+      `)}
+    </div>
+
+    <h3>${c.chat.guardrails}</h3>
+    <div class="guardrail-list">
+      ${renderList(payload.guardrails, (guardrail) => `
+        <div class="${escapeHtml(guardrail.status)}">
+          <strong>${escapeHtml(guardrail.name)}</strong>
+          <span>${escapeHtml(guardrail.status)}</span>
+          <p>${escapeHtml(guardrail.detail)}</p>
+        </div>
+      `)}
+    </div>
+
+    ${hasBriefing ? "" : memorySuggestionsHtml}
+
+    <h3>${c.chat.evidence}</h3>
+    <div class="citation-list">
+      ${renderList(payload.related_files, (file) => `<div><code>${escapeHtml(file.file_path)}</code><span>${escapeHtml(file.reason)}</span></div>`)}
+    </div>
+    <h3>${c.chat.tests}</h3>
+    <ul>${renderList(payload.testing_suggestions, (item) => `<li>${escapeHtml(item)}</li>`)}</ul>
+    <h3>${c.chat.openQuestions}</h3>
+    <ul>${renderList(payload.open_questions, (item) => `<li>${escapeHtml(item)}</li>`)}</ul>
+    <h3>${c.chat.uncertainty}</h3>
+    <p>${escapeHtml(payload.uncertainty)}</p>
+  `;
   return html`
     <article class="message agent-message">
       <div class="question">${escapeHtml(message.question)}</div>
@@ -1474,68 +1582,15 @@ function renderAgentImpactMessage(message) {
           </div>
         ` : ""}
 
-        <h3>${c.chat.impactSummary}</h3>
-        <p>${escapeHtml(payload.summary)}</p>
+        ${hasBriefing ? renderImpactBriefing(payload.briefing, c) : ""}
+        ${hasBriefing ? memorySuggestionsHtml : ""}
 
-        <div class="agent-meta-grid">
-          <section>
-            <h3>${c.chat.agentInstructions}</h3>
-            <ul>${renderList(payload.agent?.instructions, (item) => `<li>${escapeHtml(item)}</li>`)}</ul>
-          </section>
-          <section>
-            <h3>${c.chat.frameworkConcepts}</h3>
-            <div class="tag-list">${renderList(payload.agent?.framework_concepts, (item) => `<span>${escapeHtml(item)}</span>`)}</div>
-          </section>
-        </div>
-
-        <h3>${c.chat.agentTrace}</h3>
-        <div class="trace-list">
-          ${renderList(payload.trace, (step) => html`
-            <div class="trace-step">
-              <strong>${escapeHtml(step.step)}</strong>
-              ${step.agent_role ? html`<span class="agent-role-badge">${escapeHtml(step.agent_role)}</span>` : ""}
-              <code>${escapeHtml(step.tool)}</code>
-              <p>${escapeHtml(step.purpose)}</p>
-              <small>${escapeHtml(renderJsonSummary(step.output))}</small>
-              ${(step.citations || []).length ? `<div class="compact-files">${step.citations.map((file) => `<code>${escapeHtml(file)}</code>`).join("")}</div>` : ""}
-            </div>
-          `)}
-        </div>
-
-        <h3>${c.chat.impactAreas}</h3>
-        <div class="impact-list">
-          ${renderList(payload.impact_areas, (area) => `
-            <div>
-              <strong>${escapeHtml(area.area)} <span class="risk ${escapeHtml(area.risk_level)}">${escapeHtml(area.risk_level)}</span></strong>
-              <p>${escapeHtml(area.reason)}</p>
-              <div class="compact-files">${(area.files || []).map((file) => `<code>${escapeHtml(file)}</code>`).join("")}</div>
-            </div>
-          `)}
-        </div>
-
-        <h3>${c.chat.guardrails}</h3>
-        <div class="guardrail-list">
-          ${renderList(payload.guardrails, (guardrail) => `
-            <div class="${escapeHtml(guardrail.status)}">
-              <strong>${escapeHtml(guardrail.name)}</strong>
-              <span>${escapeHtml(guardrail.status)}</span>
-              <p>${escapeHtml(guardrail.detail)}</p>
-            </div>
-          `)}
-        </div>
-
-        ${renderMemorySuggestions(payload.memory_suggestions)}
-
-        <h3>${c.chat.evidence}</h3>
-        <div class="citation-list">
-          ${renderList(payload.related_files, (file) => `<div><code>${escapeHtml(file.file_path)}</code><span>${escapeHtml(file.reason)}</span></div>`)}
-        </div>
-        <h3>${c.chat.tests}</h3>
-        <ul>${renderList(payload.testing_suggestions, (item) => `<li>${escapeHtml(item)}</li>`)}</ul>
-        <h3>${c.chat.openQuestions}</h3>
-        <ul>${renderList(payload.open_questions, (item) => `<li>${escapeHtml(item)}</li>`)}</ul>
-        <h3>${c.chat.uncertainty}</h3>
-        <p>${escapeHtml(payload.uncertainty)}</p>
+        ${hasBriefing ? html`
+          <details class="tech-details">
+            <summary>${escapeHtml(c.chat.techDetails)}</summary>
+            ${technicalDetails}
+          </details>
+        ` : technicalDetails}
         ${feedbackBar(message.answerId)}
       </div>
     </article>
@@ -1545,26 +1600,36 @@ function renderAgentImpactMessage(message) {
 function renderImpactMessage(message) {
   const c = t();
   const payload = message.payload;
+  const hasBriefing = !!payload.briefing;
+  const technicalDetails = html`
+    <h3>${c.chat.impactSummary}</h3>
+    <p>${escapeHtml(payload.summary)}</p>
+    <h3>${c.chat.impactAreas}</h3>
+    <div class="impact-list">
+      ${renderList(payload.impact_areas, (area) => `
+        <div>
+          <strong>${escapeHtml(area.area)} <span class="risk ${escapeHtml(area.risk_level)}">${escapeHtml(area.risk_level)}</span></strong>
+          <p>${escapeHtml(area.reason)}</p>
+          <div class="compact-files">${(area.files || []).map((file) => `<code>${escapeHtml(file)}</code>`).join("")}</div>
+        </div>
+      `)}
+    </div>
+    <h3>${c.chat.tests}</h3>
+    <ul>${renderList(payload.testing_suggestions, (item) => `<li>${escapeHtml(item)}</li>`)}</ul>
+    <h3>${c.chat.openQuestions}</h3>
+    <ul>${renderList(payload.open_questions, (item) => `<li>${escapeHtml(item)}</li>`)}</ul>
+  `;
   return html`
     <article class="message">
       <div class="question">${escapeHtml(message.question)}</div>
       <div class="answer">
-        <h3>${c.chat.impactSummary}</h3>
-        <p>${escapeHtml(payload.summary)}</p>
-        <h3>${c.chat.impactAreas}</h3>
-        <div class="impact-list">
-          ${renderList(payload.impact_areas, (area) => `
-            <div>
-              <strong>${escapeHtml(area.area)} <span class="risk ${escapeHtml(area.risk_level)}">${escapeHtml(area.risk_level)}</span></strong>
-              <p>${escapeHtml(area.reason)}</p>
-              <div class="compact-files">${(area.files || []).map((file) => `<code>${escapeHtml(file)}</code>`).join("")}</div>
-            </div>
-          `)}
-        </div>
-        <h3>${c.chat.tests}</h3>
-        <ul>${renderList(payload.testing_suggestions, (item) => `<li>${escapeHtml(item)}</li>`)}</ul>
-        <h3>${c.chat.openQuestions}</h3>
-        <ul>${renderList(payload.open_questions, (item) => `<li>${escapeHtml(item)}</li>`)}</ul>
+        ${hasBriefing ? renderImpactBriefing(payload.briefing, c) : ""}
+        ${hasBriefing ? html`
+          <details class="tech-details">
+            <summary>${escapeHtml(c.chat.techDetails)}</summary>
+            ${technicalDetails}
+          </details>
+        ` : technicalDetails}
         ${feedbackBar(message.answerId)}
       </div>
     </article>
