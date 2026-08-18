@@ -37,7 +37,7 @@ import {
   listAuthUsers, listAuthTokenSummaries, listAuthEvents,
   upsertLocalAuthUser, disableLocalAuthUser, createAuthEvent, recordAuthEvent,
   requireAuthScope, requiredScopeForRequest, resolveAuthenticatedIdentity,
-  resolveAuthenticatedUserId, authIdentityResponse
+  resolveAuthenticatedUserId, authIdentityResponse, resolveUserId
 } from "./lib/auth.js";
 import {
   findProject, fetchGithubZip, parseZip, createProject
@@ -292,17 +292,114 @@ function findHarnessRunAudit(store, projectId, runId, userId = null) {
   };
 }
 
+// Routes whose handlers run 30s-class LLM/LangGraph work (POST /api/chat,
+// /api/agent-impact, /api/onboarding, /api/langgraph-resume). These do not go
+// through the single request-wide withWriteLock() in handleApi() below —
+// instead their route bodies in handleApiUnlocked() take two short,
+// independent locks of their own: one for store setup + auth bookkeeping
+// ("gate", via loadStoreWithAuthGate()) and one around the final
+// push-to-store + saveStore() ("commit"), with the actual retrieval/LLM/graph
+// work running unlocked in between. This is what lets a slow LLM call stop
+// blocking every other POST (and every GET once AUTH_REQUIRED) behind it,
+// which is what a single global write lock around the entire request used to
+// do.
+const HEAVY_MUTATION_PATHS = new Set([
+  "/api/chat",
+  "/api/agent-impact",
+  "/api/onboarding",
+  "/api/langgraph-resume"
+]);
+function isHeavyMutationRoute(method, pathname) {
+  return method === "POST" && HEAVY_MUTATION_PATHS.has(pathname);
+}
+
+// Shared preamble for every route: load the resident store, then (when
+// AUTH_REQUIRED) evaluate the auth scope for this request and record +
+// persist an audit event either way (denial or success). This mutates the
+// store (recordAuthEvent() pushes into store.authEvents; requireAuthScope()
+// can bump a store-backed token's lastUsedAt via findStoreAuthTokenIdentity())
+// and calls saveStore(), so the caller must already hold the write lock for
+// the duration of this call — this function does not lock itself, so it can
+// be composed either way: nested inside the whole-request lock that wraps
+// lightweight routes, or wrapped in its own short-lived lock for the heavy
+// routes above (see handleApi()/handleApiUnlocked() below).
+async function loadStoreWithAuthGate(req, pathname) {
+  const store = await ensureStore();
+  if (AUTH_REQUIRED && pathname !== "/api/health") {
+    try {
+      requireAuthScope(req, pathname, store);
+    } catch (error) {
+      recordAuthEvent(store, createAuthEvent({
+        identity: error.auth ? {
+          userId: error.auth.user_id,
+          role: error.auth.role,
+          scopes: error.auth.scopes,
+          orgId: error.auth.org_id
+        } : null,
+        req,
+        pathname,
+        requiredScope: error.required_scope || requiredScopeForRequest(req, pathname),
+        status: "denied",
+        reason: error.code || "AUTH_DENIED"
+      }));
+      await saveStore(store);
+      throw error;
+    }
+    recordAuthEvent(store, req.authEvent);
+    await saveStore(store);
+  }
+  return store;
+}
+
+// Used by the 4 heavy-mutation routes (see isHeavyMutationRoute() above) in
+// place of a second resolveAuthenticatedUserId(req, body, store) call in
+// their route body. That second call — needed because the request body,
+// parsed only after the gate lock releases, can name a userId that must be
+// checked against the authenticated token — would otherwise re-derive the
+// identity from the token via findStoreAuthTokenIdentity() during the
+// *unlocked* compute phase. For a store-backed token, that function bumps
+// tokenRecord.lastUsedAt on the shared store object outside any lock.
+// requireAuthScope() (run inside the gate lock, see loadStoreWithAuthGate()
+// above) already resolved and validated the identity once per request and
+// stashed it on req.auth, so this reuses that instead of re-resolving from
+// the token, while still performing the same body/header-vs-token
+// consistency check (AUTH_USER_MISMATCH) that resolveAuthenticatedUserId()
+// performs — see scripts/auth-boundary-test.js's "impersonation" case, which
+// POSTs a different body.userId than the token owns to /api/agent-impact and
+// expects a 403.
+function resolveHeavyRouteUserId(req, body) {
+  if (!AUTH_REQUIRED) return resolveUserId(req, body);
+  const identity = req.auth;
+  const requestedUserId = body.userId || body.user_id || req.headers["x-user-id"] || req.headers["x-ai-pm-user-id"];
+  if (requestedUserId && normalizeUserId(requestedUserId) !== identity.userId) {
+    throw apiError("Authenticated token cannot act as a different user.", "AUTH_USER_MISMATCH", 403);
+  }
+  return identity.userId;
+}
+
 async function handleApi(req, res, pathname) {
   // Non-GET requests always mutate the store, so they always take the write
   // lock. GET only needs the lock when AUTH_REQUIRED is on and the route
   // isn't /api/health: that's the one GET path that calls
-  // recordAuthEvent()+saveStore() (see handleApiUnlocked below), so it can
-  // race with a concurrent POST's load-modify-save cycle. /api/health is
+  // recordAuthEvent()+saveStore() (see loadStoreWithAuthGate() above), so it
+  // can race with a concurrent POST's load-modify-save cycle. /api/health is
   // explicitly excluded from that auth-event bookkeeping and never writes
   // the store, so it must stay unlocked — agent workflow requests can hold
-  // the write lock for 30s+ (LLM_REQUEST_TIMEOUT_MS x multi-step runs), and
+  // a write lock for 30s+ (LLM_REQUEST_TIMEOUT_MS x multi-step runs), and
   // the Dockerfile HEALTHCHECK only allows 5s with 3 retries; queuing health
   // checks behind that would get the container flagged unhealthy.
+  //
+  // The heavy LLM/LangGraph routes are the other reason a request could hold
+  // a lock that long, and now they don't: handleApiUnlocked() manages its own
+  // short gate/commit locks for them (see isHeavyMutationRoute() above), so
+  // this dispatcher must not also wrap their whole call in a lock here — that
+  // would just reintroduce the same request-wide serialization via a second,
+  // redundant lock layer (and, if it ever nested inside handleApiUnlocked's
+  // own withWriteLock() calls, would deadlock: withWriteLock()'s queue is not
+  // reentrant).
+  if (isHeavyMutationRoute(req.method, pathname)) {
+    return handleApiUnlocked(req, res, pathname);
+  }
   const needsWriteLock = req.method !== "GET" || (AUTH_REQUIRED && pathname !== "/api/health");
   if (needsWriteLock) {
     return withWriteLock(() => handleApiUnlocked(req, res, pathname));
@@ -313,30 +410,9 @@ async function handleApi(req, res, pathname) {
 async function handleApiUnlocked(req, res, pathname) {
   let store = null;
   try {
-    store = await ensureStore();
-    if (AUTH_REQUIRED && pathname !== "/api/health") {
-      try {
-        requireAuthScope(req, pathname, store);
-      } catch (error) {
-        recordAuthEvent(store, createAuthEvent({
-          identity: error.auth ? {
-            userId: error.auth.user_id,
-            role: error.auth.role,
-            scopes: error.auth.scopes,
-            orgId: error.auth.org_id
-          } : null,
-          req,
-          pathname,
-          requiredScope: error.required_scope || requiredScopeForRequest(req, pathname),
-          status: "denied",
-          reason: error.code || "AUTH_DENIED"
-        }));
-        await saveStore(store);
-        throw error;
-      }
-      recordAuthEvent(store, req.authEvent);
-      await saveStore(store);
-    }
+    store = isHeavyMutationRoute(req.method, pathname)
+      ? await withWriteLock(() => loadStoreWithAuthGate(req, pathname))
+      : await loadStoreWithAuthGate(req, pathname);
 
     if (req.method === "GET" && pathname === "/api/auth/me") {
       const identity = resolveAuthenticatedIdentity(req, {}, store);
@@ -662,7 +738,7 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "POST" && pathname === "/api/chat") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
-      const userId = resolveAuthenticatedUserId(req, body, store);
+      const userId = resolveHeavyRouteUserId(req, body);
       const project = findProject(store, body.projectId, userId);
       const question = String(body.question || "").trim();
       if (!question) throw apiError("Question is required.", "QUESTION_REQUIRED");
@@ -773,20 +849,34 @@ async function handleApiUnlocked(req, res, pathname) {
         responseTimeMs: Date.now() - started,
         createdAt: new Date().toISOString()
       };
-      store.questions.push(questionRecord);
-      store.answers.push(answerRecord);
-      recordHarnessRun(store, answerRecord);
-      if (memorySuggestions.length) {
-        appendMemorySuggestions(store, memorySuggestions);
-      }
-      await saveStore(store);
+      // Commit phase: everything above (retrieval, safety scans, the LLM
+      // call) ran unlocked. Re-fetch the store here — it may have changed on
+      // disk while we were computing (another writer, or a test harness
+      // editing store.json directly; see lib/store.js's cache-invalidation
+      // contract) — and re-validate the project still exists before
+      // attaching records to it, so the actual mutation stays atomic and
+      // free of the TOCTOU window the unlocked compute phase opened up.
+      await withWriteLock(async () => {
+        const commitStore = await ensureStore();
+        // Return value intentionally discarded: we only need the
+        // throw-if-missing side effect (re-validating the project wasn't
+        // removed while we computed unlocked), not the project object itself.
+        findProject(commitStore, project.id, userId);
+        commitStore.questions.push(questionRecord);
+        commitStore.answers.push(answerRecord);
+        recordHarnessRun(commitStore, answerRecord);
+        if (memorySuggestions.length) {
+          appendMemorySuggestions(commitStore, memorySuggestions);
+        }
+        await saveStore(commitStore);
+      });
       sendJson(res, 200, { answerId: answerRecord.id, kind, payload });
       return;
     }
 
     if (req.method === "POST" && pathname === "/api/onboarding") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
-      const userId = resolveAuthenticatedUserId(req, body, store);
+      const userId = resolveHeavyRouteUserId(req, body);
       const project = findProject(store, body.projectId, userId);
       const started = Date.now();
       const runId = createHarnessRunId("onboarding");
@@ -861,29 +951,34 @@ async function handleApiUnlocked(req, res, pathname) {
         responseTimeMs: 0,
         createdAt: new Date().toISOString()
       };
-      store.questions.push(questionRecord);
-      store.answers.push(answerRecord);
-      recordHarnessRun(store, answerRecord);
-      if (memorySuggestions.length) {
-        appendMemorySuggestions(store, memorySuggestions);
-      }
-      await saveStore(store);
+      // Commit phase — see the matching comment in /api/chat above.
+      await withWriteLock(async () => {
+        const commitStore = await ensureStore();
+        // Return value intentionally discarded: we only need the
+        // throw-if-missing side effect (re-validating the project wasn't
+        // removed while we computed unlocked), not the project object itself.
+        findProject(commitStore, project.id, userId);
+        commitStore.questions.push(questionRecord);
+        commitStore.answers.push(answerRecord);
+        recordHarnessRun(commitStore, answerRecord);
+        if (memorySuggestions.length) {
+          appendMemorySuggestions(commitStore, memorySuggestions);
+        }
+        await saveStore(commitStore);
+      });
       sendJson(res, 200, { answerId: answerRecord.id, kind: "onboarding", payload });
       return;
     }
 
     if (req.method === "POST" && pathname === "/api/agent-impact") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
-      const userId = resolveAuthenticatedUserId(req, body, store);
+      const userId = resolveHeavyRouteUserId(req, body);
       const project = findProject(store, body.projectId, userId);
       const question = String(body.question || "").trim();
       if (!question) throw apiError("Question is required.", "QUESTION_REQUIRED");
       if (question.length > MAX_QUESTION_LENGTH) throw apiError(`Question exceeds maximum length of ${MAX_QUESTION_LENGTH} characters.`, "QUESTION_TOO_LONG", 413);
       const started = Date.now();
       const payload = await runAgenticImpactWorkflow(store, project, question, userId);
-      if (payload.memory_suggestions?.length) {
-        appendMemorySuggestions(store, payload.memory_suggestions);
-      }
       const questionRecord = {
         id: crypto.randomUUID(),
         projectId: project.id,
@@ -900,10 +995,24 @@ async function handleApiUnlocked(req, res, pathname) {
         responseTimeMs: Date.now() - started,
         createdAt: new Date().toISOString()
       };
-      store.questions.push(questionRecord);
-      store.answers.push(answerRecord);
-      recordHarnessRun(store, answerRecord);
-      await saveStore(store);
+      // Commit phase — see the matching comment in /api/chat above. This is
+      // the route this whole refactor is for: runAgenticImpactWorkflow()
+      // above is the 30s-class LangGraph call that used to hold the single
+      // global write lock for its entire duration.
+      await withWriteLock(async () => {
+        const commitStore = await ensureStore();
+        // Return value intentionally discarded: we only need the
+        // throw-if-missing side effect (re-validating the project wasn't
+        // removed while we computed unlocked), not the project object itself.
+        findProject(commitStore, project.id, userId);
+        if (payload.memory_suggestions?.length) {
+          appendMemorySuggestions(commitStore, payload.memory_suggestions);
+        }
+        commitStore.questions.push(questionRecord);
+        commitStore.answers.push(answerRecord);
+        recordHarnessRun(commitStore, answerRecord);
+        await saveStore(commitStore);
+      });
       sendJson(res, 200, { answerId: answerRecord.id, kind: "agent_impact", payload });
       return;
     }
@@ -981,7 +1090,7 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "POST" && pathname === "/api/langgraph-resume") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
-      const userId = resolveAuthenticatedUserId(req, body, store);
+      const userId = resolveHeavyRouteUserId(req, body);
       const project = findProject(store, body.projectId, userId);
       const started = Date.now();
       const resumed = await runLangGraphResumeFromCheckpoint(store, {
@@ -991,9 +1100,6 @@ async function handleApiUnlocked(req, res, pathname) {
         userId,
         decision: body.decision || null
       });
-      if (resumed.payload.memory_suggestions?.length) {
-        appendMemorySuggestions(store, resumed.payload.memory_suggestions);
-      }
       const questionRecord = {
         id: crypto.randomUUID(),
         projectId: resumed.project.id,
@@ -1010,10 +1116,22 @@ async function handleApiUnlocked(req, res, pathname) {
         responseTimeMs: Date.now() - started,
         createdAt: new Date().toISOString()
       };
-      store.questions.push(questionRecord);
-      store.answers.push(answerRecord);
-      recordHarnessRun(store, answerRecord);
-      await saveStore(store);
+      // Commit phase — see the matching comment in /api/chat above.
+      // runLangGraphResumeFromCheckpoint() re-invokes the same 30s-class
+      // LangGraph workflow as /api/agent-impact.
+      await withWriteLock(async () => {
+        const commitStore = await ensureStore();
+        // Return value intentionally discarded — see the matching comment in
+        // /api/chat's commit lock above.
+        findProject(commitStore, resumed.project.id, userId);
+        if (resumed.payload.memory_suggestions?.length) {
+          appendMemorySuggestions(commitStore, resumed.payload.memory_suggestions);
+        }
+        commitStore.questions.push(questionRecord);
+        commitStore.answers.push(answerRecord);
+        recordHarnessRun(commitStore, answerRecord);
+        await saveStore(commitStore);
+      });
       sendJson(res, 200, {
         answerId: answerRecord.id,
         kind: "agent_impact",
