@@ -288,7 +288,41 @@ const copy = {
         ["High uncertain rate", "Improve docs ingestion and expose missing-context prompts."],
         ["Too generic feedback", "Ask follow-up questions and require concrete files/functions."]
       ],
-      occurrences: "occurrences"
+      occurrences: "occurrences",
+      qualitySummary: {
+        title: "Quality summary",
+        empty: "Ask a few questions in Copilot to generate a quality summary from real usage.",
+        citation: "Across {total} questions, {citationPct}% of answers cite the exact files behind them — grounded, not guessed.",
+        guardrail: "Guardrails flagged {guardrailHits} answers for safety review and automatically redacted {redactionMatches} sensitive matches — every answer is scanned, none pass silently.",
+        fallback: "The LLM call failed or was skipped {fallbackRuns} times; the system fell back to deterministic retrieval instead of producing an ungrounded answer.",
+        feedback: "Of the feedback collected, {helpfulRate}% marked answers helpful and {negativeRate}% flagged an issue for follow-up."
+      },
+      groups: {
+        trust: {
+          title: "Trustworthiness",
+          desc: "Whether answers are grounded in real files and pass schema validation — the basis for trusting any single answer."
+        },
+        safety: {
+          title: "Safety",
+          desc: "What guardrails caught, what got redacted, and what import-time risks were flagged before they reached a user."
+        },
+        reliability: {
+          title: "Reliability",
+          desc: "How the system behaves when the model is slow, unavailable, or over budget — and whether it degrades gracefully."
+        },
+        usage: {
+          title: "Usage & feedback",
+          desc: "How much the product is actually used, and what real users say about the answers it gives."
+        }
+      },
+      methodology: {
+        title: "How this evaluation works",
+        intro: "Every answer automatically records a harness run snapshot (trace, schema validation, budget/timeout status), a citation check against the imported repository, and an input/retrieval/output safety scan — no external LLMOps tool is wired in.",
+        bullet1: "Harness snapshot: runtime, model mode, budget status, and fallback state are captured on every agent run.",
+        bullet2: "Citation validation: every answer's file references are checked against the actual imported repository.",
+        bullet3: "Safety scan: input, retrieval, and output are scanned for injection, secrets, and policy violations before an answer is returned.",
+        link: "Read the full harness/safety implementation in docs/AGENT_RUNTIME_ARCHITECTURE.md"
+      }
     },
     auth: {
       title: "Auth Operations",
@@ -608,7 +642,41 @@ const copy = {
         ["不确定率高", "改进文档导入，并提示缺失上下文。"],
         ["反馈太笼统", "要求回答包含具体文件和函数。"]
       ],
-      occurrences: "次"
+      occurrences: "次",
+      qualitySummary: {
+        title: "质量摘要",
+        empty: "先在 Copilot 里提几个问题，看板会基于真实使用数据生成质量摘要。",
+        citation: "过去 {total} 个问题中，引用覆盖率为 {citationPct}%——多数回答能定位到具体代码文件，不是凭空生成。",
+        guardrail: "护栏对 {guardrailHits} 次回答标记待复核，并自动脱敏 {redactionMatches} 处敏感信息匹配——每次回答都会被扫描，没有一次静默放行。",
+        fallback: "模型调用失败或被跳过时，系统 {fallbackRuns} 次自动回退到确定性检索，没有输出无依据的回答。",
+        feedback: "在收集到的反馈中，{helpfulRate}% 标记为有帮助，{negativeRate}% 标记出了需要跟进的问题。"
+      },
+      groups: {
+        trust: {
+          title: "可信度",
+          desc: "回答是否基于真实文件、是否通过 schema 校验——这是能不能相信单条回答的基础。"
+        },
+        safety: {
+          title: "安全",
+          desc: "护栏拦下了什么、脱敏处理了什么、导入时又标记出哪些风险——在触达用户之前先过一道。"
+        },
+        reliability: {
+          title: "可靠性",
+          desc: "模型变慢、不可用或超预算时系统如何应对——是否能优雅降级而不是直接报错。"
+        },
+        usage: {
+          title: "使用与反馈",
+          desc: "产品实际被用了多少、真实用户对回答给出了什么反馈。"
+        }
+      },
+      methodology: {
+        title: "这套评估体系是怎么采集的",
+        intro: "每次回答都会自动记录一份 harness 运行快照（执行轨迹、schema 校验、预算/超时状态）、一次针对导入仓库的引用校验，以及一轮输入/检索/输出三级安全扫描——不需要接入任何外部 LLMOps 工具。",
+        bullet1: "Harness 快照：每次 agent 运行都会记录运行时、模型模式、预算状态和 fallback 状态。",
+        bullet2: "引用校验：每条回答里的文件引用都会对照实际导入的仓库进行核实。",
+        bullet3: "安全扫描：回答返回前，输入、检索内容和输出都会被扫描 prompt 注入、密钥泄露和策略违规。",
+        link: "完整的 harness/安全实现见 docs/AGENT_RUNTIME_ARCHITECTURE.md"
+      }
     },
     auth: {
       title: "认证运维",
@@ -1993,23 +2061,78 @@ function dashboardPage() {
     top_failure_reasons: [],
     recent_feedback: []
   };
-  const metricCards = [
-    [c.dashboard.total, metrics.total_questions],
-    [c.dashboard.agentRuns, metrics.agent_runs || 0],
-    [c.dashboard.helpful, `${metrics.helpful_rate}%`],
+  const citationStatusLabel = c.dashboard.citationStatus || "引用状态";
+  const importSafetyBody = html`
+    <div class="evidence-stats">
+      <div><strong>${escapeHtml(metrics.import_safety_status || "not_applicable")}</strong><span>${escapeHtml((metrics.import_safety_risk_counts || []).map((item) => item.type).join(", ") || c.overview.noRisks)}</span></div>
+      <div><strong>${metrics.import_prompt_risk_file_count || 0}</strong><span>${c.overview.promptRisks}</span></div>
+      <div><strong>${metrics.import_sensitive_file_count || 0}</strong><span>${c.overview.sensitiveFiles}</span></div>
+    </div>
+  `;
+  const recentFeedbackBody = html`
+    <div class="feedback-log">
+      ${renderList(metrics.recent_feedback, (item) => {
+        const run = item.harness_run_id ? `run ${String(item.harness_run_id).slice(0, 18)}` : item.answer_kind || "answer";
+        const status = [item.answer_kind, item.safety_status].filter(Boolean).join(" / ");
+        return `<div><code>${escapeHtml(item.type)}</code><span>${escapeHtml(run)}</span><span>${escapeHtml(status || new Date(item.createdAt).toLocaleString())}</span></div>`;
+      })}
+    </div>
+  `;
+
+  // 四个叙事分组：可信度/安全/可靠性/使用与反馈。每组同时容纳数字卡片（沿用
+  // .metrics-grid/.metric）和排行/事件面板（沿用 .overview-grid/.panel），指标
+  // 本身来自 lib/metrics.js 的 computeMetrics 输出，这里只做前端归类，不增删字段。
+  const trustGroup = metricGroup("trust", c.dashboard.groups.trust, [
     [c.dashboard.citation, `${metrics.citation_coverage}%`],
-    [c.dashboard.uncertain, `${metrics.uncertain_answer_rate}%`],
-    [c.dashboard.negative, `${metrics.negative_feedback_rate}%`],
+    [c.dashboard.uncertain, `${metrics.uncertain_answer_rate}%`]
+  ], [
+    [c.dashboard.schemaStatus, rankedBars(metrics.schema_status_counts)],
+    [citationStatusLabel, rankedBars(metrics.citation_status_counts)]
+  ]);
+
+  const safetyGroup = metricGroup("safety", c.dashboard.groups.safety, [
     [c.dashboard.highRisk, metrics.high_risk_questions],
     [c.dashboard.guardrailHits, metrics.guardrail_hits || 0],
     [c.dashboard.outputRedactions, metrics.output_redaction_runs || 0],
-    [c.dashboard.redactedMatches, metrics.output_redaction_matches || 0],
-    [c.dashboard.memorySaves, metrics.memory_confirmations || 0],
+    [c.dashboard.redactedMatches, metrics.output_redaction_matches || 0]
+  ], [
+    [c.dashboard.safetyRisks, rankedBars(metrics.safety_risk_counts)],
+    [c.dashboard.safetyStatus, rankedBars(metrics.safety_status_counts)],
+    [c.dashboard.importSafetyTitle, importSafetyBody],
+    [c.dashboard.toolPolicy, rankedBars(metrics.tool_policy_counts)],
+    [c.dashboard.recentToolPolicyTitle, recentToolPolicyEvents(metrics.recent_tool_policy_events), "span-2"],
+    [c.dashboard.recentSafety, recentSafetyEvents(metrics.recent_safety_events), "span-2"],
+    [c.dashboard.recentRedactionsTitle, recentRedactionEvents(metrics.recent_redaction_events), "span-2"]
+  ]);
+
+  const reliabilityGroup = metricGroup("reliability", c.dashboard.groups.reliability, [
     [c.dashboard.fallbackRuns, metrics.fallback_runs || 0],
     [c.dashboard.harnessSnapshots, metrics.harness_run_snapshots || 0],
     [c.dashboard.avgResponse, `${metrics.average_response_time_ms || 0}ms`]
-  ];
-  const citationStatusLabel = c.dashboard.citationStatus || "引用状态";
+  ], [
+    [c.dashboard.harnessRuntime, rankedBars(metrics.harness_runtime_counts)],
+    [c.dashboard.modelMode, rankedBars(metrics.model_mode_counts)],
+    [c.dashboard.budgetStatus, rankedBars(metrics.budget_status_counts)],
+    [c.dashboard.llmUsage, rankedBars(metrics.llm_usage_counts)],
+    [c.dashboard.fallbackReasons, rankedBars(metrics.fallback_reasons)],
+    [c.dashboard.traceTools, rankedBars(metrics.trace_tool_counts), "span-2"],
+    [c.dashboard.recentRuns, recentHarnessRuns(metrics.recent_harness_runs), "span-2"]
+  ]);
+
+  const usageGroup = metricGroup("usage", c.dashboard.groups.usage, [
+    [c.dashboard.total, metrics.total_questions],
+    [c.dashboard.agentRuns, metrics.agent_runs || 0],
+    [c.dashboard.helpful, `${metrics.helpful_rate}%`],
+    [c.dashboard.negative, `${metrics.negative_feedback_rate}%`],
+    [c.dashboard.memorySaves, metrics.memory_confirmations || 0]
+  ], [
+    [c.dashboard.failures, failureReasons(metrics)],
+    [c.dashboard.memoryStatus, rankedBars(metrics.memory_status_counts)],
+    [c.dashboard.memoryEventsTitle, rankedBars(metrics.memory_event_counts)],
+    [c.dashboard.recentMemory, recentMemoryEvents(metrics.recent_memory_events), "span-2"],
+    [c.dashboard.recent, recentFeedbackBody, "span-2"]
+  ]);
+
   return html`
     <main class="page-shell">
       <div class="section-head row-head">
@@ -2021,107 +2144,21 @@ function dashboardPage() {
         <button class="secondary" data-action="refreshMetrics">${c.dashboard.refresh}</button>
       </div>
 
-      <section class="metrics-grid">
-        ${metricCards.map(([label, value]) => `<div class="metric"><span>${label}</span><strong>${value}</strong></div>`).join("")}
+      <section class="quality-summary">
+        <h2>${c.dashboard.qualitySummary.title}</h2>
+        <ul>
+          ${qualitySummaryLines(metrics, c).map((line) => `<li>${escapeHtml(line)}</li>`).join("")}
+        </ul>
       </section>
 
+      ${trustGroup}
+      ${safetyGroup}
+      ${reliabilityGroup}
+      ${usageGroup}
+
       <div class="overview-grid">
-        <section class="panel">
-          <h2>${c.dashboard.failures}</h2>
-          ${failureReasons(metrics)}
-        </section>
-        <section class="panel">
-          <h2>${c.dashboard.safetyRisks}</h2>
-          ${rankedBars(metrics.safety_risk_counts)}
-        </section>
-        <section class="panel">
-          <h2>${c.dashboard.importSafetyTitle}</h2>
-          <div class="evidence-stats">
-            <div><strong>${escapeHtml(metrics.import_safety_status || "not_applicable")}</strong><span>${escapeHtml((metrics.import_safety_risk_counts || []).map((item) => item.type).join(", ") || c.overview.noRisks)}</span></div>
-            <div><strong>${metrics.import_prompt_risk_file_count || 0}</strong><span>${c.overview.promptRisks}</span></div>
-            <div><strong>${metrics.import_sensitive_file_count || 0}</strong><span>${c.overview.sensitiveFiles}</span></div>
-          </div>
-        </section>
-        <section class="panel">
-          <h2>${c.dashboard.safetyStatus}</h2>
-          ${rankedBars(metrics.safety_status_counts)}
-        </section>
-        <section class="panel">
-          <h2>${citationStatusLabel}</h2>
-          ${rankedBars(metrics.citation_status_counts)}
-        </section>
-        <section class="panel">
-          <h2>${c.dashboard.memoryStatus}</h2>
-          ${rankedBars(metrics.memory_status_counts)}
-        </section>
-        <section class="panel">
-          <h2>${c.dashboard.memoryEventsTitle}</h2>
-          ${rankedBars(metrics.memory_event_counts)}
-        </section>
-        <section class="panel">
-          <h2>${c.dashboard.harnessRuntime}</h2>
-          ${rankedBars(metrics.harness_runtime_counts)}
-        </section>
-        <section class="panel">
-          <h2>${c.dashboard.modelMode}</h2>
-          ${rankedBars(metrics.model_mode_counts)}
-        </section>
-        <section class="panel">
-          <h2>${c.dashboard.toolPolicy}</h2>
-          ${rankedBars(metrics.tool_policy_counts)}
-        </section>
-        <section class="panel">
-          <h2>${c.dashboard.budgetStatus}</h2>
-          ${rankedBars(metrics.budget_status_counts)}
-        </section>
-        <section class="panel">
-          <h2>${c.dashboard.schemaStatus}</h2>
-          ${rankedBars(metrics.schema_status_counts)}
-        </section>
-        <section class="panel">
-          <h2>${c.dashboard.llmUsage}</h2>
-          ${rankedBars(metrics.llm_usage_counts)}
-        </section>
-        <section class="panel span-2">
-          <h2>${c.dashboard.traceTools}</h2>
-          ${rankedBars(metrics.trace_tool_counts)}
-        </section>
-        <section class="panel span-2">
-          <h2>${c.dashboard.recentToolPolicyTitle}</h2>
-          ${recentToolPolicyEvents(metrics.recent_tool_policy_events)}
-        </section>
-        <section class="panel span-2">
-          <h2>${c.dashboard.recentSafety}</h2>
-          ${recentSafetyEvents(metrics.recent_safety_events)}
-        </section>
-        <section class="panel span-2">
-          <h2>${c.dashboard.recentRedactionsTitle}</h2>
-          ${recentRedactionEvents(metrics.recent_redaction_events)}
-        </section>
-        <section class="panel span-2">
-          <h2>${c.dashboard.recentMemory}</h2>
-          ${recentMemoryEvents(metrics.recent_memory_events)}
-        </section>
-        <section class="panel">
-          <h2>${c.dashboard.fallbackReasons}</h2>
-          ${rankedBars(metrics.fallback_reasons)}
-        </section>
-        <section class="panel span-2">
-          <h2>${c.dashboard.recentRuns}</h2>
-          ${recentHarnessRuns(metrics.recent_harness_runs)}
-        </section>
         ${harnessAuditPanel(state.harnessAudit)}
         ${renderAuthOperationsPanel()}
-        <section class="panel span-2">
-          <h2>${c.dashboard.recent}</h2>
-          <div class="feedback-log">
-            ${renderList(metrics.recent_feedback, (item) => {
-              const run = item.harness_run_id ? `run ${String(item.harness_run_id).slice(0, 18)}` : item.answer_kind || "answer";
-              const status = [item.answer_kind, item.safety_status].filter(Boolean).join(" / ");
-              return `<div><code>${escapeHtml(item.type)}</code><span>${escapeHtml(run)}</span><span>${escapeHtml(status || new Date(item.createdAt).toLocaleString())}</span></div>`;
-            })}
-          </div>
-        </section>
         <section class="panel span-3 improvement-panel">
           <h2>${c.dashboard.signals}</h2>
           <div class="iteration-grid">
@@ -2129,7 +2166,77 @@ function dashboardPage() {
           </div>
         </section>
       </div>
+
+      ${evaluationMethodologyCard(c)}
     </main>
+  `;
+}
+
+// 从 computeMetrics 输出的既有字段拼出 3-4 句自然语言结论（英/中双语走 copy 模板，
+// 用 {placeholder} 做数值替换，与 c.auth.disableConfirmTemplate 的既有约定一致）。
+// 不发明新数据：所有数值都来自 metrics 对象已经暴露的字段。
+function qualitySummaryLines(metrics, c) {
+  const qs = c.dashboard.qualitySummary;
+  if (!metrics.total_questions) {
+    return [qs.empty];
+  }
+  return [
+    qs.citation
+      .replace("{total}", metrics.total_questions)
+      .replace("{citationPct}", metrics.citation_coverage),
+    qs.guardrail
+      .replace("{guardrailHits}", metrics.guardrail_hits || 0)
+      .replace("{redactionMatches}", metrics.output_redaction_matches || 0),
+    qs.fallback
+      .replace("{fallbackRuns}", metrics.fallback_runs || 0),
+    qs.feedback
+      .replace("{helpfulRate}", metrics.helpful_rate || 0)
+      .replace("{negativeRate}", metrics.negative_feedback_rate || 0)
+  ];
+}
+
+// 一个叙事分组 = 一句"为什么值得看"的说明文案 + 数字卡片（.metrics-grid）+
+// 排行/事件面板（.overview-grid），纯前端重组既有指标，不改变 lib/metrics.js。
+function metricGroup(key, groupCopy, cards, panels) {
+  return html`
+    <section class="metric-group" data-metric-group="${escapeHtml(key)}">
+      <div class="metric-group-head">
+        <h2>${groupCopy.title}</h2>
+        <p>${groupCopy.desc}</p>
+      </div>
+      <div class="metrics-grid">
+        ${cards.map(([label, value]) => `<div class="metric"><span>${label}</span><strong>${value}</strong></div>`).join("")}
+      </div>
+      <div class="overview-grid">
+        ${panels.map(([title, body, spanClass]) => `
+          <section class="panel${spanClass ? ` ${escapeHtml(spanClass)}` : ""}">
+            <h2>${title}</h2>
+            ${body}
+          </section>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
+// 折叠说明卡（复用 chat 里 briefing 引入的 <details class="tech-details"> 模式）：
+// 解释指标怎么采集——每次回答自动记录 harness 快照/引用校验/安全扫描，不需要
+// 外接 LLMOps 工具；链接到 docs/AGENT_RUNTIME_ARCHITECTURE.md 供想深入的读者查证。
+function evaluationMethodologyCard(c) {
+  const m = c.dashboard.methodology;
+  return html`
+    <section class="panel methodology-card">
+      <details class="tech-details">
+        <summary>${escapeHtml(m.title)}</summary>
+        <p>${escapeHtml(m.intro)}</p>
+        <ul>
+          <li>${escapeHtml(m.bullet1)}</li>
+          <li>${escapeHtml(m.bullet2)}</li>
+          <li>${escapeHtml(m.bullet3)}</li>
+        </ul>
+        <p><a href="https://github.com/yuk1no4090/Repomentor/blob/main/docs/AGENT_RUNTIME_ARCHITECTURE.md" target="_blank" rel="noopener noreferrer">${escapeHtml(m.link)}</a></p>
+      </details>
+    </section>
   `;
 }
 
