@@ -595,6 +595,8 @@ AI Developer Onboarding Copilot｜AI 产品经理个人项目
 
 ## 15. 定位收敛决策（2026-08-12）
 
+> 产品名 Repomentor（2026-08-18 定名），品类：AI Developer Onboarding Copilot。
+
 > 本节是两轮工程优化（见 CHANGELOG 2026-08-11/12）完成后，基于市场调研做出的定位复盘决策，作为后续迭代的取舍依据。
 
 ### 背景

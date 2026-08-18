@@ -4,7 +4,11 @@
   <img src="docs/assets/banner.svg" alt="AI Developer Onboarding Copilot — cited answers, impact briefings, built-in evals" width="920">
 </p>
 
-# AI Developer Onboarding Copilot
+<p align="center">
+  <strong>🚀 Live Demo:</strong> https://pm.yuk1no4090.site · <strong>Portfolio:</strong> https://yuk1no4090.site
+</p>
+
+# Repomentor
 
 _An MVP web app for helping new engineers, technical PMs, and QA understand a repository with AI-style repository summaries, codebase Q&A, impact analysis, an agentic impact workflow, onboarding plans, citations, feedback, and evaluation metrics._
 

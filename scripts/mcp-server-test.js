@@ -230,7 +230,7 @@ async function main() {
       capabilities: {},
       clientInfo: { name: "ai-pm-mcp-server-test", version: "0.0.1" }
     });
-    assert(initResult?.serverInfo?.name === "ai-pm-mcp", "initialize did not report expected server name");
+    assert(initResult?.serverInfo?.name === "repomentor", "initialize did not report expected server name");
     await rpc.notify("notifications/initialized", {});
 
     const toolsList = await rpc.request("tools/list", {});
