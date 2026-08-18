@@ -1,5 +1,7 @@
 # Positioning One-Pager｜AI Developer Onboarding Copilot
 
+> 产品名 Repomentor（2026-08-18 定名），品类：AI Developer Onboarding Copilot。
+
 > 面试随身页：一句话定位 → 市场验证 → 差异化切入 → 可验证的能力证据。数据截至 2026-08-12，市场信息来自桌面调研（来源见 PRD 第 15 节）。
 
 ## 一句话定位

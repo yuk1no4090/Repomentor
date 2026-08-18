@@ -384,7 +384,7 @@ async function main() {
   }
 
   const server = new Server(
-    { name: "ai-pm-mcp", version: PACKAGE_VERSION },
+    { name: "repomentor", version: PACKAGE_VERSION },
     { capabilities: { tools: {} } }
   );
 

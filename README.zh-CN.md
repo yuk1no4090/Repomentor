@@ -4,7 +4,11 @@
   <img src="docs/assets/banner.svg" alt="AI Developer Onboarding Copilot — 带引用的问答、影响简报、内置评估" width="920">
 </p>
 
-# AI Developer Onboarding Copilot
+<p align="center">
+  <strong>🚀 在线演示：</strong> https://pm.yuk1no4090.site · <strong>作品集：</strong> https://yuk1no4090.site
+</p>
+
+# Repomentor
 
 _一个帮助新工程师、技术 PM 和 QA 快速理解代码仓库的 MVP Web 应用：提供 AI 风格的仓库摘要、代码问答、影响分析、agentic 影响分析工作流、onboarding 计划、引用、反馈以及评估指标。_
 

@@ -5,6 +5,16 @@
 
 ---
 
+## 2026-08-18 — 品牌定名 Repomentor + Live Demo 上线 + LLM schema 校验修复
+
+背景：项目对外可见度提升（README 作品集化、MCP Server 上线）后统一品牌名称，避免仓库/文档里新旧命名混用；同时产品已部署上线，README 补充可直接访问的 live demo 链接。
+
+- **品牌统一为 Repomentor**（2026-08-18 定名，品类仍为 AI Developer Onboarding Copilot）：GitHub 仓库从 `yuk1no4090/AI-PM` 更名为 [`yuk1no4090/Repomentor.git`](https://github.com/yuk1no4090/Repomentor)；同步改名的位置包括 README.md / README.zh-CN.md 的 H1、`docs/assets/banner.svg` 的 `aria-label` 与标题文字、`public/index.html` 的 `<title>`、`package.json`（及 `package-lock.json`）的 `name`、`mcp-server.js` 里 MCP `serverInfo.name`（连带同步 `scripts/mcp-server-test.js` 的期望断言）；`docs/POSITIONING.md`、`docs/PRD.md` 第 15 节各补充一行命名说明。
+- **Live Demo 上线**：README.md / README.zh-CN.md 横幅图下方新增一行，指向已部署实例 https://pm.yuk1no4090.site 与作品集主页 https://yuk1no4090.site。
+- **LLM schema 校验修复**（`bd73106`，见 `git log d930949..main`）：`lib/llm.js` 给模型的 schema 指令此前只列字段名、未说明形状，DeepSeek 等模型把 `related_files` 返回成裸路径字符串数组，被 `lib/answers.js` 的严格校验判定为 `LLM_SCHEMA_INVALID` 并整份丢弃、静默退回确定性检索答案——尽管 API 调用本身成功。改为在 prompt 指令里写出完整 JSON 形状，并点明两条最容易猜错的约束（`related_files` 条目不能是裸路径字符串、`risk_level` 只能取 low/medium/high 枚举）。
+
+---
+
 ## 2026-08-14 — README 作品集化：定位头部 + Mermaid 架构图 + 双语重排
 
 背景：本仓库是公开的求职作品集，面试官平均停留 2 分钟，但原 README（英文 310 行/中文对应镜像）是纯运维手册结构（Run/Test/Config/Docker/MCP/Notes/Features/Architecture/API），前 50 行看不出"这是什么、为什么值得看、质量如何"。本轮改造把定位信息前置，内容全部保留、只做移位与新增。
