@@ -163,6 +163,55 @@ const missingMemoryEndpointSnippets = requiredMemoryEndpointSnippets.filter((sni
   return !serverSource.includes(snippet);
 });
 
+// ── Reviewer-flagged regression guards: unlocked-compute-phase hidden store
+// writes in the heavy-mutation routes ──
+// Two BLOCK findings on the lock-granularity refactor above: (1)
+// getUserPreferences() used to lazily write a normalized-defaults entry into
+// store.userPreferencesByUser on first read, hit by every heavy route via
+// direct calls and via createMemorySuggestions()/the LangGraph "memory" node;
+// (2) the heavy routes' second resolveAuthenticatedUserId(req, body, store)
+// call (needed to check body.userId against the token) re-derived the
+// identity from a store-backed token a second time, bumping
+// tokenRecord.lastUsedAt outside any lock. Both are fixed by making
+// getUserPreferences() a pure read and by threading the gate-phase-resolved
+// identity through resolveHeavyRouteUserId(req, body) (no store parameter)
+// instead of re-resolving from the token. These checks guard against either
+// regression creeping back in.
+const requiredPureReadSnippets = [
+  // getUserPreferences() must stay a pure read — no assignment into
+  // store.userPreferencesByUser as a side effect of reading.
+  "const stored = store.userPreferencesByUser?.[normalizedUserId]",
+  "return normalizePreferences(stored)",
+  // resolveHeavyRouteUserId() must keep reusing the identity requireAuthScope()
+  // already resolved onto req.auth during the gate lock, rather than taking a
+  // store parameter and re-deriving identity from the token.
+  "function resolveHeavyRouteUserId(req, body) {",
+  "const identity = req.auth;"
+];
+const missingPureReadSnippets = requiredPureReadSnippets.filter((snippet) => {
+  return !serverSource.includes(snippet);
+});
+
+// The old lazy-write body of getUserPreferences() must not reappear.
+const forbiddenLazyPreferenceWrite = "store.userPreferencesByUser[normalizedUserId] = normalizedUserId === DEFAULT_USER_ID";
+const reintroducedLazyPreferenceWrite = serverSource.includes(forbiddenLazyPreferenceWrite);
+
+// Exactly the 3 lightweight routes (memory/confirm, memory/forget, import)
+// should still call resolveAuthenticatedUserId(req, body, store) directly;
+// exactly the 4 heavy routes (chat, onboarding, agent-impact,
+// langgraph-resume) should call resolveHeavyRouteUserId(req, body) instead —
+// a count drifting from either exact number means a route was moved between
+// the two locking strategies without updating the userId-resolution call to
+// match, which would silently reintroduce (or hide) the lock-outside store
+// touch this was fixed for.
+// Matched with a leading "= " so the function's own declaration line
+// (`function resolveHeavyRouteUserId(req, body) {`) and any prose mention of
+// the call shape in comments don't inflate the count — only real call sites
+// assign the return value to a local like `const userId = ...`.
+const heavyRouteUserIdCallCount = (serverSource.match(/= resolveHeavyRouteUserId\(req, body\)/g) || []).length;
+const legacyRouteUserIdCallCount = (serverSource.match(/= resolveAuthenticatedUserId\(req, body, store\)/g) || []).length;
+const userIdResolutionCallCountsMismatched = heavyRouteUserIdCallCount !== 4 || legacyRouteUserIdCallCount !== 3;
+
 if (
   missingTopLevelFields.length
   || missingPreferenceFields.length
@@ -171,6 +220,9 @@ if (
   || missingMemoryEventNormalization.length
   || missingHarnessRunNormalization.length
   || missingMemoryEndpointSnippets.length
+  || missingPureReadSnippets.length
+  || reintroducedLazyPreferenceWrite
+  || userIdResolutionCallCountsMismatched
 ) {
   console.error(JSON.stringify({
     missingTopLevelFields,
@@ -179,7 +231,11 @@ if (
     missingSuggestionNormalization,
     missingMemoryEventNormalization,
     missingHarnessRunNormalization,
-    missingMemoryEndpointSnippets
+    missingMemoryEndpointSnippets,
+    missingPureReadSnippets,
+    reintroducedLazyPreferenceWrite,
+    heavyRouteUserIdCallCount,
+    legacyRouteUserIdCallCount
   }, null, 2));
   throw new Error("Store schema normalization is incomplete.");
 }
@@ -192,5 +248,8 @@ console.log(JSON.stringify({
   suggestionNormalizationChecks: requiredSuggestionNormalizationSnippets.length,
   memoryEventNormalizationChecks: requiredMemoryEventNormalizationSnippets.length,
   harnessRunNormalizationChecks: requiredHarnessRunNormalizationSnippets.length,
-  memoryEndpointChecks: requiredMemoryEndpointSnippets.length
+  memoryEndpointChecks: requiredMemoryEndpointSnippets.length,
+  pureReadChecks: requiredPureReadSnippets.length,
+  heavyRouteUserIdCallCount,
+  legacyRouteUserIdCallCount
 }, null, 2));

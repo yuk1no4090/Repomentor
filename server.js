@@ -37,7 +37,7 @@ import {
   listAuthUsers, listAuthTokenSummaries, listAuthEvents,
   upsertLocalAuthUser, disableLocalAuthUser, createAuthEvent, recordAuthEvent,
   requireAuthScope, requiredScopeForRequest, resolveAuthenticatedIdentity,
-  resolveAuthenticatedUserId, authIdentityResponse
+  resolveAuthenticatedUserId, authIdentityResponse, resolveUserId
 } from "./lib/auth.js";
 import {
   findProject, fetchGithubZip, parseZip, createProject
@@ -349,6 +349,32 @@ async function loadStoreWithAuthGate(req, pathname) {
     await saveStore(store);
   }
   return store;
+}
+
+// Used by the 4 heavy-mutation routes (see isHeavyMutationRoute() above) in
+// place of a second resolveAuthenticatedUserId(req, body, store) call in
+// their route body. That second call — needed because the request body,
+// parsed only after the gate lock releases, can name a userId that must be
+// checked against the authenticated token — would otherwise re-derive the
+// identity from the token via findStoreAuthTokenIdentity() during the
+// *unlocked* compute phase. For a store-backed token, that function bumps
+// tokenRecord.lastUsedAt on the shared store object outside any lock.
+// requireAuthScope() (run inside the gate lock, see loadStoreWithAuthGate()
+// above) already resolved and validated the identity once per request and
+// stashed it on req.auth, so this reuses that instead of re-resolving from
+// the token, while still performing the same body/header-vs-token
+// consistency check (AUTH_USER_MISMATCH) that resolveAuthenticatedUserId()
+// performs — see scripts/auth-boundary-test.js's "impersonation" case, which
+// POSTs a different body.userId than the token owns to /api/agent-impact and
+// expects a 403.
+function resolveHeavyRouteUserId(req, body) {
+  if (!AUTH_REQUIRED) return resolveUserId(req, body);
+  const identity = req.auth;
+  const requestedUserId = body.userId || body.user_id || req.headers["x-user-id"] || req.headers["x-ai-pm-user-id"];
+  if (requestedUserId && normalizeUserId(requestedUserId) !== identity.userId) {
+    throw apiError("Authenticated token cannot act as a different user.", "AUTH_USER_MISMATCH", 403);
+  }
+  return identity.userId;
 }
 
 async function handleApi(req, res, pathname) {
@@ -712,7 +738,7 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "POST" && pathname === "/api/chat") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
-      const userId = resolveAuthenticatedUserId(req, body, store);
+      const userId = resolveHeavyRouteUserId(req, body);
       const project = findProject(store, body.projectId, userId);
       const question = String(body.question || "").trim();
       if (!question) throw apiError("Question is required.", "QUESTION_REQUIRED");
@@ -832,6 +858,9 @@ async function handleApiUnlocked(req, res, pathname) {
       // free of the TOCTOU window the unlocked compute phase opened up.
       await withWriteLock(async () => {
         const commitStore = await ensureStore();
+        // Return value intentionally discarded: we only need the
+        // throw-if-missing side effect (re-validating the project wasn't
+        // removed while we computed unlocked), not the project object itself.
         findProject(commitStore, project.id, userId);
         commitStore.questions.push(questionRecord);
         commitStore.answers.push(answerRecord);
@@ -847,7 +876,7 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "POST" && pathname === "/api/onboarding") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
-      const userId = resolveAuthenticatedUserId(req, body, store);
+      const userId = resolveHeavyRouteUserId(req, body);
       const project = findProject(store, body.projectId, userId);
       const started = Date.now();
       const runId = createHarnessRunId("onboarding");
@@ -925,6 +954,9 @@ async function handleApiUnlocked(req, res, pathname) {
       // Commit phase — see the matching comment in /api/chat above.
       await withWriteLock(async () => {
         const commitStore = await ensureStore();
+        // Return value intentionally discarded: we only need the
+        // throw-if-missing side effect (re-validating the project wasn't
+        // removed while we computed unlocked), not the project object itself.
         findProject(commitStore, project.id, userId);
         commitStore.questions.push(questionRecord);
         commitStore.answers.push(answerRecord);
@@ -940,7 +972,7 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "POST" && pathname === "/api/agent-impact") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
-      const userId = resolveAuthenticatedUserId(req, body, store);
+      const userId = resolveHeavyRouteUserId(req, body);
       const project = findProject(store, body.projectId, userId);
       const question = String(body.question || "").trim();
       if (!question) throw apiError("Question is required.", "QUESTION_REQUIRED");
@@ -969,6 +1001,9 @@ async function handleApiUnlocked(req, res, pathname) {
       // global write lock for its entire duration.
       await withWriteLock(async () => {
         const commitStore = await ensureStore();
+        // Return value intentionally discarded: we only need the
+        // throw-if-missing side effect (re-validating the project wasn't
+        // removed while we computed unlocked), not the project object itself.
         findProject(commitStore, project.id, userId);
         if (payload.memory_suggestions?.length) {
           appendMemorySuggestions(commitStore, payload.memory_suggestions);
@@ -1055,7 +1090,7 @@ async function handleApiUnlocked(req, res, pathname) {
 
     if (req.method === "POST" && pathname === "/api/langgraph-resume") {
       const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
-      const userId = resolveAuthenticatedUserId(req, body, store);
+      const userId = resolveHeavyRouteUserId(req, body);
       const project = findProject(store, body.projectId, userId);
       const started = Date.now();
       const resumed = await runLangGraphResumeFromCheckpoint(store, {
@@ -1086,6 +1121,8 @@ async function handleApiUnlocked(req, res, pathname) {
       // LangGraph workflow as /api/agent-impact.
       await withWriteLock(async () => {
         const commitStore = await ensureStore();
+        // Return value intentionally discarded — see the matching comment in
+        // /api/chat's commit lock above.
         findProject(commitStore, resumed.project.id, userId);
         if (resumed.payload.memory_suggestions?.length) {
           appendMemorySuggestions(commitStore, resumed.payload.memory_suggestions);

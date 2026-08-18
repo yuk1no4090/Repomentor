@@ -224,6 +224,63 @@ async function run() {
     assert(impersonation.status === 403, "authenticated user mismatch should return 403");
     assert(impersonation.payload.code === "AUTH_USER_MISMATCH", "impersonation did not return AUTH_USER_MISMATCH");
 
+    // Regression coverage: the 4 heavy-mutation routes (chat/agent-impact/
+    // onboarding/langgraph-resume) resolve the request's userId a second
+    // time inside their unlocked compute phase (see resolveHeavyRouteUserId()
+    // in server.js), after requireAuthScope() already resolved and validated
+    // it once under the gate lock. For a *store-backed* token specifically —
+    // unlike the env-configured "token-a"/"token-b" above, which never touch
+    // the store when resolving identity — the old code path re-derived the
+    // identity from the token via findStoreAuthTokenIdentity() a second time,
+    // outside any lock. Exercise both the success path and the
+    // impersonation-mismatch path through a heavy route with a store-backed
+    // token to prove resolveHeavyRouteUserId() still behaves correctly
+    // end-to-end for exactly the token kind the bug was in.
+    const { payload: createdHeavyRouteUser } = await request(baseUrl, "/api/auth/users", {
+      method: "POST",
+      token: "token-a",
+      body: JSON.stringify({
+        userId: "store-heavy-route-user",
+        role: "admin",
+        scopes: ["*"]
+      })
+    });
+    assert(createdHeavyRouteUser.user?.source === "store", "store-backed heavy-route test user was not created from the store");
+    const storeHeavyRouteToken = createdHeavyRouteUser.token;
+
+    // Projects are owner-scoped once AUTH_REQUIRED (findProject()'s
+    // visibleTo() check), so this new user needs its own imported project —
+    // it can't see user-a's.
+    const { payload: storeUserImport } = await request(baseUrl, "/api/import", {
+      method: "POST",
+      token: storeHeavyRouteToken,
+      body: JSON.stringify({ sample: true })
+    });
+    const storeUserProjectId = storeUserImport.project.id;
+
+    const storeTokenAgentImpact = await request(baseUrl, "/api/agent-impact", {
+      method: "POST",
+      token: storeHeavyRouteToken,
+      body: JSON.stringify({
+        projectId: storeUserProjectId,
+        question: "As a QA engineer, what changed in the refund flow?"
+      })
+    });
+    assert(storeTokenAgentImpact.payload.answerId, "store-backed token should be able to call the agent-impact heavy route");
+
+    const storeTokenImpersonation = await request(baseUrl, "/api/agent-impact", {
+      method: "POST",
+      token: storeHeavyRouteToken,
+      expectOk: false,
+      body: JSON.stringify({
+        userId: "user-b",
+        projectId: storeUserProjectId,
+        question: "As a QA engineer, attempt to impersonate another user."
+      })
+    });
+    assert(storeTokenImpersonation.status === 403, "store-backed token impersonation attempt through a heavy route should return 403");
+    assert(storeTokenImpersonation.payload.code === "AUTH_USER_MISMATCH", "store-backed token impersonation through a heavy route did not return AUTH_USER_MISMATCH");
+
     const { payload: userARun } = await request(baseUrl, "/api/agent-impact", {
       method: "POST",
       token: "token-a",
