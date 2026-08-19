@@ -14,10 +14,27 @@ const state = {
   llmStatus: null,
   lang: localStorage.getItem("aido-lang") || "en",
   activeTab: "qa",
-  draftQuestion: ""
+  draftQuestion: "",
+  // 已经播放过打字机渐显动画的消息 answerId 集合；一旦某个 id 进入这个集合就
+  // 永远不再重播（即便动画途中被重渲染打断），重渲染时只会把全文直接显示出来。
+  playedMessages: new Set()
 };
 
 const app = document.querySelector("#app");
+
+// 打字机渐显：逐块（15-25 字符/步）显示新到达的回答主文本，总时长目标封顶
+// ~1.2s。注意 TYPEWRITER_MAX_DURATION_MS 是"目标"总时长，不是硬上限：每步
+// 间隔会被 clamp 到 TYPEWRITER_MIN_INTERVAL_MS（约一帧）为下限，避免 interval
+// 被要求以不现实的速度触发；文本特别长、需要的步数特别多时，
+// 步数 × TYPEWRITER_MIN_INTERVAL_MS 可能超过 1200ms，实际播放时间会比目标
+// 略长——这是"保证每一步间隔仍然有意义"和"总时长绝对不超过 1.2s"两者之间
+// 有意的取舍，不是 bug。
+const TYPEWRITER_STEP_CHARS = 20;
+const TYPEWRITER_MAX_DURATION_MS = 1200;
+const TYPEWRITER_MIN_INTERVAL_MS = 16;
+// answerId -> setInterval 句柄，记录当前正在播放的动画，便于重渲染前统一清理，
+// 避免它们在下一次 innerHTML 重建后继续对已经被丢弃的旧 DOM 节点写入。
+const activeTypewriterTimers = new Map();
 
 const progressSteps = [
   "Uploading",
@@ -1399,7 +1416,7 @@ function renderMessage(message) {
         </div>
         ${renderOptionalRuntimeStatus(payload)}
         <h3>${c.chat.answer}</h3>
-        <p>${escapeHtml(payload.answer)}</p>
+        ${typewriterParagraph(message.answerId, payload.answer)}
         <h3>${c.chat.keyPoints}</h3>
         <ul>${renderList(payload.key_points, (point) => `<li>${escapeHtml(point)}</li>`)}</ul>
         <h3>${c.chat.related}</h3>
@@ -1499,11 +1516,11 @@ function renderMemorySuggestions(suggestions = []) {
 // PM/QA 简报卡片：置顶展示 lib/answers.js 生成的 payload.briefing（业务视角的自然语言
 // 叙事/受影响流程/验证重点/风险建议），不依赖 payload 是否来自 LLM 还是确定性回退。
 // 调用方必须先判断 payload.briefing 是否存在（旧数据没有这个字段），本函数本身不做回退。
-function renderImpactBriefing(briefing, c) {
+function renderImpactBriefing(briefing, c, answerId) {
   return html`
     <div class="impact-briefing">
       <h3>${c.chat.briefingTitle}</h3>
-      <p class="briefing-summary">${escapeHtml(briefing.summary)}</p>
+      ${typewriterParagraph(answerId, briefing.summary, "briefing-summary")}
       <h4>${c.chat.briefingFlows}</h4>
       <div class="flow-list">
         ${renderList(briefing.affected_flows, (flow) => `
@@ -1535,7 +1552,7 @@ function renderAgentImpactMessage(message) {
   // 与改动前的渲染逐字节一致 —— 这就是任务要求的"优雅回退到原渲染"。
   const technicalDetails = html`
     <h3>${c.chat.impactSummary}</h3>
-    <p>${escapeHtml(payload.summary)}</p>
+    ${typewriterParagraph(message.answerId, payload.summary)}
 
     <div class="agent-meta-grid">
       <section>
@@ -1650,7 +1667,7 @@ function renderAgentImpactMessage(message) {
           </div>
         ` : ""}
 
-        ${hasBriefing ? renderImpactBriefing(payload.briefing, c) : ""}
+        ${hasBriefing ? renderImpactBriefing(payload.briefing, c, message.answerId) : ""}
         ${hasBriefing ? memorySuggestionsHtml : ""}
 
         ${hasBriefing ? html`
@@ -1671,7 +1688,7 @@ function renderImpactMessage(message) {
   const hasBriefing = !!payload.briefing;
   const technicalDetails = html`
     <h3>${c.chat.impactSummary}</h3>
-    <p>${escapeHtml(payload.summary)}</p>
+    ${typewriterParagraph(message.answerId, payload.summary)}
     <h3>${c.chat.impactAreas}</h3>
     <div class="impact-list">
       ${renderList(payload.impact_areas, (area) => `
@@ -1691,7 +1708,7 @@ function renderImpactMessage(message) {
     <article class="message">
       <div class="question">${escapeHtml(message.question)}</div>
       <div class="answer">
-        ${hasBriefing ? renderImpactBriefing(payload.briefing, c) : ""}
+        ${hasBriefing ? renderImpactBriefing(payload.briefing, c, message.answerId) : ""}
         ${hasBriefing ? html`
           <details class="tech-details">
             <summary>${escapeHtml(c.chat.techDetails)}</summary>
@@ -1713,7 +1730,7 @@ function renderOnboardingMessage(message) {
       <div class="answer">
         ${renderOptionalRuntimeStatus(payload)}
         <h3>${c.chat.goal}</h3>
-        <p>${escapeHtml(payload.goal)}</p>
+        ${typewriterParagraph(message.answerId, payload.goal)}
         <div class="plan-grid">
           ${renderList(payload.plan, (day) => `
             <div class="plan-day">
@@ -2251,9 +2268,137 @@ function emptyProject(message) {
   `;
 }
 
+// ---- Typewriter reveal for freshly-arrived answer text ----
+//
+// render() 先输出完整 DOM（文本节点里就是全文），这里只是事后决定要不要把它
+// 抹掉再逐块打回去。state.playedMessages 记录已经处理过的 answerId：一旦加入
+// 这个集合就永远不再重播，哪怕动画还没播完就被下一次 render() 打断——被打断时
+// 新渲染出来的节点就是完整全文（因为我们本来就没清空过它，只是没有机会启动
+// 动画），天然满足“重渲染时未播完的直接显示全文”。
+
+function typewriterParagraph(answerId, text, extraClass = "") {
+  const trackable = !!answerId && answerId !== "pending";
+  const classes = extraClass ? [extraClass] : [];
+  if (trackable) classes.push("tw-text");
+  const classAttr = classes.length ? ` class="${classes.join(" ")}"` : "";
+  const dataAttr = trackable ? ` data-tw-id="${escapeHtml(answerId)}"` : "";
+  return `<p${classAttr}${dataAttr}>${escapeHtml(text)}</p>`;
+}
+
+function clearActiveTypewriterTimers() {
+  activeTypewriterTimers.forEach((timerId) => clearInterval(timerId));
+  activeTypewriterTimers.clear();
+}
+
+function prefersReducedMotion() {
+  return typeof window.matchMedia === "function"
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+function animateTypewriterEl(el, answerId) {
+  const fullText = el.textContent;
+  const total = fullText.length;
+  if (!total) return;
+  const steps = Math.max(1, Math.ceil(total / TYPEWRITER_STEP_CHARS));
+  const interval = Math.max(TYPEWRITER_MIN_INTERVAL_MS, Math.round(TYPEWRITER_MAX_DURATION_MS / steps));
+  el.textContent = "";
+  el.classList.add("tw-animating");
+  let shown = 0;
+  const timerId = setInterval(() => {
+    shown = Math.min(total, shown + TYPEWRITER_STEP_CHARS);
+    el.textContent = fullText.slice(0, shown);
+    if (shown >= total) {
+      clearInterval(timerId);
+      activeTypewriterTimers.delete(answerId);
+      el.classList.remove("tw-animating");
+    }
+  }, interval);
+  activeTypewriterTimers.set(answerId, timerId);
+}
+
+// 每次 render() 重建 DOM 之后调用一次：找出本次新增且未播放过的消息主文本节点。
+// 同一个 answerId 可能同时出现在多处（例如 briefing 摘要和折叠详情里重复的
+// summary 段落）——先到先得，第一个命中的节点播放动画，其余相同 id 的节点在
+// 处理时已经被标记为 played，直接保留全文，不会重复播放。
+function mountTypewriters() {
+  const nodes = app.querySelectorAll("[data-tw-id]");
+  if (!nodes.length) return;
+  const skipAnimation = prefersReducedMotion();
+  nodes.forEach((el) => {
+    const id = el.getAttribute("data-tw-id");
+    if (!id || state.playedMessages.has(id)) return;
+    state.playedMessages.add(id);
+    if (skipAnimation) return;
+    animateTypewriterEl(el, id);
+  });
+}
+
+// ---- Auto-scroll / scroll-position preservation for the messages panel ----
+//
+// .messages 声明了 flex:1 + overflow:auto，.workspace 现在也有了硬性的
+// max-height 上限（见 styles.css），正常情况下 .messages 就是一个真正会
+// 内部溢出、可以滚动的面板；.workspace 自己在极端矮视口下也可能整体溢出而
+// 需要滚动（同样见 styles.css 里 .workspace 的 overflow:auto 说明）。这里
+// 用 window 级别的滚动状态作为兜底分支，不绑定某一种具体布局才能生效。
+//
+// app.innerHTML 整体重建意味着旧 .messages 节点会被整个扔掉、换成一个全新
+// 节点（scrollTop 默认是 0）。只处理"贴底就自动滚底"是不够的——不贴底的
+// 分支如果什么都不做，新节点就停在 scrollTop=0，用户往上翻看历史时，任何
+// 触发 render() 的操作（哪怕只是点一下当前 tab）都会把视图弹回最顶部。所以
+// 这里量的不是一个"是否贴底"的布尔值，而是具体的"距底部多少像素"，不贴底时
+// 重建后显式把新节点滚回等价的相对位置。
+
+const NEAR_BOTTOM_THRESHOLD_PX = 150;
+
+// 量出容器当前"距底部还有多少像素"：优先用 .messages 自己的内部滚动状态，
+// 只有它没有真正溢出时才退回 window 级别的滚动状态。
+function distanceFromBottom(el) {
+  const innerOverflow = el.scrollHeight - el.clientHeight > 1;
+  if (innerOverflow) {
+    return el.scrollHeight - el.scrollTop - el.clientHeight;
+  }
+  const doc = document.documentElement;
+  return doc.scrollHeight - window.scrollY - window.innerHeight;
+}
+
+// render() 重建 DOM 之后调用：el 是新建出来的 .messages 节点，prevDistance 是
+// 重建前用旧节点量出来的距底像素数。
+// - snapToBottom 为 true（重建前已经贴底，或者 .messages 本来就不存在，比如
+//   刚从别的 tab/页面切换过来）：滚到新内容的最底部。
+// - 否则：把新节点滚动到"距新内容底部同样远"的位置——
+//   newScrollTop = newScrollHeight - prevDistance - newClientHeight，
+//   再 clamp 到 [0, maxScrollTop]，防止内容变化导致算出负数或超出可滚动范围。
+function restoreScrollPosition(el, prevDistance, snapToBottom) {
+  const innerOverflow = el.scrollHeight - el.clientHeight > 1;
+  if (innerOverflow) {
+    const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    const target = snapToBottom ? el.scrollHeight : el.scrollHeight - prevDistance - el.clientHeight;
+    el.scrollTop = Math.max(0, Math.min(maxScrollTop, target));
+    return;
+  }
+  const doc = document.documentElement;
+  const maxScrollY = Math.max(0, doc.scrollHeight - window.innerHeight);
+  const target = snapToBottom ? doc.scrollHeight : doc.scrollHeight - prevDistance - window.innerHeight;
+  window.scrollTo(0, Math.max(0, Math.min(maxScrollY, target)));
+}
+
 function render() {
   const questionInput = document.querySelector("#questionInput");
   if (questionInput) state.draftQuestion = questionInput.value;
+
+  // .messages 容器每次都会随 app.innerHTML 整体重建（新容器 scrollTop 永远是
+  // 0），所以必须在替换之前，趁旧容器还在文档里量一次它当时的滚动状态：既要
+  // 知道是否贴底（决定要不要自动滚底），也要记下具体的距底像素数（决定不
+  // 贴底时新节点要恢复到哪个等价位置，见 restoreScrollPosition）。容器本来
+  // 就不存在（比如刚从别的页面切换过来）视为贴底，走自动滚底分支。
+  const prevMessagesEl = document.querySelector(".messages");
+  const prevDistance = prevMessagesEl ? distanceFromBottom(prevMessagesEl) : 0;
+  const shouldSnapToBottom = !prevMessagesEl || prevDistance <= NEAR_BOTTOM_THRESHOLD_PX;
+
+  // 旧 DOM 马上要被扔掉，先停掉所有还在跑的打字机 interval，避免它们之后继续
+  // 对已经脱离文档树的节点写 textContent。
+  clearActiveTypewriterTimers();
+
   const pages = {
     landing: landingPage,
     import: importPage,
@@ -2268,6 +2413,11 @@ function render() {
       <button data-dismiss-error>Dismiss</button>
     </div>
   ` : "") + pages[state.page]();
+
+  mountTypewriters();
+
+  const messagesEl = document.querySelector(".messages");
+  if (messagesEl) restoreScrollPosition(messagesEl, prevDistance, shouldSnapToBottom);
 }
 
 async function importRepository({ sample = false } = {}) {
@@ -2333,7 +2483,7 @@ async function ask(kind = "qa", questionOverride = "") {
   if (!question) return;
   if (input) input.value = "";
   state.loading = true;
-  state.messages.unshift({
+  state.messages.push({
     kind: "local",
     answerId: "pending",
     question,
@@ -2346,7 +2496,7 @@ async function ask(kind = "qa", questionOverride = "") {
       body: JSON.stringify({ projectId: state.project.id, question, kind })
     });
     state.messages = state.messages.filter((item) => item.answerId !== "pending");
-    state.messages.unshift({
+    state.messages.push({
       kind: payload.kind,
       answerId: payload.answerId,
       question,
@@ -2370,7 +2520,7 @@ async function runAgentImpact(questionOverride = "") {
   if (!question) return;
   if (input) input.value = "";
   state.loading = true;
-  state.messages.unshift({
+  state.messages.push({
     kind: "local",
     answerId: "pending",
     question,
@@ -2383,7 +2533,7 @@ async function runAgentImpact(questionOverride = "") {
       body: JSON.stringify({ projectId: state.project.id, question })
     });
     state.messages = state.messages.filter((item) => item.answerId !== "pending");
-    state.messages.unshift({
+    state.messages.push({
       kind: payload.kind,
       answerId: payload.answerId,
       question,
@@ -2408,7 +2558,7 @@ async function generateOnboarding() {
       method: "POST",
       body: JSON.stringify({ projectId: state.project.id, role, duration })
     });
-    state.messages.unshift({
+    state.messages.push({
       kind: "onboarding",
       answerId: payload.answerId,
       question: `Generate onboarding plan for ${role}, ${duration}`,
@@ -2460,14 +2610,14 @@ async function handleHitlDecision(decision, answerId, runId) {
       };
     });
     if (decision === "approve") {
-      state.messages.unshift({
+      state.messages.push({
         question: c.chat.hitlApprovedMessage,
         kind: "agent_impact",
         payload: resumed.payload,
         answerId: resumed.answerId
       });
     } else {
-      state.messages.unshift({
+      state.messages.push({
         question: c.chat.hitlRejectedMessage,
         kind: "agent_impact",
         payload: resumed.payload,

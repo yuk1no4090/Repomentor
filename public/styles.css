@@ -1051,6 +1051,23 @@ textarea {
 }
 
 .workspace {
+  /* 和 .sidebar/.inspector 用同一套 sticky + max-height 上限，这样 #tabContent
+     里 flex:1 的 .messages 才有一个真正会溢出的高度边界可以内部滚动——否则
+     这个卡片只会随内容无限变高，把整页撑长，.messages 自己的 overflow:auto
+     永远不会触发，"自动滚到底部"也就无从谈起。
+     overflow 用 auto（不是 hidden）：正常高度下 .messages 的 flex:1 会先把
+     topline/tabs/task-intro/composer 之外的剩余空间用完，.workspace 自己
+     不需要滚动，不会出现多余滚动条；但在很矮的视口下（实测 1400x450、
+     1400x350），topline+tabs+task-intro+composer 这些"定高"子项本身加起来
+     就可能超过 max-height，.messages 会被压缩到 0 也不够——这时如果是
+     hidden，composer 输入框和提交按钮会被直接裁掉且没有任何办法够到；改成
+     auto 之后 .workspace 整体可以滚动，保证 composer 永远可以被滚动到，
+     和 .sidebar/.inspector 是同一个 overflow:auto 处理方式。 */
+  align-self: start;
+  position: sticky;
+  top: 76px;
+  max-height: calc(100vh - 92px);
+  overflow: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background: var(--surface);
@@ -1058,6 +1075,16 @@ textarea {
   box-shadow: var(--shadow-sm);
   display: flex;
   flex-direction: column;
+  min-height: 0;
+}
+
+/* renderTabContent() 的输出（task-intro/onboarding-form + .messages + composer）
+   都挂在这个容器下面；它要参与 .workspace 的 flex 纵向布局并把剩余高度让给
+   .messages，.messages 才能真正 flex:1 撑满剩余空间并在内部滚动。 */
+#tabContent {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
   min-height: 0;
 }
 
@@ -1390,8 +1417,25 @@ code {
   display: grid;
   gap: 14px;
   flex: 1;
+  /* flex 子项的隐式最小高度默认是内容高度（min-height:auto），不清零的话
+     overflow:auto 永远没有机会触发——容器会先被内容撑到超过可用空间，而不是
+     在可用空间内裁切并滚动。但也不能直接清零到 0：.workspace 现在是
+     overflow:auto（矮视口下允许整体滚动，见 .workspace 的说明），如果
+     .messages 的 min-height 是 0，topline/tabs/task-intro/composer 这些
+     "定高"兄弟在极矮视口下（实测 1400x450/1400x350）会把 flex:1 的可用空间
+     挤没——.messages 本身会被压到 clientHeight=0，滚动 .workspace 也没用，
+     因为一个 0 高度的容器不管怎么滚都看不到内容。给一个不大的下限（不影响
+     正常视口下的观感——正常视口分到的高度远大于这个下限），保证消息区永远
+     有一块可以交互、可以内部滚动的最小可视区域。 */
+  min-height: 120px;
   overflow: auto;
   align-content: start;
+  /* 隐式行轨道默认关键字是 auto——当这个 grid 容器本身的高度是外部 flex 布局
+     给出的定值（而不是内容撑出来的）时，实测 Chromium 会把 auto 行按容器高度
+     均分压扁每一条消息（而不是按内容撑到自然高度再让容器溢出滚动）。显式换成
+     min-content 才会让每一行按消息卡片自身内容的自然高度排布，多出来的高度
+     交给容器的 overflow:auto 去滚动，而不是被压扁裁切。 */
+  grid-auto-rows: min-content;
 }
 
 .message {
@@ -2161,6 +2205,34 @@ code {
   justify-self: end;
 }
 
+.composer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.composer-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.composer-tools span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
 /* ---- Onboarding Form ---- */
 .onboarding-form {
   display: grid;
@@ -2511,9 +2583,11 @@ code {
   }
 
   .sidebar,
-  .inspector {
+  .inspector,
+  .workspace {
     position: static;
     max-height: none;
+    overflow: visible;
   }
 
   .overview-grid,
@@ -2707,4 +2781,26 @@ code {
   background: transparent;
   color: var(--danger);
   border-color: transparent;
+}
+
+/* ---- Typewriter reveal (answer main text) ---- */
+.tw-animating::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--accent);
+  animation: tw-caret-blink 0.8s steps(1) infinite;
+}
+
+@keyframes tw-caret-blink {
+  50% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tw-animating::after {
+    animation: none;
+  }
 }
