@@ -92,17 +92,7 @@ const requiredMemoryActionSnippets = [
   "error.code = payload.code || \"REQUEST_FAILED\"",
   "error.status = response.status",
   "error.payload = payload",
-  "function showError",
-  // Was the exact literal "showError(error)" (bare call, no retryFn) --
-  // updated because every showError() call site in app.js now passes a
-  // retryFn (see the 2026-08-19 error-banner unification: all previously
-  // bare showError(error) calls degraded to a blocking native alert()
-  // instead of the in-app retry banner every other error path already used).
-  // "showError(error," still asserts the same underlying property this
-  // check cares about -- this region calls showError() with the caught
-  // error as its first argument -- without pinning the now-intentionally-
-  // removed bare-call arity.
-  "showError(error,"
+  "function showError"
 ];
 
 const missingMemoryActionSnippets = requiredMemoryActionSnippets.filter((snippet) => {
@@ -248,7 +238,21 @@ const staleFrontendTerms = [
   "memory_used: action === \"confirm\"",
   // Renamed to "Repomentor" (see nav brand copy); this old display name should not
   // reappear in app.js's UI copy system.
-  "Developer Onboarding Copilot"
+  "Developer Onboarding Copilot",
+  // 2026-08-19 error-banner unification: every showError() call site in
+  // app.js (generateOnboarding, sendFeedback, handleHitlDecision,
+  // handleMemorySuggestion, forgetMemoryPreference, createAuthUserFromForm,
+  // disableAuthUser, loadHarnessAudit) now passes a retryFn so failures
+  // render an in-app retry banner instead of degrading to a blocking native
+  // alert(). A prior version of this check tried to assert that positively
+  // via a "showError(error," prefix match, but `function showError(error,
+  // retryFn = null) {`'s own parameter list contains that exact substring --
+  // the assertion was true even with every retryFn stripped back out, so it
+  // never actually exercised the call sites. This exact bare-call literal
+  // (semicolon-terminated, no second argument) is the thing that must not
+  // reappear; it's deliberately not present anywhere in app.js right now,
+  // including in comments (verified via grep before adding this entry).
+  "showError(error);"
 ].filter((term) => appSource.includes(term));
 
 const missingStyleSnippets = requiredStyleSnippets.filter((snippet) => {
