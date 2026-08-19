@@ -22,7 +22,9 @@ const state = {
   llmStatus: null,
   lang: localStorage.getItem("aido-lang") || "en",
   activeTab: "qa",
-  draftQuestion: "",
+  // 每个 tab (qa/impact/agent) 各自独立的未提交草稿，切 tab 不再互相覆盖或清空
+  // 对方的输入。onboarding tab 没有自由文本框，不需要在这里占位。
+  drafts: { qa: "", impact: "", agent: "" },
   // Onboarding 计划的角色/时长 <select> 选中值镜像。默认值对应模板里两个
   // <select> 的第一个 <option>，与 generateOnboarding() 的 DOM 兜底默认一致。
   onboardingRole: "Backend Engineer",
@@ -95,6 +97,7 @@ const copy = {
       launch: "Launch sample workspace",
       importRepo: "Import repository",
       workspace: "WORKSPACE",
+      previewNav: { overview: "Overview", qa: "Q&A", impact: "Impact", evaluation: "Evaluation" },
       filesParsed: "Files parsed",
       chunksIndexed: "Chunks indexed",
       citationCoverage: "Citation coverage",
@@ -109,8 +112,8 @@ const copy = {
       cards: [
         ["01", "Import", "Pull public GitHub repos or upload ZIP files.", "import"],
         ["02", "Understand", "Summarize stack, modules, README, and first reads.", "overview"],
-        ["03", "Ask", "Answer repository questions with cited files.", "chat"],
-        ["04", "Analyze", "Map code changes to risk and test coverage.", "chat"],
+        ["03", "Ask", "Answer repository questions with cited files.", "chat", "qa"],
+        ["04", "Analyze", "Map code changes to risk and test coverage.", "chat", "impact"],
         ["05", "Evaluate", "Track feedback, citation coverage, and failure reasons.", "dashboard"]
       ]
     },
@@ -441,6 +444,7 @@ const copy = {
       button: "Go to Import",
       importOverview: "Import a repository to generate a project overview.",
       importCopilot: "Import a repository before asking the copilot.",
+      importImpact: "Import a repository before analyzing change impact.",
       importMetrics: "Import a repository before viewing evaluation metrics."
     }
   },
@@ -454,6 +458,7 @@ const copy = {
       launch: "启动示例工作区",
       importRepo: "导入仓库",
       workspace: "工作区",
+      previewNav: { overview: "总览", qa: "问答", impact: "影响分析", evaluation: "评估" },
       filesParsed: "已解析文件",
       chunksIndexed: "已索引片段",
       citationCoverage: "引用覆盖率",
@@ -468,8 +473,8 @@ const copy = {
       cards: [
         ["01", "导入", "支持公开 GitHub 仓库或 ZIP 文件。", "import"],
         ["02", "理解", "总结技术栈、模块、README 和推荐阅读。", "overview"],
-        ["03", "提问", "基于仓库内容回答，并引用文件来源。", "chat"],
-        ["04", "分析", "评估代码改动影响范围和测试风险。", "chat"],
+        ["03", "提问", "基于仓库内容回答，并引用文件来源。", "chat", "qa"],
+        ["04", "分析", "评估代码改动影响范围和测试风险。", "chat", "impact"],
         ["05", "评估", "追踪反馈、引用覆盖率和失败原因。", "dashboard"]
       ]
     },
@@ -798,6 +803,7 @@ const copy = {
       button: "去导入",
       importOverview: "导入仓库后即可生成项目总览。",
       importCopilot: "导入仓库后才能向 Copilot 提问。",
+      importImpact: "导入仓库后才能分析变更影响。",
       importMetrics: "导入仓库后才能查看评估指标。"
     }
   }
@@ -1015,18 +1021,18 @@ function landingPage() {
           <div class="command-body">
             <div class="preview-sidebar">
               <strong>${c.home.workspace}</strong>
-              <span class="active">Overview</span>
-              <span>Q&A</span>
-              <span>Impact</span>
-              <span>Evaluation</span>
+              <span class="active">${c.home.previewNav.overview}</span>
+              <span>${c.home.previewNav.qa}</span>
+              <span>${c.home.previewNav.impact}</span>
+              <span>${c.home.previewNav.evaluation}</span>
             </div>
             <div class="preview-main">
               <h2>${escapeHtml(projectName)}</h2>
               <p>${escapeHtml(summary)}</p>
               <div class="mini-metrics">
-                <span><small>${c.home.filesParsed}</small><strong>${metricValue(state.project?.fileCount, "248")}</strong></span>
-                <span><small>${c.home.chunksIndexed}</small><strong>${metricValue(state.project?.chunkCount, "1,842")}</strong></span>
-                <span><small>${c.home.citationCoverage}</small><strong>${metricValue(state.metrics?.citation_coverage, "94")}%</strong></span>
+                <span><small>${c.home.filesParsed}</small><strong>${metricValue(state.project?.fileCount)}</strong></span>
+                <span><small>${c.home.chunksIndexed}</small><strong>${metricValue(state.project?.chunkCount)}</strong></span>
+                <span><small>${c.home.citationCoverage}</small><strong>${metricValue(state.metrics?.citation_coverage)}%</strong></span>
               </div>
               <div class="evidence-card">
                 <span>${c.home.evidence}</span>
@@ -1045,8 +1051,8 @@ function landingPage() {
           <h2>${c.home.workflowTitle}</h2>
         </div>
         <div class="workflow-grid">
-          ${cards.map(([num, title, copy, page]) => `
-            <article class="workflow-card" data-page="${page}" role="button" tabindex="0">
+          ${cards.map(([num, title, copy, page, tab]) => `
+            <article class="workflow-card" data-page="${page}"${tab ? ` data-tab="${tab}"` : ""} role="button" tabindex="0">
               <span>${num}</span>
               <h3>${title}</h3>
               <p>${copy}</p>
@@ -1215,7 +1221,16 @@ function llmModeBadge() {
 }
 
 function chatPage() {
-  if (!state.project) return emptyProject(t().empty.importCopilot);
+  // The "Analyze" workflow card on the landing page routes here with
+  // activeTab pre-set to "impact" (see the workflow-card click handler
+  // below) -- its empty state used to reuse the qa-flavored "before asking
+  // the copilot" copy verbatim, which reads oddly for a change-impact
+  // workflow that was never about "asking" anything. Give it its own copy;
+  // every other tab keeps the original copilot-flavored message.
+  if (!state.project) {
+    const emptyMessage = state.activeTab === "impact" ? t().empty.importImpact : t().empty.importCopilot;
+    return emptyProject(emptyMessage);
+  }
   const c = t();
   return html`
     <main class="chat-layout deerflow-inspired">
@@ -1357,6 +1372,18 @@ function renderMemoryManager() {
   `;
 }
 
+// per-tab 消息流拆分：state.messages 本身仍是单一数组（feedback/HITL 按
+// answerId 查找的既有逻辑不受影响），只在渲染这一层按 message.tab 过滤出属于
+// 当前 tab 的子集。message.tab 在四个写入点（ask/runAgentImpact/
+// generateOnboarding/handleHitlDecision）里显式打上，值就是它所属的
+// activeTab（"qa"/"impact"/"agent"/"onboarding"），不依赖 message.kind 推断——
+// kind 对 "local" 占位消息（Thinking.../Running agent workflow...）是二义的
+// （ask() 和 runAgentImpact() 都会临时用 kind: "local"），只有显式的 tab 标记
+// 才能确保占位消息不会在错的 tab 里短暂闪现。
+function messagesForTab(tab) {
+  return state.messages.filter((message) => message.tab === tab);
+}
+
 function renderTabContent(tab) {
   if (tab === "impact") return qaTab("impact");
   if (tab === "agent") return qaTab("agent");
@@ -1374,6 +1401,7 @@ function qaTab(kind = "qa") {
   const title = isAgent ? c.chat.agentTitle : isImpact ? c.chat.impactTitle : c.chat.qaTitle;
   const action = isAgent ? "agentImpact" : isImpact ? "impact" : "ask";
   const buttonLabel = isAgent ? c.chat.runAgent : isImpact ? c.chat.analyze : c.chat.ask;
+  const tabMessages = messagesForTab(kind);
   return html`
     <div class="task-intro">
       <div>
@@ -1383,10 +1411,10 @@ function qaTab(kind = "qa") {
       <p>${helper}</p>
     </div>
     <div class="messages">
-      ${state.messages.length ? state.messages.map(renderMessage).join("") : emptyChatState(kind)}
+      ${tabMessages.length ? tabMessages.map(renderMessage).join("") : emptyChatState(kind)}
     </div>
     <div class="composer prompt-composer">
-      <textarea id="questionInput" rows="3" placeholder="${placeholder}">${escapeHtml(state.draftQuestion)}</textarea>
+      <textarea id="questionInput" data-tab="${kind}" rows="3" placeholder="${placeholder}">${escapeHtml(state.drafts[kind] || "")}</textarea>
       <div class="composer-footer">
         <div class="composer-tools">
           <span>${isAgent ? c.chat.traceable : isImpact ? c.chat.riskAware : c.chat.repoGrounded}</span>
@@ -1425,6 +1453,7 @@ const ONBOARDING_DURATIONS = ["3 days", "5 days"];
 
 function onboardingTab() {
   const c = t();
+  const tabMessages = messagesForTab("onboarding");
   return html`
     <div class="task-intro">
       <div>
@@ -1449,7 +1478,7 @@ function onboardingTab() {
       <button class="primary" data-action="onboarding" ${state.busyKeys.has("onboarding") ? "disabled" : ""}>${c.chat.generatePlan}</button>
     </div>
     <div class="messages">
-      ${state.messages.length ? state.messages.map(renderMessage).join("") : `
+      ${tabMessages.length ? tabMessages.map(renderMessage).join("") : `
         <div class="agent-welcome">
           <div class="agent-avatar">AI</div>
           <h2>${c.chat.plannerReady}</h2>
@@ -1467,6 +1496,14 @@ function renderMessage(message) {
   if (message.kind === "agent_impact") return renderAgentImpactMessage(message);
   if (message.kind === "onboarding") return renderOnboardingMessage(message);
 
+  // Harness/memory/safety telemetry (run id, step count, duration, fallback
+  // reason, ...) is PM/QA-facing noise on every single answer, not something
+  // to read on first glance -- it now lives behind the same collapsed
+  // <details class="tech-details"> fold used elsewhere (impact/agent_impact
+  // briefings), instead of being unfolded inline under the answer meta line.
+  // Nothing is removed, only re-leveled: everything renderRuntimeStatus()
+  // produces is still reachable by expanding the fold.
+  const runtimeStatusHtml = renderOptionalRuntimeStatus(payload);
   return html`
     <article class="message">
       <div class="question">${escapeHtml(message.question)}</div>
@@ -1476,7 +1513,6 @@ function renderMessage(message) {
             ? `<span class="llm-source ai">AI ${escapeHtml(c.chat.modeAI)}</span>`
             : `<span class="llm-source fallback">OFF ${escapeHtml(c.chat.modeFallback)}</span>`}
         </div>
-        ${renderOptionalRuntimeStatus(payload)}
         <h3>${c.chat.answer}</h3>
         ${typewriterParagraph(message.answerId, payload.answer)}
         <h3>${c.chat.keyPoints}</h3>
@@ -1485,10 +1521,12 @@ function renderMessage(message) {
         <div class="citation-list">
           ${renderList(payload.related_files, (file) => `<div><code>${escapeHtml(file.file_path)}</code><span>${escapeHtml(file.reason)}</span></div>`)}
         </div>
+        ${renderMemorySuggestions(payload.memory_suggestions)}
         <h3>${c.chat.uncertainty}</h3>
         <p>${escapeHtml(payload.uncertainty)}</p>
         <h3>${c.chat.next}</h3>
         <div class="chip-row">${renderList(payload.suggested_next_questions, (question) => `<button data-question="${escapeHtml(question)}">${escapeHtml(question)}</button>`)}</div>
+        ${runtimeStatusHtml ? techDetailsWrapper(`techDetails-${message.answerId}`, c.chat.techDetails, runtimeStatusHtml) : ""}
         ${feedbackBar(message)}
       </div>
     </article>
@@ -1622,12 +1660,16 @@ function renderAgentImpactMessage(message) {
   const payload = message.payload;
   const hasBriefing = !!payload.briefing;
   const memorySuggestionsHtml = renderMemorySuggestions(payload.memory_suggestions);
-  // technicalDetails 保留原来的完整技术清单（摘要/agent 元信息/trace/impact 区域/guardrails/
-  // 证据引用/测试建议/开放问题/不确定性）。有 briefing 时它被收进 <details> 折叠区，
-  // memory suggestions 挪到简报卡片旁边（更显眼，不跟技术清单一起被折叠）；
-  // 没有 briefing（旧数据）时整段原样铺开，且 memory suggestions 留在原来的位置，
-  // 与改动前的渲染逐字节一致 —— 这就是任务要求的"优雅回退到原渲染"。
+  // technicalDetails 保留原来的完整技术清单（harness/memory/safety 遥测/摘要/agent 元信息/
+  // trace/impact 区域/guardrails/证据引用/测试建议/开放问题/不确定性）。有 briefing 时它被
+  // 收进 <details> 折叠区，memory suggestions 挪到简报卡片旁边（更显眼，不跟技术清单一起
+  // 被折叠）；没有 briefing（旧数据）时整段原样铺开在同样的相对位置，且 memory suggestions
+  // 留在原来的位置 —— 这就是任务要求的"优雅回退到原渲染"。runtime-status（run id/steps/
+  // duration/fallback 原因等 harness 遥测）原来固定挂在 agent-header 之后、不受 hasBriefing
+  // 影响地一直平铺；现在并入 technicalDetails 顶部，跟着同一套折叠/平铺开关走，
+  // 使得"每条回答都平铺一段 harness 遥测"这个问题在 briefing 视图下也被折起来。
   const technicalDetails = html`
+    ${renderRuntimeStatus(payload)}
     <h3>${c.chat.impactSummary}</h3>
     ${typewriterParagraph(message.answerId, payload.summary)}
 
@@ -1703,8 +1745,6 @@ function renderAgentImpactMessage(message) {
           <span>${escapeHtml(payload.guardrails?.every((guardrail) => guardrail.status === "passed") ? c.chat.guardrailsPassed : c.chat.needsReview)}</span>
         </div>
 
-        ${renderRuntimeStatus(payload)}
-
         ${payload.hitl?.paused ? html`
           <div class="hitl-card paused" id="hitl-${escapeHtml(message.answerId)}">
             <h3>&#9888; ${c.chat.hitlPaused || "Human Review Required"}</h3>
@@ -1758,7 +1798,16 @@ function renderImpactMessage(message) {
   const c = t();
   const payload = message.payload;
   const hasBriefing = !!payload.briefing;
+  // /api/chat (kind=impact) attaches the same harness/safety/memory_suggestions
+  // fields as the qa path, but this renderer never surfaced either one --
+  // runtime telemetry was simply dropped on the floor, and pending memory
+  // suggestions never got a Save/Ignore card. Both are now included, mirroring
+  // renderAgentImpactMessage's established fold-or-inline pattern: telemetry
+  // rides inside technicalDetails (folded once there's a briefing, inline
+  // otherwise), suggestions stay visible next to the briefing/summary.
+  const memorySuggestionsHtml = renderMemorySuggestions(payload.memory_suggestions);
   const technicalDetails = html`
+    ${renderOptionalRuntimeStatus(payload)}
     <h3>${c.chat.impactSummary}</h3>
     ${typewriterParagraph(message.answerId, payload.summary)}
     <h3>${c.chat.impactAreas}</h3>
@@ -1775,12 +1824,14 @@ function renderImpactMessage(message) {
     <ul>${renderList(payload.testing_suggestions, (item) => `<li>${escapeHtml(item)}</li>`)}</ul>
     <h3>${c.chat.openQuestions}</h3>
     <ul>${renderList(payload.open_questions, (item) => `<li>${escapeHtml(item)}</li>`)}</ul>
+    ${hasBriefing ? "" : memorySuggestionsHtml}
   `;
   return html`
     <article class="message">
       <div class="question">${escapeHtml(message.question)}</div>
       <div class="answer">
         ${hasBriefing ? renderImpactBriefing(payload.briefing, c, message.answerId) : ""}
+        ${hasBriefing ? memorySuggestionsHtml : ""}
         ${hasBriefing ? techDetailsWrapper(`techDetails-${message.answerId}`, c.chat.techDetails, technicalDetails) : technicalDetails}
         ${feedbackBar(message)}
       </div>
@@ -1791,11 +1842,14 @@ function renderImpactMessage(message) {
 function renderOnboardingMessage(message) {
   const c = t();
   const payload = message.payload;
+  // Same telemetry-into-a-fold treatment as the other message renderers: the
+  // plan/guardrails/memory suggestions are what the user actually asked for,
+  // harness/safety diagnostics go behind a collapsed "Technical details" fold.
+  const runtimeStatusHtml = renderOptionalRuntimeStatus(payload);
   return html`
     <article class="message">
       <div class="question">${escapeHtml(payload.role)} · ${escapeHtml(payload.duration)}</div>
       <div class="answer">
-        ${renderOptionalRuntimeStatus(payload)}
         <h3>${c.chat.goal}</h3>
         ${typewriterParagraph(message.answerId, payload.goal)}
         <div class="plan-grid">
@@ -1821,6 +1875,7 @@ function renderOnboardingMessage(message) {
           `)}
         </div>
         ${renderMemorySuggestions(payload.memory_suggestions)}
+        ${runtimeStatusHtml ? techDetailsWrapper(`techDetails-${message.answerId}`, c.chat.techDetails, runtimeStatusHtml) : ""}
         ${feedbackBar(message)}
       </div>
     </article>
@@ -1847,13 +1902,15 @@ function feedbackBar(message) {
 
 function failureReasons(metrics) {
   const c = t();
+  // Zero real feedback used to fall back to a hardcoded demo distribution
+  // (missing_citation: 12, too_generic: 8, inaccurate: 7) -- fabricated
+  // numbers on a dashboard whose whole pitch is trustworthy metrics. The
+  // empty state now matches every sibling bar chart in this same panel
+  // (rankedBars() below), which renders a single honest "none / 0" bar
+  // instead of inventing activity that never happened.
   const reasons = metrics.top_failure_reasons?.length
     ? metrics.top_failure_reasons
-    : [
-        { type: "missing_citation", count: 12 },
-        { type: "too_generic", count: 8 },
-        { type: "inaccurate", count: 7 }
-      ];
+    : [{ type: "none", count: 0 }];
   const max = Math.max(...reasons.map((item) => item.count), 1);
   return html`
     <div class="failure-bars">
@@ -2470,13 +2527,22 @@ function restoreScrollPosition(el, prevDistance, snapToBottom) {
 // currently doing (background refreshMetrics()/refreshMemory() polls,
 // switching languages, giving feedback on an unrelated message, etc). Any
 // value that can only live in the DOM at the moment render() runs would
-// otherwise be silently destroyed. state.draftQuestion (see below) was the
-// first fix of this shape; this generalizes the same "read the live DOM
-// value into state right before the wipe" pattern to every other input/toggle
-// that has the same problem.
+// otherwise be silently destroyed. state.drafts (see below) was the first fix
+// of this shape; this generalizes the same "read the live DOM value into
+// state right before the wipe" pattern to every other input/toggle that has
+// the same problem.
 function captureFormStateBeforeRender() {
+  // #questionInput 只在 qa/impact/agent 三个 tab 各自的 qaTab(kind) 渲染里挂载
+  // 一份（onboarding tab 没有这个输入框）。不能假设它此刻属于 state.activeTab：
+  // switchTab() 是"先切 state.activeTab 再调 render()"，而这个函数运行在
+  // render() 重建 DOM *之前*，此时挂在文档里的仍是切换前那个旧 tab 的
+  // textarea —— 如果按当时已经变成新值的 state.activeTab 回写，会把旧 tab
+  // 的文本误存进新 tab 的草稿槽位，新 tab 原有的草稿反而被这份错位的值覆盖
+  // 掉（浏览器实测复现过一次：qa 输入内容会在切到 impact/agent 后串过去）。
+  // 渲染 textarea 时就把它所属的 kind 写进 data-tab（见 qaTab()），这里直接
+  // 读那个属性作为归属依据，而不是读可能已经被切换掉的 state.activeTab。
   const questionInput = document.querySelector("#questionInput");
-  if (questionInput) state.draftQuestion = questionInput.value;
+  if (questionInput) state.drafts[questionInput.dataset.tab || state.activeTab] = questionInput.value;
 
   const roleSelect = document.querySelector("#roleSelect");
   if (roleSelect) state.onboardingRole = roleSelect.value;
@@ -2688,8 +2754,13 @@ async function ask(kind = "qa", questionOverride = "") {
   if (!question) return;
   if (input) input.value = "";
   state.loading = true;
+  // tab: kind -- ask() is only ever invoked as ask("qa") or ask("impact")
+  // (see the data-action click handler below), and those two kind values
+  // already coincide with the qa/impact tab ids, so kind doubles as the tab
+  // marker used to filter this message into the right tab's message list.
   state.messages.push({
     kind: "local",
+    tab: kind,
     answerId: "pending",
     question,
     payload: { answer: "Thinking...", key_points: [], related_files: [], uncertainty: "", suggested_next_questions: [] }
@@ -2703,6 +2774,7 @@ async function ask(kind = "qa", questionOverride = "") {
     state.messages = state.messages.filter((item) => item.answerId !== "pending");
     state.messages.push({
       kind: payload.kind,
+      tab: kind,
       answerId: payload.answerId,
       question,
       payload: payload.payload
@@ -2727,6 +2799,7 @@ async function runAgentImpact(questionOverride = "") {
   state.loading = true;
   state.messages.push({
     kind: "local",
+    tab: "agent",
     answerId: "pending",
     question,
     payload: { answer: "Running agent workflow...", key_points: [], related_files: [], uncertainty: "", suggested_next_questions: [] }
@@ -2740,6 +2813,7 @@ async function runAgentImpact(questionOverride = "") {
     state.messages = state.messages.filter((item) => item.answerId !== "pending");
     state.messages.push({
       kind: payload.kind,
+      tab: "agent",
       answerId: payload.answerId,
       question,
       payload: payload.payload
@@ -2776,6 +2850,7 @@ async function generateOnboarding(roleOverride, durationOverride) {
     });
     state.messages.push({
       kind: "onboarding",
+      tab: "onboarding",
       answerId: payload.answerId,
       question: `Generate onboarding plan for ${role}, ${duration}`,
       payload: payload.payload
@@ -2878,6 +2953,7 @@ async function handleHitlDecision(decision, answerId, runId) {
       state.messages.push({
         question: c.chat.hitlApprovedMessage,
         kind: "agent_impact",
+        tab: "agent",
         payload: resumed.payload,
         answerId: resumed.answerId
       });
@@ -2885,6 +2961,7 @@ async function handleHitlDecision(decision, answerId, runId) {
       state.messages.push({
         question: c.chat.hitlRejectedMessage,
         kind: "agent_impact",
+        tab: "agent",
         payload: resumed.payload,
         answerId: resumed.answerId
       });
@@ -3161,6 +3238,12 @@ function switchTab(tab) {
 document.addEventListener("click", (event) => {
   const pageButton = event.target.closest("[data-page]");
   if (pageButton) {
+    // Workflow cards on the landing page (see the "cards" copy data) may
+    // carry an optional data-tab alongside data-page="chat" -- e.g. the
+    // "Analyze" card wants to land on the impact tab specifically, not
+    // whatever tab happened to be active last, so its dedicated empty-state
+    // copy (chatPage()'s importImpact branch) actually shows up.
+    if (pageButton.dataset.tab) state.activeTab = pageButton.dataset.tab;
     setPage(pageButton.dataset.page);
     return;
   }
@@ -3193,7 +3276,7 @@ document.addEventListener("click", (event) => {
   const question = event.target.closest("[data-question]");
   if (question) {
     // Root cause of the "click fills nothing" bug: render() always re-reads
-    // whatever #questionInput *currently* contains into state.draftQuestion
+    // whatever #questionInput *currently* contains into state.drafts[activeTab]
     // at its very top, before rebuilding the DOM (see
     // captureFormStateBeforeRender()) -- that is exactly what used to race
     // with (and usually lose to) a requestAnimationFrame callback that wrote
@@ -3201,7 +3284,7 @@ document.addEventListener("click", (event) => {
     // below runs a render() synchronously, and requestAnimationFrame also
     // does not fire at all while the document is hidden/backgrounded, which
     // silently dropped the value in exactly the kind of headless/automated
-    // check that first caught this. Fixing it the same way draftQuestion
+    // check that first caught this. Fixing it the same way per-tab drafts
     // fixed manual typing: route the value through state (or the live DOM
     // node render() is about to read from) instead of a side-channel DOM
     // write that competes with render()'s own capture step.
@@ -3210,7 +3293,11 @@ document.addEventListener("click", (event) => {
     if (existingInput) {
       // Already on a tab with a live textarea (qa/impact/agent): write into
       // it now so the render() inside setPage() picks it up via its own
-      // DOM-capture step and carries it through the rebuild.
+      // DOM-capture step (which writes back into state.drafts[...] keyed by
+      // the textarea's own data-tab, i.e. whichever of the three tabs is
+      // currently mounted -- setPage() here doesn't touch state.activeTab,
+      // so it's still the mounted tab throughout) and carries it
+      // through the rebuild.
       existingInput.value = questionText;
     } else {
       // No textarea mounted yet -- either we're not on the chat page at all
@@ -3218,7 +3305,7 @@ document.addEventListener("click", (event) => {
       // (it has no free-text box). Either way there is nothing to write
       // into, so set the state directly and land on the qa tab, which is
       // guaranteed to render the textarea.
-      state.draftQuestion = questionText;
+      state.drafts.qa = questionText;
       state.activeTab = "qa";
     }
     setPage("chat");
@@ -3311,6 +3398,7 @@ document.addEventListener("keydown", (event) => {
     const workflowCard = event.target.closest?.(".workflow-card[role=\"button\"]");
     if (workflowCard) {
       event.preventDefault();
+      if (workflowCard.dataset.tab) state.activeTab = workflowCard.dataset.tab;
       setPage(workflowCard.dataset.page);
     }
   }
