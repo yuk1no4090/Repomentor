@@ -1051,6 +1051,15 @@ textarea {
 }
 
 .workspace {
+  /* 和 .sidebar/.inspector 用同一套 sticky + max-height 上限，这样 #tabContent
+     里 flex:1 的 .messages 才有一个真正会溢出的高度边界可以内部滚动——否则
+     这个卡片只会随内容无限变高，把整页撑长，.messages 自己的 overflow:auto
+     永远不会触发，"自动滚到底部"也就无从谈起。 */
+  align-self: start;
+  position: sticky;
+  top: 76px;
+  max-height: calc(100vh - 92px);
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background: var(--surface);
@@ -1058,6 +1067,16 @@ textarea {
   box-shadow: var(--shadow-sm);
   display: flex;
   flex-direction: column;
+  min-height: 0;
+}
+
+/* renderTabContent() 的输出（task-intro/onboarding-form + .messages + composer）
+   都挂在这个容器下面；它要参与 .workspace 的 flex 纵向布局并把剩余高度让给
+   .messages，.messages 才能真正 flex:1 撑满剩余空间并在内部滚动。 */
+#tabContent {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
   min-height: 0;
 }
 
@@ -1390,8 +1409,18 @@ code {
   display: grid;
   gap: 14px;
   flex: 1;
+  /* flex 子项的隐式最小高度默认是内容高度（min-height:auto），不清零的话
+     overflow:auto 永远没有机会触发——容器会先被内容撑到超过可用空间，而不是
+     在可用空间内裁切并滚动。 */
+  min-height: 0;
   overflow: auto;
   align-content: start;
+  /* 隐式行轨道默认关键字是 auto——当这个 grid 容器本身的高度是外部 flex 布局
+     给出的定值（而不是内容撑出来的）时，实测 Chromium 会把 auto 行按容器高度
+     均分压扁每一条消息（而不是按内容撑到自然高度再让容器溢出滚动）。显式换成
+     min-content 才会让每一行按消息卡片自身内容的自然高度排布，多出来的高度
+     交给容器的 overflow:auto 去滚动，而不是被压扁裁切。 */
+  grid-auto-rows: min-content;
 }
 
 .message {
@@ -2161,6 +2190,34 @@ code {
   justify-self: end;
 }
 
+.composer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.composer-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.composer-tools span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
 /* ---- Onboarding Form ---- */
 .onboarding-form {
   display: grid;
@@ -2511,9 +2568,11 @@ code {
   }
 
   .sidebar,
-  .inspector {
+  .inspector,
+  .workspace {
     position: static;
     max-height: none;
+    overflow: visible;
   }
 
   .overview-grid,
@@ -2707,4 +2766,26 @@ code {
   background: transparent;
   color: var(--danger);
   border-color: transparent;
+}
+
+/* ---- Typewriter reveal (answer main text) ---- */
+.tw-animating::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--accent);
+  animation: tw-caret-blink 0.8s steps(1) infinite;
+}
+
+@keyframes tw-caret-blink {
+  50% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tw-animating::after {
+    animation: none;
+  }
 }
