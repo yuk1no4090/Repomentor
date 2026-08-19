@@ -79,6 +79,20 @@ button:active {
   transform: scale(0.985);
 }
 
+/* Global disabled-button degradation: covers every button that gains a
+   `disabled` attribute from state.busyKeys (generate onboarding, memory
+   suggestion Save/Ignore, create/disable auth user, harness Audit, auth
+   Refresh, memory forget/clear-all) plus one-off cases like the feedback
+   buttons' own :disabled rules further down, which are more specific and
+   still take precedence for their own fine-tuned "selected but disabled"
+   look. Before this rule there was no visual degradation at all -- a
+   disabled button looked identical to an enabled one except for the cursor
+   the browser applies by default, which is easy to miss. */
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 img, svg {
   display: block;
   max-width: 100%;
@@ -298,6 +312,25 @@ nav {
   border-color: var(--line-strong);
   background: var(--surface-2);
   box-shadow: var(--shadow);
+}
+
+/* Most browsers already suppress :hover on a disabled button, but pin it
+   explicitly so a disabled .primary/.secondary never shows the hover lift/
+   glow (translateY + stronger shadow / border-color swap) if that default
+   ever doesn't apply -- the flat, dimmed button:disabled look above should
+   always win. */
+.primary:disabled,
+.primary:disabled:hover {
+  background: linear-gradient(135deg, #4f46e5, #6366f1);
+  box-shadow: none;
+  transform: none;
+}
+
+.secondary:disabled,
+.secondary:disabled:hover {
+  border-color: var(--line);
+  background: var(--surface);
+  box-shadow: none;
 }
 
 /* ---- Landing Page ---- */
