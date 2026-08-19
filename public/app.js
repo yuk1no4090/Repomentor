@@ -49,7 +49,15 @@ const state = {
   feedbackInFlight: new Set(),
   // 已经播放过打字机渐显动画的消息 answerId 集合；一旦某个 id 进入这个集合就
   // 永远不再重播（即便动画途中被重渲染打断），重渲染时只会把全文直接显示出来。
-  playedMessages: new Set()
+  playedMessages: new Set(),
+  // 通用"正在处理中"操作键集合，横向复用 feedbackInFlight 的同步加锁模式，
+  // 但覆盖 sendFeedback 之外的所有会并发触发多个请求的异步操作（生成
+  // onboarding 计划、确认/忽略记忆建议、创建/禁用认证用户、拉取 harness
+  // 审计等）。key 按"操作类型:目标 id"拼接（例如 `memory-suggestion:${id}`、
+  // `auth-disable:${userId}`），同一个 key 在进入 await 之前同步 add()、
+  // finally 里统一 delete()，配合 render() 时按 key 判断 disabled，避免每个
+  // 操作都单独发明一个专属布尔字段。
+  busyKeys: new Set()
 };
 
 const app = document.querySelector("#app");
@@ -80,6 +88,7 @@ const copy = {
   en: {
     brand: "Repomentor",
     nav: { landing: "Product", import: "Import", overview: "Overview", chat: "Copilot", dashboard: "Evaluation", brandAria: "Go to product page", languageAria: "Language switch" },
+    common: { retry: "Retry", dismiss: "Dismiss" },
     home: {
       title: "Repository onboarding, with evidence.",
       subtitle: "Import a repo, inspect the project map, ask grounded questions, analyze change impact, and measure answer quality.",
@@ -268,6 +277,10 @@ const copy = {
       noSavedPreferences: "No saved preferences",
       clearAll: "Clear all",
       removeMemory: "Remove",
+      // Confirmation prompts for the two destructive memory-forget entry points
+      // (parity with c.auth.disableConfirmTemplate's {placeholder} convention).
+      clearAllConfirm: "Clear all saved preferences? This cannot be undone.",
+      removeMemoryConfirm: "Remove the saved preference \"{key} = {value}\"?",
       memoryAudit: "Memory audit",
       noMemoryEventsYet: "No memory events yet.",
       longTermMemory: "Long-term memory",
@@ -434,6 +447,7 @@ const copy = {
   zh: {
     brand: "Repomentor",
     nav: { landing: "产品", import: "导入", overview: "总览", chat: "Copilot", dashboard: "评估", brandAria: "前往产品首页", languageAria: "语言切换" },
+    common: { retry: "重试", dismiss: "关闭" },
     home: {
       title: "有证据的代码库入门。",
       subtitle: "导入仓库，查看项目地图，提出有引用的问题，分析变更影响，并衡量 AI 回答质量。",
@@ -622,6 +636,8 @@ const copy = {
       noSavedPreferences: "暂无已保存偏好",
       clearAll: "清空",
       removeMemory: "删除",
+      clearAllConfirm: "确定要清空全部已保存的偏好吗？此操作无法撤销。",
+      removeMemoryConfirm: "确定要删除已保存的偏好 \"{key} = {value}\" 吗？",
       memoryAudit: "记忆审计",
       noMemoryEventsYet: "暂无记忆事件。",
       longTermMemory: "长期记忆",
@@ -909,8 +925,23 @@ async function refreshMemory(shouldRender = true) {
     state.memory = null;
     return;
   }
-  const payload = await api(`/api/memory?projectId=${encodeURIComponent(state.project.id)}`);
-  state.memory = payload;
+  // Mirrors checkHealth()'s own try/catch just above: this is a best-effort
+  // background refresh of a side panel, called both directly from setPage()
+  // (via Promise.all(...).then(render), which has no .catch of its own) and
+  // from inside half a dozen other actions' own try blocks after their
+  // primary request already succeeded. Left uncaught, a failure here used to
+  // reject the Promise.all() in setPage() with no handler (an unhandled
+  // rejection that silently left llmStatus/memory stale) and, worse, could
+  // abort whichever *other* action's try block happened to be awaiting it
+  // mid-flight, misattributing a memory-panel hiccup to that action's own
+  // error banner. Swallow it here (log only) so callers only ever see
+  // failures in the request they actually care about.
+  try {
+    const payload = await api(`/api/memory?projectId=${encodeURIComponent(state.project.id)}`);
+    state.memory = payload;
+  } catch (error) {
+    console.error("refreshMemory failed:", error);
+  }
   if (shouldRender) render();
 }
 
@@ -1289,11 +1320,11 @@ function renderMemoryManager() {
           ${rows.map(([key, value]) => `
             <div>
               <span><strong>${escapeHtml(key)}</strong>${escapeHtml(String(value))}</span>
-              <button data-memory-forget-key="${escapeHtml(key)}" data-memory-forget-value="${escapeHtml(String(value))}">${remove}</button>
+              <button data-memory-forget-key="${escapeHtml(key)}" data-memory-forget-value="${escapeHtml(String(value))}" ${state.busyKeys.has(`memory-forget:${key}:${value}`) ? "disabled" : ""}>${remove}</button>
             </div>
           `).join("")}
         </div>
-        <button class="secondary memory-clear" data-memory-forget-all="true">${clear}</button>
+        <button class="secondary memory-clear" data-memory-forget-all="true" ${state.busyKeys.has("memory-forget-all") ? "disabled" : ""}>${clear}</button>
       ` : `<p class="muted">${empty}</p>`}
       <div class="memory-events">
         <h4>${c.chat.memoryAudit}</h4>
@@ -1415,7 +1446,7 @@ function onboardingTab() {
           ${ONBOARDING_DURATIONS.map((duration) => `<option ${state.onboardingDuration === duration ? "selected" : ""}>${duration}</option>`).join("")}
         </select>
       </label>
-      <button class="primary" data-action="onboarding">${c.chat.generatePlan}</button>
+      <button class="primary" data-action="onboarding" ${state.busyKeys.has("onboarding") ? "disabled" : ""}>${c.chat.generatePlan}</button>
     </div>
     <div class="messages">
       ${state.messages.length ? state.messages.map(renderMessage).join("") : `
@@ -1534,8 +1565,8 @@ function renderMemorySuggestions(suggestions = []) {
           <p>${escapeHtml(item.reason || "")}</p>
           ${item.status === "pending"
             ? `<div class="memory-actions">
-                <button data-memory-action="confirm" data-suggestion="${escapeHtml(item.id)}">${c.chat.saveMemory}</button>
-                <button data-memory-action="ignore" data-suggestion="${escapeHtml(item.id)}">${c.chat.ignoreMemory}</button>
+                <button data-memory-action="confirm" data-suggestion="${escapeHtml(item.id)}" ${state.busyKeys.has(`memory-suggestion:${item.id}`) ? "disabled" : ""}>${c.chat.saveMemory}</button>
+                <button data-memory-action="ignore" data-suggestion="${escapeHtml(item.id)}" ${state.busyKeys.has(`memory-suggestion:${item.id}`) ? "disabled" : ""}>${c.chat.ignoreMemory}</button>
               </div>`
             : `<span class="memory-state">${escapeHtml(item.status || c.chat.unknown)}</span>`}
         </div>
@@ -1882,7 +1913,7 @@ function recentHarnessRuns(items = []) {
           <code>${escapeHtml(String(item.run_id || "").slice(0, 18))}</code>
           <span>${escapeHtml(item.kind || "run")} | ${escapeHtml(item.runtime || "runtime")} | ${escapeHtml(item.model_provider || "")}</span>
           <span>${escapeHtml(status)}${risks ? ` | ${escapeHtml(risks)}` : ""}</span>
-          <button class="text-button" data-harness-run="${escapeHtml(item.run_id || "")}">Audit</button>
+          <button class="text-button" data-harness-run="${escapeHtml(item.run_id || "")}" ${state.busyKeys.has(`harness-audit:${item.run_id || ""}`) ? "disabled" : ""}>Audit</button>
         </div>`;
       }).join("")}
     </div>
@@ -2007,7 +2038,7 @@ function renderAuthOperationsPanel() {
           <h2>${c.auth.title}</h2>
           <p>${escapeHtml(tokenStatus)} | ${users.length} ${escapeHtml(c.auth.usersLabel)} | ${activeTokens} ${escapeHtml(c.auth.activeTokensLabel)}</p>
         </div>
-        <button class="secondary" data-auth-action="refresh">${c.dashboard.refresh}</button>
+        <button class="secondary" data-auth-action="refresh" ${state.busyKeys.has("auth-refresh") ? "disabled" : ""}>${c.dashboard.refresh}</button>
       </div>
 
       <div class="auth-token-row">
@@ -2033,7 +2064,7 @@ function renderAuthOperationsPanel() {
           <label><span>${c.auth.scopes}</span><input id="authScopesInput" autocomplete="off" value="${escapeHtml(state.authUserForm.scopes)}"></label>
           <label><span>${c.auth.orgId}</span><input id="authOrgInput" autocomplete="off" placeholder="${escapeHtml(c.auth.optional)}" value="${escapeHtml(state.authUserForm.orgId)}"></label>
           <label class="auth-checkbox"><input id="authIssueTokenInput" type="checkbox" ${state.authUserForm.issueToken ? "checked" : ""}><span>${c.auth.issueToken}</span></label>
-          <button data-auth-action="create-user">${c.auth.createUserButton}</button>
+          <button data-auth-action="create-user" ${state.busyKeys.has("auth-create-user") ? "disabled" : ""}>${c.auth.createUserButton}</button>
         </div>
 
         <div class="auth-list">
@@ -2046,7 +2077,7 @@ function renderAuthOperationsPanel() {
                 <small>${escapeHtml((user.scopes || []).join(", ") || c.auth.noScopes)}</small>
               </span>
               ${user.source === "store" && user.status !== "disabled"
-                ? `<button class="text-button danger-text" data-auth-disable-user="${escapeHtml(user.id || user.userId || "")}">${c.auth.disable}</button>`
+                ? `<button class="text-button danger-text" data-auth-disable-user="${escapeHtml(user.id || user.userId || "")}" ${state.busyKeys.has(`auth-disable:${user.id || user.userId || ""}`) ? "disabled" : ""}>${c.auth.disable}</button>`
                 : ""}
             </div>
           `).join("") : `<p class="empty-inline">${c.auth.noUsers}</p>`}
@@ -2548,11 +2579,12 @@ function render() {
     chat: chatPage,
     dashboard: dashboardPage
   };
+  const c = t();
   app.innerHTML = nav() + (state.errorBanner ? html`
     <div class="error-banner">
       <span>${escapeHtml(state.errorBanner.message)}</span>
-      <button data-retry>Retry</button>
-      <button data-dismiss-error>Dismiss</button>
+      <button data-retry>${escapeHtml(c.common?.retry || "Retry")}</button>
+      <button data-dismiss-error>${escapeHtml(c.common?.dismiss || "Dismiss")}</button>
     </div>
   ` : "") + pages[state.page]();
 
@@ -2723,10 +2755,21 @@ async function runAgentImpact(questionOverride = "") {
   }
 }
 
-async function generateOnboarding() {
+async function generateOnboarding(roleOverride, durationOverride) {
+  // Same reentrancy shape as feedbackInFlight (see sendFeedback below): guard
+  // synchronously, before any await, so a double-click on "Generate Plan"
+  // can't fire two concurrent /api/onboarding requests whose responses may
+  // then arrive out of order.
+  if (state.busyKeys.has("onboarding")) return;
+  // Read the role/duration <select> values up front (roleOverride/
+  // durationOverride let the retry banner below resubmit the exact values
+  // from the failed attempt instead of re-querying a DOM that render() may
+  // have since rebuilt) -- same pattern as importRepository()/ask().
+  const role = roleOverride !== undefined ? roleOverride : (document.querySelector("#roleSelect")?.value || "Backend Engineer");
+  const duration = durationOverride !== undefined ? durationOverride : (document.querySelector("#durationSelect")?.value || "3 days");
+  state.busyKeys.add("onboarding");
+  render();
   try {
-    const role = document.querySelector("#roleSelect")?.value || "Backend Engineer";
-    const duration = document.querySelector("#durationSelect")?.value || "3 days";
     const payload = await api("/api/onboarding", {
       method: "POST",
       body: JSON.stringify({ projectId: state.project.id, role, duration })
@@ -2738,9 +2781,11 @@ async function generateOnboarding() {
       payload: payload.payload
     });
     await refreshMetrics(false);
-    render();
   } catch (error) {
-    showError(error);
+    showError(error, () => generateOnboarding(role, duration));
+  } finally {
+    state.busyKeys.delete("onboarding");
+    render();
   }
 }
 
@@ -2786,7 +2831,13 @@ async function sendFeedback(answerId, type) {
     // "selected" state and left the button group enabled for resubmission.
     if (message) message.feedbackGiven = type;
   } catch (error) {
-    showError(error);
+    // Resubmitting the same (answerId, type) is exactly what a user would do
+    // by clicking the same feedback button again -- retryFn does that
+    // directly instead of degrading to a blocking native alert() (which,
+    // notably, would have shown while the button group is still
+    // synchronously disabled from above, with no obvious way to try again
+    // until the finally block below re-renders).
+    showError(error, () => sendFeedback(answerId, type));
   } finally {
     // Always clear the in-flight flag and re-render, on success *and*
     // failure: on failure message.feedbackGiven stays unset, so this
@@ -2840,11 +2891,33 @@ async function handleHitlDecision(decision, answerId, runId) {
     }
     render();
   } catch (error) {
-    showError(error);
+    // The synchronous card.innerHTML write above (so "Submitting decision..."
+    // appears immediately, before any render()) bypasses state entirely: on
+    // failure nothing above ever touched state.messages, so the hitl payload
+    // still has paused: true. Previously this caught error went straight to
+    // showError(error) with no retryFn, which just alert()ed and never
+    // called render() on this path -- the card's replaced innerHTML had
+    // nothing left to rebuild it, leaving "Submitting decision..." stuck
+    // forever with no way to approve/reject again. Passing a retryFn instead
+    // both avoids the alert and (via showError()'s own render() call)
+    // rebuilds the card straight from the untouched state, which naturally
+    // restores the Approve/Reject buttons. Retrying resubmits the same
+    // decision, which is the natural "try again" action here.
+    showError(error, () => handleHitlDecision(decision, answerId, runId));
   }
 }
 
 async function handleMemorySuggestion(suggestionId, action) {
+  // Same synchronous-guard shape as feedbackInFlight/onboarding's busyKeys:
+  // both Save and Ignore for a given suggestion share one key, so a
+  // double-click on either button (or one click on each in quick succession)
+  // can't fire two concurrent /api/memory/confirm|forget requests for the
+  // same suggestionId whose responses could then race and leave the
+  // suggestion's status ambiguous.
+  const busyKey = `memory-suggestion:${suggestionId}`;
+  if (state.busyKeys.has(busyKey)) return;
+  state.busyKeys.add(busyKey);
+  render();
   try {
     const endpoint = action === "confirm" ? "/api/memory/confirm" : "/api/memory/forget";
     await api(endpoint, {
@@ -2866,13 +2939,28 @@ async function handleMemorySuggestion(suggestionId, action) {
     });
     await refreshMetrics(false);
     await refreshMemory(false);
-    render();
   } catch (error) {
-    showError(error);
+    showError(error, () => handleMemorySuggestion(suggestionId, action));
+  } finally {
+    state.busyKeys.delete(busyKey);
+    render();
   }
 }
 
 async function forgetMemoryPreference(key, value) {
+  const c = t();
+  // Same destructive-action confirmation pattern as disableAuthUser's
+  // c.auth.disableConfirmTemplate: "Clear all" wipes every saved preference,
+  // and a single "Remove" deletes one -- neither had any confirmation before,
+  // unlike disabling an auth user which already prompts.
+  const confirmMessage = key
+    ? (c.chat.removeMemoryConfirm || "").replace("{key}", key).replace("{value}", String(value))
+    : (c.chat.clearAllConfirm || "");
+  if (!confirm(confirmMessage)) return;
+  const busyKey = key ? `memory-forget:${key}:${value}` : "memory-forget-all";
+  if (state.busyKeys.has(busyKey)) return;
+  state.busyKeys.add(busyKey);
+  render();
   try {
     const body = key
       ? { projectId: state.project?.id, key, value }
@@ -2889,9 +2977,11 @@ async function forgetMemoryPreference(key, value) {
     };
     await refreshMetrics(false);
     await refreshMemory(false);
-    render();
   } catch (error) {
-    showError(error);
+    showError(error, () => forgetMemoryPreference(key, value));
+  } finally {
+    state.busyKeys.delete(busyKey);
+    render();
   }
 }
 
@@ -2903,6 +2993,14 @@ async function refreshMetrics(shouldRender = true) {
 }
 
 async function refreshAuthAdmin(shouldRender = true) {
+  // Not a strict mutex (this is idempotent and already called from several
+  // places -- setPage("dashboard"), the explicit Refresh button,
+  // saveBrowserAuthToken(), after create/disable-user success): the busyKey
+  // just gives the Refresh button a visible pending state while any of those
+  // calls is in flight, per the same state.busyKeys convention used
+  // elsewhere for actions that *do* need real reentrancy guards.
+  state.busyKeys.add("auth-refresh");
+  if (shouldRender) render();
   try {
     const [usersPayload, eventsPayload] = await Promise.all([
       api("/api/auth/users"),
@@ -2923,8 +3021,10 @@ async function refreshAuthAdmin(shouldRender = true) {
       error: `${error.message || "Auth endpoints unavailable."}${error.code ? ` [${error.code}]` : ""}`,
       createdToken: null
     };
+  } finally {
+    state.busyKeys.delete("auth-refresh");
+    if (shouldRender) render();
   }
-  if (shouldRender) render();
 }
 
 // Both token inputs (topbar + Auth Operations panel) must be pushed to the
@@ -2956,6 +3056,13 @@ function saveBrowserAuthToken(sourceElement = null) {
 }
 
 async function createAuthUserFromForm() {
+  // Guards the same window as feedbackInFlight/onboarding's busyKeys: without
+  // it, double-clicking "Create user" (or clicking again before the first
+  // response lands) fires two concurrent /api/auth/users POSTs for
+  // whatever's currently in the form.
+  if (state.busyKeys.has("auth-create-user")) return;
+  state.busyKeys.add("auth-create-user");
+  render();
   try {
     const userId = document.querySelector("#authUserIdInput")?.value?.trim();
     const role = document.querySelector("#authRoleInput")?.value?.trim() || "viewer";
@@ -2991,9 +3098,14 @@ async function createAuthUserFromForm() {
     if (orgEl) orgEl.value = resetForm.orgId;
     if (issueTokenEl) issueTokenEl.checked = resetForm.issueToken;
     state.authUserForm = resetForm;
-    render();
   } catch (error) {
-    showError(error);
+    // The form fields are left untouched on error (see the comment above), so
+    // a retry re-reads the same values the user already typed instead of
+    // silently discarding them behind an alert().
+    showError(error, () => createAuthUserFromForm());
+  } finally {
+    state.busyKeys.delete("auth-create-user");
+    render();
   }
 }
 
@@ -3002,25 +3114,42 @@ async function disableAuthUser(userId) {
   const c = t();
   const confirmMessage = (c.auth.disableConfirmTemplate || "").replace("{user}", userId);
   if (!confirm(confirmMessage)) return;
+  // Confirmed above; guard the window between that confirmation and the
+  // response landing so a second click can't fire a second
+  // /api/auth/users/disable request for the same userId (and, on the retry
+  // path below, so the retry itself can't stack with a fresh click).
+  const busyKey = `auth-disable:${userId}`;
+  if (state.busyKeys.has(busyKey)) return;
+  state.busyKeys.add(busyKey);
+  render();
   try {
     await api("/api/auth/users/disable", {
       method: "POST",
       body: JSON.stringify({ userId })
     });
     state.auth = { ...(state.auth || {}), createdToken: null };
-    await refreshAuthAdmin();
+    await refreshAuthAdmin(false);
   } catch (error) {
-    showError(error);
+    showError(error, () => disableAuthUser(userId));
+  } finally {
+    state.busyKeys.delete(busyKey);
+    render();
   }
 }
 
 async function loadHarnessAudit(runId) {
   if (!state.project || !runId) return;
+  const busyKey = `harness-audit:${runId}`;
+  if (state.busyKeys.has(busyKey)) return;
+  state.busyKeys.add(busyKey);
+  render();
   try {
     state.harnessAudit = await api(`/api/harness-run?projectId=${encodeURIComponent(state.project.id)}&runId=${encodeURIComponent(runId)}`);
-    render();
   } catch (error) {
-    showError(error);
+    showError(error, () => loadHarnessAudit(runId));
+  } finally {
+    state.busyKeys.delete(busyKey);
+    render();
   }
 }
 

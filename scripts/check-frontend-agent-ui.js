@@ -93,7 +93,16 @@ const requiredMemoryActionSnippets = [
   "error.status = response.status",
   "error.payload = payload",
   "function showError",
-  "showError(error)"
+  // Was the exact literal "showError(error)" (bare call, no retryFn) --
+  // updated because every showError() call site in app.js now passes a
+  // retryFn (see the 2026-08-19 error-banner unification: all previously
+  // bare showError(error) calls degraded to a blocking native alert()
+  // instead of the in-app retry banner every other error path already used).
+  // "showError(error," still asserts the same underlying property this
+  // check cares about -- this region calls showError() with the caught
+  // error as its first argument -- without pinning the now-intentionally-
+  // removed bare-call arity.
+  "showError(error,"
 ];
 
 const missingMemoryActionSnippets = requiredMemoryActionSnippets.filter((snippet) => {
