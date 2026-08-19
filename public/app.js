@@ -22,7 +22,13 @@ const state = {
 
 const app = document.querySelector("#app");
 
-// 打字机渐显：逐块（15-25 字符/步）显示新到达的回答主文本，总时长封顶 ~1.2s。
+// 打字机渐显：逐块（15-25 字符/步）显示新到达的回答主文本，总时长目标封顶
+// ~1.2s。注意 TYPEWRITER_MAX_DURATION_MS 是"目标"总时长，不是硬上限：每步
+// 间隔会被 clamp 到 TYPEWRITER_MIN_INTERVAL_MS（约一帧）为下限，避免 interval
+// 被要求以不现实的速度触发；文本特别长、需要的步数特别多时，
+// 步数 × TYPEWRITER_MIN_INTERVAL_MS 可能超过 1200ms，实际播放时间会比目标
+// 略长——这是"保证每一步间隔仍然有意义"和"总时长绝对不超过 1.2s"两者之间
+// 有意的取舍，不是 bug。
 const TYPEWRITER_STEP_CHARS = 20;
 const TYPEWRITER_MAX_DURATION_MS = 1200;
 const TYPEWRITER_MIN_INTERVAL_MS = 16;
@@ -2327,41 +2333,67 @@ function mountTypewriters() {
   });
 }
 
-// ---- Auto-scroll the messages panel ----
+// ---- Auto-scroll / scroll-position preservation for the messages panel ----
 //
-// .messages 声明了 flex:1 + overflow:auto，但它的祖先（.workspace/.chat-layout）
-// 目前只用 min-height 撑高、没有硬性高度上限，内容会把整个 .workspace 撑高，
-// 真正发生滚动的是浏览器窗口/文档本身，.messages 这个 div 自己永远不会真正
-// 溢出（scrollHeight === clientHeight）。所以这里两种情况都处理：如果 .messages
-// 自己发生了内部溢出（比如以后布局改成固定高度面板）就滚它自己，否则退回到
-// window 级别的滚动位置——这样无论布局如何，"贴底自动滚动"这条行为都是有效的。
+// .messages 声明了 flex:1 + overflow:auto，.workspace 现在也有了硬性的
+// max-height 上限（见 styles.css），正常情况下 .messages 就是一个真正会
+// 内部溢出、可以滚动的面板；.workspace 自己在极端矮视口下也可能整体溢出而
+// 需要滚动（同样见 styles.css 里 .workspace 的 overflow:auto 说明）。这里
+// 用 window 级别的滚动状态作为兜底分支，不绑定某一种具体布局才能生效。
+//
+// app.innerHTML 整体重建意味着旧 .messages 节点会被整个扔掉、换成一个全新
+// 节点（scrollTop 默认是 0）。只处理"贴底就自动滚底"是不够的——不贴底的
+// 分支如果什么都不做，新节点就停在 scrollTop=0，用户往上翻看历史时，任何
+// 触发 render() 的操作（哪怕只是点一下当前 tab）都会把视图弹回最顶部。所以
+// 这里量的不是一个"是否贴底"的布尔值，而是具体的"距底部多少像素"，不贴底时
+// 重建后显式把新节点滚回等价的相对位置。
 
-function isNearBottom(el, threshold = 150) {
+const NEAR_BOTTOM_THRESHOLD_PX = 150;
+
+// 量出容器当前"距底部还有多少像素"：优先用 .messages 自己的内部滚动状态，
+// 只有它没有真正溢出时才退回 window 级别的滚动状态。
+function distanceFromBottom(el) {
   const innerOverflow = el.scrollHeight - el.clientHeight > 1;
   if (innerOverflow) {
-    return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
+    return el.scrollHeight - el.scrollTop - el.clientHeight;
   }
   const doc = document.documentElement;
-  return doc.scrollHeight - window.scrollY - window.innerHeight <= threshold;
+  return doc.scrollHeight - window.scrollY - window.innerHeight;
 }
 
-function scrollMessagesToBottom(el) {
-  if (el.scrollHeight - el.clientHeight > 1) {
-    el.scrollTop = el.scrollHeight;
+// render() 重建 DOM 之后调用：el 是新建出来的 .messages 节点，prevDistance 是
+// 重建前用旧节点量出来的距底像素数。
+// - snapToBottom 为 true（重建前已经贴底，或者 .messages 本来就不存在，比如
+//   刚从别的 tab/页面切换过来）：滚到新内容的最底部。
+// - 否则：把新节点滚动到"距新内容底部同样远"的位置——
+//   newScrollTop = newScrollHeight - prevDistance - newClientHeight，
+//   再 clamp 到 [0, maxScrollTop]，防止内容变化导致算出负数或超出可滚动范围。
+function restoreScrollPosition(el, prevDistance, snapToBottom) {
+  const innerOverflow = el.scrollHeight - el.clientHeight > 1;
+  if (innerOverflow) {
+    const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    const target = snapToBottom ? el.scrollHeight : el.scrollHeight - prevDistance - el.clientHeight;
+    el.scrollTop = Math.max(0, Math.min(maxScrollTop, target));
     return;
   }
-  window.scrollTo(0, document.documentElement.scrollHeight);
+  const doc = document.documentElement;
+  const maxScrollY = Math.max(0, doc.scrollHeight - window.innerHeight);
+  const target = snapToBottom ? doc.scrollHeight : doc.scrollHeight - prevDistance - window.innerHeight;
+  window.scrollTo(0, Math.max(0, Math.min(maxScrollY, target)));
 }
 
 function render() {
   const questionInput = document.querySelector("#questionInput");
   if (questionInput) state.draftQuestion = questionInput.value;
 
-  // .messages 容器每次都会随 app.innerHTML 整体重建（新容器 scrollTop 永远是 0），
-  // 所以必须在替换之前，趁旧容器还在文档里量一下它当时是否贴底。容器本来就不
-  // 存在（比如刚从别的页面切换过来）也视为贴底，走自动滚底分支。
+  // .messages 容器每次都会随 app.innerHTML 整体重建（新容器 scrollTop 永远是
+  // 0），所以必须在替换之前，趁旧容器还在文档里量一次它当时的滚动状态：既要
+  // 知道是否贴底（决定要不要自动滚底），也要记下具体的距底像素数（决定不
+  // 贴底时新节点要恢复到哪个等价位置，见 restoreScrollPosition）。容器本来
+  // 就不存在（比如刚从别的页面切换过来）视为贴底，走自动滚底分支。
   const prevMessagesEl = document.querySelector(".messages");
-  const shouldAutoScroll = !prevMessagesEl || isNearBottom(prevMessagesEl);
+  const prevDistance = prevMessagesEl ? distanceFromBottom(prevMessagesEl) : 0;
+  const shouldSnapToBottom = !prevMessagesEl || prevDistance <= NEAR_BOTTOM_THRESHOLD_PX;
 
   // 旧 DOM 马上要被扔掉，先停掉所有还在跑的打字机 interval，避免它们之后继续
   // 对已经脱离文档树的节点写 textContent。
@@ -2384,10 +2416,8 @@ function render() {
 
   mountTypewriters();
 
-  if (shouldAutoScroll) {
-    const messagesEl = document.querySelector(".messages");
-    if (messagesEl) scrollMessagesToBottom(messagesEl);
-  }
+  const messagesEl = document.querySelector(".messages");
+  if (messagesEl) restoreScrollPosition(messagesEl, prevDistance, shouldSnapToBottom);
 }
 
 async function importRepository({ sample = false } = {}) {
