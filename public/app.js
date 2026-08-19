@@ -38,6 +38,15 @@ const state = {
   // 清空 DOM 之前，把"当前哪些还开着"读出来记进 state，render 时再按这份记录
   // 决定要不要带 open 属性。
   expandedDetails: new Set(),
+  // 正在提交反馈、尚未拿到响应的 answerId 集合。message.feedbackGiven 只在
+  // 响应回来之后才会被写入，feedbackBar() 的 disabled 属性也只在下一次
+  // render() 才生效——两者都覆盖不了"点击那一刻到响应返回之前"这段窗口：
+  // 同一个按钮被快速连点两次，或者同一条消息的两个不同按钮被快速点两次，
+  // 都会在这段窗口内让两个 sendFeedback() 调用同时越过检查，各自发出一次
+  // /api/feedback 请求，写进 store 两条重复或互相矛盾的反馈记录。这个 Set
+  // 在 sendFeedback() 入口处、任何 await 之前同步检查并写入，把这段窗口也
+  // 锁住。
+  feedbackInFlight: new Set(),
   // 已经播放过打字机渐显动画的消息 answerId 集合；一旦某个 id 进入这个集合就
   // 永远不再重播（即便动画途中被重渲染打断），重渲染时只会把全文直接显示出来。
   playedMessages: new Set()
@@ -2485,11 +2494,20 @@ function captureFormStateBeforeRender() {
 function captureFocusInfo() {
   const el = document.activeElement;
   if (!el || el === document.body || !el.id || !app.contains(el)) return null;
-  return {
-    id: el.id,
-    selectionStart: typeof el.selectionStart === "number" ? el.selectionStart : null,
-    selectionEnd: typeof el.selectionEnd === "number" ? el.selectionEnd : null
-  };
+  let selectionStart = null;
+  let selectionEnd = null;
+  try {
+    selectionStart = typeof el.selectionStart === "number" ? el.selectionStart : null;
+    selectionEnd = typeof el.selectionEnd === "number" ? el.selectionEnd : null;
+  } catch {
+    // Some input types (e.g. checkbox, number, email) throw just from
+    // *reading* selectionStart/selectionEnd, not only from setSelectionRange
+    // -- symmetric with the existing try/catch in restoreFocusInfo() below.
+    // captureFocusInfo() runs unconditionally at the top of every render(),
+    // so an uncaught throw here would abort the whole render(), not just
+    // focus restoration.
+  }
+  return { id: el.id, selectionStart, selectionEnd };
 }
 
 function restoreFocusInfo(info) {
@@ -2727,12 +2745,34 @@ async function generateOnboarding() {
 }
 
 async function sendFeedback(answerId, type) {
-  // Guard against double submission: the button is rendered `disabled` once
-  // message.feedbackGiven is set (see feedbackBar()), but disabled elements
-  // don't fire click events anyway -- this second check just makes the
-  // function itself safe to call directly (e.g. from a retry) too.
+  // message.feedbackGiven only exists once a *response* has come back, and
+  // feedbackBar()'s `disabled` attribute only takes effect after the *next*
+  // render() -- neither one guards the window between the click and the
+  // response actually arriving. A real double-click on the same button, or
+  // two different buttons for the same answer clicked in quick succession,
+  // both fire this function again well inside that window; without a
+  // synchronous guard both calls sail past every check that only exists
+  // "after the fact" and each POST their own (possibly contradictory)
+  // /api/feedback record, silently corrupting the store (reviewer-verified:
+  // duplicate "helpful" rows from a same-button double-click, and
+  // simultaneous "helpful" + "not_helpful" rows from a two-button
+  // double-click, in both cases with the UI settling on a single selected
+  // state that hides the corruption).
+  //
+  // state.feedbackInFlight closes that window: the check-then-add below runs
+  // synchronously, before the first `await`, so the second call (whichever
+  // triggered it) always observes the flag the first call already set --
+  // JS never interleaves two click handlers' synchronous prefixes.
   const message = state.messages.find((item) => item.answerId === answerId);
-  if (message?.feedbackGiven) return;
+  if (message?.feedbackGiven || state.feedbackInFlight.has(answerId)) return;
+  state.feedbackInFlight.add(answerId);
+  // Also disable the whole button group for this answer in the DOM right
+  // now, synchronously -- belt-and-suspenders on top of the Set check above,
+  // and it means the buttons visibly go inert immediately instead of only
+  // after the response comes back and render() runs.
+  document.querySelectorAll(`[data-feedback][data-answer="${CSS.escape(answerId)}"]`).forEach((button) => {
+    button.disabled = true;
+  });
   try {
     const payload = await api("/api/feedback", {
       method: "POST",
@@ -2745,9 +2785,17 @@ async function sendFeedback(answerId, type) {
     // a background metrics poll, ...), which both dropped the visible
     // "selected" state and left the button group enabled for resubmission.
     if (message) message.feedbackGiven = type;
-    render();
   } catch (error) {
     showError(error);
+  } finally {
+    // Always clear the in-flight flag and re-render, on success *and*
+    // failure: on failure message.feedbackGiven stays unset, so this
+    // render() rebuilds the button group enabled again (feedbackBar()
+    // derives `disabled` from feedbackGiven) instead of leaving it stuck
+    // disabled from the synchronous DOM write above with no future render
+    // to undo it -- showError() alone (the error path) does not render.
+    state.feedbackInFlight.delete(answerId);
+    render();
   }
 }
 
