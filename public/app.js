@@ -1,3 +1,5 @@
+import { buildImportRequestBody } from "./import-request.js";
+
 const state = {
   page: "landing",
   project: null,
@@ -2420,47 +2422,76 @@ function render() {
   if (messagesEl) restoreScrollPosition(messagesEl, prevDistance, shouldSnapToBottom);
 }
 
-async function importRepository({ sample = false } = {}) {
+async function importRepository({ sample = false, repoUrl: repoUrlArg, file: fileArg } = {}) {
   if (state.loading) return;
+  // Read every DOM-dependent import parameter *before* state.loading flips or
+  // render() runs even once. render() replaces #app's entire innerHTML (see
+  // render() above), which tears down and recreates every input node it
+  // contains -- including #repoUrl and #zipFile. The P0 bug this used to have:
+  // these values were read only *after* a multi-step fake progress animation
+  // had already called render() several times, so by the time the DOM was
+  // finally queried, the user's typed URL / selected file were long gone and
+  // every manual import silently sent an empty body (IMPORT_SOURCE_REQUIRED)
+  // even though the user had filled the form correctly. Only "Use Sample
+  // Repo" worked, because it never needed to read either field.
+  //
+  // A caller may also pass repoUrl/file explicitly (used by the retry banner
+  // below) to resubmit the exact values from a previous failed attempt
+  // instead of re-querying a DOM that has since been re-rendered blank.
+  const repoUrl = sample ? undefined : (repoUrlArg !== undefined ? repoUrlArg : document.querySelector("#repoUrl")?.value?.trim());
+  const file = sample ? undefined : (fileArg !== undefined ? fileArg : document.querySelector("#zipFile")?.files?.[0]);
+
   try {
     state.loading = true;
     state.progress = [];
     render();
-    for (const step of progressSteps.slice(0, -1)) {
-      state.progress.push(step);
+
+    const zipBase64 = file ? await fileToBase64(file) : undefined;
+    const body = buildImportRequestBody({ sample, repoUrl, file, zipBase64 });
+
+    // Progress steps must track the *real* request lifecycle, not a canned
+    // animation: nothing below is allowed to advance before api() has
+    // actually called fetch(). tick() only starts firing once the request
+    // promise exists, advances at most one step per interval as a lightweight
+    // "still working" heartbeat while we wait, and the interval is cleared the
+    // instant the response settles -- so the bar can never finish (or even
+    // partially play) before the network call has actually started, which was
+    // the other half of the original bug (the whole animation used to run to
+    // completion *before* /api/import was even requested).
+    const inFlightSteps = progressSteps.slice(0, -1);
+    let stepIndex = 0;
+    const tick = () => {
+      if (stepIndex >= inFlightSteps.length) return;
+      state.progress.push(inFlightSteps[stepIndex]);
+      stepIndex += 1;
       render();
-      await new Promise((resolve) => setTimeout(resolve, 220));
-    }
+    };
 
-    let body = { sample };
-    if (!sample) {
-      const repoUrl = document.querySelector("#repoUrl")?.value.trim();
-      const file = document.querySelector("#zipFile")?.files?.[0];
-      if (file) {
-        const zipBase64 = await fileToBase64(file);
-        body = { zipBase64, fileName: file.name };
-      } else {
-        body = { repoUrl };
-      }
-    }
-
-    const payload = await api("/api/import", {
+    const requestPromise = api("/api/import", {
       method: "POST",
       body: JSON.stringify(body)
     });
+    tick();
+    const timer = setInterval(tick, 220);
+    let payload;
+    try {
+      payload = await requestPromise;
+    } finally {
+      clearInterval(timer);
+    }
+
     state.project = payload.project;
     state.projects.push(payload.project);
     state.messages = [];
     state.memory = null;
-    state.progress.push("Ready");
+    state.progress = progressSteps.slice();
     state.page = "overview";
     await refreshMetrics(false);
     await refreshMemory(false);
     render();
   } catch (error) {
-    showError(error);
     state.progress = [];
-    render();
+    showError(error, () => importRepository({ sample, repoUrl, file }));
   } finally {
     state.loading = false;
     render();
