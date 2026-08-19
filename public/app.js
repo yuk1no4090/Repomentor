@@ -13,10 +13,31 @@ const state = {
   memory: null,
   auth: { users: [], tokens: [], events: [], error: null, createdToken: null },
   authToken: localStorage.getItem("aido-api-token") || "",
+  // 顶部导航和 Auth Operations 面板里各有一份 token 输入框（同一个逻辑值的
+  // 两处 UI 呈现）。draftAuthToken 是它们共用的"正在编辑中"的镜像值：null 表示
+  // 当前没有未保存的编辑，直接显示 authToken；一旦用户在任意一处输入，
+  // captureFormStateBeforeRender() 会把当前值写进这里，后续任何后台触发的
+  // render() 都用它回填两处输入框，而不是回退成已保存的 authToken 把输入清空。
+  draftAuthToken: null,
   llmStatus: null,
   lang: localStorage.getItem("aido-lang") || "en",
   activeTab: "qa",
   draftQuestion: "",
+  // Onboarding 计划的角色/时长 <select> 选中值镜像。默认值对应模板里两个
+  // <select> 的第一个 <option>，与 generateOnboarding() 的 DOM 兜底默认一致。
+  onboardingRole: "Backend Engineer",
+  onboardingDuration: "3 days",
+  // "创建本地用户"表单的镜像值，用于在表单填写过程中被 refreshMetrics() 等
+  // 后台异步刷新触发的 render() 打断时保留已输入内容。真正提交时
+  // createAuthUserFromForm() 仍然直接读 DOM（更接近用户提交那一刻的真实值），
+  // 这里只用于渲染回填。
+  authUserForm: { userId: "", role: "viewer", scopes: "project:read", orgId: "", issueToken: true },
+  // 展开中的 <details class="tech-details"> 集合，成员是渲染时赋给该元素的
+  // data-details-id（详情见 techDetailsWrapper()）。原生 <summary> 点击会直接
+  // 切换该 DOM 节点的 open 属性，不需要 JS 介入；这里只是在下一次全局 render()
+  // 清空 DOM 之前，把"当前哪些还开着"读出来记进 state，render 时再按这份记录
+  // 决定要不要带 open 属性。
+  expandedDetails: new Set(),
   // 已经播放过打字机渐显动画的消息 answerId 集合；一旦某个 id 进入这个集合就
   // 永远不再重播（即便动画途中被重渲染打断），重渲染时只会把全文直接显示出来。
   playedMessages: new Set()
@@ -921,7 +942,7 @@ function nav() {
           ${items.map(([page, label]) => `<button class="nav-item ${state.page === page ? "active" : ""}" data-page="${page}">${label}</button>`).join("")}
         </nav>
         <div class="topbar-auth">
-          <input data-auth-token-input type="password" autocomplete="off" value="${escapeHtml(state.authToken || "")}" placeholder="${escapeHtml(c.auth.apiToken)}">
+          <input id="topbarAuthTokenInput" data-auth-token-input type="password" autocomplete="off" value="${escapeHtml(state.draftAuthToken ?? state.authToken ?? "")}" placeholder="${escapeHtml(c.auth.apiToken)}">
           <button data-auth-action="save-token">${c.auth.authButton}</button>
         </div>
         <div class="language-toggle" aria-label="${escapeHtml(c.nav.languageAria)}">
@@ -1359,6 +1380,9 @@ function emptyChatState(kind) {
   `;
 }
 
+const ONBOARDING_ROLES = ["Backend Engineer", "Frontend Engineer", "Product Manager", "QA"];
+const ONBOARDING_DURATIONS = ["3 days", "5 days"];
+
 function onboardingTab() {
   const c = t();
   return html`
@@ -1373,17 +1397,13 @@ function onboardingTab() {
       <label>
         <span>${c.chat.role}</span>
         <select id="roleSelect">
-          <option>Backend Engineer</option>
-          <option>Frontend Engineer</option>
-          <option>Product Manager</option>
-          <option>QA</option>
+          ${ONBOARDING_ROLES.map((role) => `<option ${state.onboardingRole === role ? "selected" : ""}>${role}</option>`).join("")}
         </select>
       </label>
       <label>
         <span>${c.chat.duration}</span>
         <select id="durationSelect">
-          <option>3 days</option>
-          <option>5 days</option>
+          ${ONBOARDING_DURATIONS.map((duration) => `<option ${state.onboardingDuration === duration ? "selected" : ""}>${duration}</option>`).join("")}
         </select>
       </label>
       <button class="primary" data-action="onboarding">${c.chat.generatePlan}</button>
@@ -1429,7 +1449,7 @@ function renderMessage(message) {
         <p>${escapeHtml(payload.uncertainty)}</p>
         <h3>${c.chat.next}</h3>
         <div class="chip-row">${renderList(payload.suggested_next_questions, (question) => `<button data-question="${escapeHtml(question)}">${escapeHtml(question)}</button>`)}</div>
-        ${feedbackBar(message.answerId)}
+        ${feedbackBar(message)}
       </div>
     </article>
   `;
@@ -1512,6 +1532,21 @@ function renderMemorySuggestions(suggestions = []) {
         </div>
       `).join("")}
     </div>
+  `;
+}
+
+// 折叠区展开态活在 DOM 里（<details open> 是浏览器原生行为，点击 <summary> 不
+// 会经过任何 JS）。任何触发全局 render() 的操作都会用全新 HTML 重建这个节点，
+// 默认收起——除非我们显式带上 open 属性。id 必须在一次 render 内稳定且唯一
+// （消息用 answerId、单例卡片用固定字符串），配合 captureFormStateBeforeRender()
+// 里对 data-details-id 的采集，做到"展开态跨重渲染保持"。
+function techDetailsWrapper(id, summaryLabel, bodyHtml) {
+  const openAttr = state.expandedDetails.has(id) ? " open" : "";
+  return html`
+    <details class="tech-details" data-details-id="${escapeHtml(id)}"${openAttr}>
+      <summary>${escapeHtml(summaryLabel)}</summary>
+      ${bodyHtml}
+    </details>
   `;
 }
 
@@ -1672,13 +1707,8 @@ function renderAgentImpactMessage(message) {
         ${hasBriefing ? renderImpactBriefing(payload.briefing, c, message.answerId) : ""}
         ${hasBriefing ? memorySuggestionsHtml : ""}
 
-        ${hasBriefing ? html`
-          <details class="tech-details">
-            <summary>${escapeHtml(c.chat.techDetails)}</summary>
-            ${technicalDetails}
-          </details>
-        ` : technicalDetails}
-        ${feedbackBar(message.answerId)}
+        ${hasBriefing ? techDetailsWrapper(`techDetails-${message.answerId}`, c.chat.techDetails, technicalDetails) : technicalDetails}
+        ${feedbackBar(message)}
       </div>
     </article>
   `;
@@ -1711,13 +1741,8 @@ function renderImpactMessage(message) {
       <div class="question">${escapeHtml(message.question)}</div>
       <div class="answer">
         ${hasBriefing ? renderImpactBriefing(payload.briefing, c, message.answerId) : ""}
-        ${hasBriefing ? html`
-          <details class="tech-details">
-            <summary>${escapeHtml(c.chat.techDetails)}</summary>
-            ${technicalDetails}
-          </details>
-        ` : technicalDetails}
-        ${feedbackBar(message.answerId)}
+        ${hasBriefing ? techDetailsWrapper(`techDetails-${message.answerId}`, c.chat.techDetails, technicalDetails) : technicalDetails}
+        ${feedbackBar(message)}
       </div>
     </article>
   `;
@@ -1756,15 +1781,28 @@ function renderOnboardingMessage(message) {
           `)}
         </div>
         ${renderMemorySuggestions(payload.memory_suggestions)}
-        ${feedbackBar(message.answerId)}
+        ${feedbackBar(message)}
       </div>
     </article>
   `;
 }
 
-function feedbackBar(answerId) {
+// message.feedbackGiven (written back by sendFeedback(), see below) is the
+// single source of truth for "did the user already give feedback on this
+// answer". Previously the "selected" class was applied by directly mutating
+// the clicked <button>'s classList from inside sendFeedback() and never
+// written back to state -- any subsequent render() (a different message
+// getting feedback, a language switch, a background metrics poll, ...)
+// rebuilt this exact button from scratch with no memory of the click, so the
+// selected state visibly disappeared and, because nothing was disabled,
+// the same feedback could be submitted again. Deriving the markup from
+// message.feedbackGiven fixes both: it survives re-renders and the rest of
+// the button group is disabled once one choice has been recorded.
+function feedbackBar(message) {
   const types = t().feedback;
-  return `<div class="feedback">${types.map(([type, label]) => `<button data-feedback="${type}" data-answer="${escapeHtml(answerId)}">${label}</button>`).join("")}</div>`;
+  const selected = message.feedbackGiven;
+  const disabledAttr = selected ? " disabled" : "";
+  return `<div class="feedback">${types.map(([type, label]) => `<button class="${type === selected ? "selected" : ""}" data-feedback="${type}" data-answer="${escapeHtml(message.answerId)}"${disabledAttr}>${label}</button>`).join("")}</div>`;
 }
 
 function failureReasons(metrics) {
@@ -1966,7 +2004,7 @@ function renderAuthOperationsPanel() {
       <div class="auth-token-row">
         <label>
           <span>${c.auth.apiToken}</span>
-          <input data-auth-token-input type="password" autocomplete="off" value="${escapeHtml(state.authToken || "")}" placeholder="${escapeHtml(c.auth.tokenPlaceholder)}">
+          <input id="authTokenInput" data-auth-token-input type="password" autocomplete="off" value="${escapeHtml(state.draftAuthToken ?? state.authToken ?? "")}" placeholder="${escapeHtml(c.auth.tokenPlaceholder)}">
         </label>
         <button data-auth-action="save-token">${c.auth.saveToken}</button>
         <button class="secondary" data-auth-action="clear-token">${c.auth.clear}</button>
@@ -1981,11 +2019,11 @@ function renderAuthOperationsPanel() {
       <div class="auth-grid">
         <div class="auth-form">
           <h3>${c.auth.createUser}</h3>
-          <label><span>${c.auth.userId}</span><input id="authUserIdInput" autocomplete="off" placeholder="pm-user"></label>
-          <label><span>${c.chat.role}</span><input id="authRoleInput" autocomplete="off" value="viewer"></label>
-          <label><span>${c.auth.scopes}</span><input id="authScopesInput" autocomplete="off" value="project:read"></label>
-          <label><span>${c.auth.orgId}</span><input id="authOrgInput" autocomplete="off" placeholder="${escapeHtml(c.auth.optional)}"></label>
-          <label class="auth-checkbox"><input id="authIssueTokenInput" type="checkbox" checked><span>${c.auth.issueToken}</span></label>
+          <label><span>${c.auth.userId}</span><input id="authUserIdInput" autocomplete="off" placeholder="pm-user" value="${escapeHtml(state.authUserForm.userId)}"></label>
+          <label><span>${c.chat.role}</span><input id="authRoleInput" autocomplete="off" value="${escapeHtml(state.authUserForm.role)}"></label>
+          <label><span>${c.auth.scopes}</span><input id="authScopesInput" autocomplete="off" value="${escapeHtml(state.authUserForm.scopes)}"></label>
+          <label><span>${c.auth.orgId}</span><input id="authOrgInput" autocomplete="off" placeholder="${escapeHtml(c.auth.optional)}" value="${escapeHtml(state.authUserForm.orgId)}"></label>
+          <label class="auth-checkbox"><input id="authIssueTokenInput" type="checkbox" ${state.authUserForm.issueToken ? "checked" : ""}><span>${c.auth.issueToken}</span></label>
           <button data-auth-action="create-user">${c.auth.createUserButton}</button>
         </div>
 
@@ -2243,18 +2281,18 @@ function metricGroup(key, groupCopy, cards, panels) {
 // 外接 LLMOps 工具；链接到 docs/AGENT_RUNTIME_ARCHITECTURE.md 供想深入的读者查证。
 function evaluationMethodologyCard(c) {
   const m = c.dashboard.methodology;
+  const body = html`
+    <p>${escapeHtml(m.intro)}</p>
+    <ul>
+      <li>${escapeHtml(m.bullet1)}</li>
+      <li>${escapeHtml(m.bullet2)}</li>
+      <li>${escapeHtml(m.bullet3)}</li>
+    </ul>
+    <p><a href="https://github.com/yuk1no4090/Repomentor/blob/main/docs/AGENT_RUNTIME_ARCHITECTURE.md" target="_blank" rel="noopener noreferrer">${escapeHtml(m.link)}</a></p>
+  `;
   return html`
     <section class="panel methodology-card">
-      <details class="tech-details">
-        <summary>${escapeHtml(m.title)}</summary>
-        <p>${escapeHtml(m.intro)}</p>
-        <ul>
-          <li>${escapeHtml(m.bullet1)}</li>
-          <li>${escapeHtml(m.bullet2)}</li>
-          <li>${escapeHtml(m.bullet3)}</li>
-        </ul>
-        <p><a href="https://github.com/yuk1no4090/Repomentor/blob/main/docs/AGENT_RUNTIME_ARCHITECTURE.md" target="_blank" rel="noopener noreferrer">${escapeHtml(m.link)}</a></p>
-      </details>
+      ${techDetailsWrapper("methodology", m.title, body)}
     </section>
   `;
 }
@@ -2384,9 +2422,93 @@ function restoreScrollPosition(el, prevDistance, snapToBottom) {
   window.scrollTo(0, Math.max(0, Math.min(maxScrollY, target)));
 }
 
-function render() {
+// ---- DOM -> state mirroring, run at the very top of render() before the old
+// DOM is destroyed ----
+//
+// render() replaces #app's entire innerHTML on every call, including calls
+// triggered by things that have nothing to do with whatever the user is
+// currently doing (background refreshMetrics()/refreshMemory() polls,
+// switching languages, giving feedback on an unrelated message, etc). Any
+// value that can only live in the DOM at the moment render() runs would
+// otherwise be silently destroyed. state.draftQuestion (see below) was the
+// first fix of this shape; this generalizes the same "read the live DOM
+// value into state right before the wipe" pattern to every other input/toggle
+// that has the same problem.
+function captureFormStateBeforeRender() {
   const questionInput = document.querySelector("#questionInput");
   if (questionInput) state.draftQuestion = questionInput.value;
+
+  const roleSelect = document.querySelector("#roleSelect");
+  if (roleSelect) state.onboardingRole = roleSelect.value;
+  const durationSelect = document.querySelector("#durationSelect");
+  if (durationSelect) state.onboardingDuration = durationSelect.value;
+
+  const userIdInput = document.querySelector("#authUserIdInput");
+  if (userIdInput) state.authUserForm.userId = userIdInput.value;
+  const roleInput = document.querySelector("#authRoleInput");
+  if (roleInput) state.authUserForm.role = roleInput.value;
+  const scopesInput = document.querySelector("#authScopesInput");
+  if (scopesInput) state.authUserForm.scopes = scopesInput.value;
+  const orgInput = document.querySelector("#authOrgInput");
+  if (orgInput) state.authUserForm.orgId = orgInput.value;
+  const issueTokenInput = document.querySelector("#authIssueTokenInput");
+  if (issueTokenInput) state.authUserForm.issueToken = issueTokenInput.checked;
+
+  // Two API-token inputs can be mounted at once (topbar + Auth Operations
+  // panel on the dashboard page) -- both mirror the same draft value. Prefer
+  // whichever currently has focus (the one being actively edited), otherwise
+  // fall back to the first one found so an unfocused-but-edited value isn't
+  // lost either.
+  const tokenInputs = document.querySelectorAll("[data-auth-token-input]");
+  if (tokenInputs.length) {
+    const focused = document.activeElement;
+    const activeInput = Array.from(tokenInputs).find((el) => el === focused) || tokenInputs[0];
+    state.draftAuthToken = activeInput.value;
+  }
+
+  document.querySelectorAll("details.tech-details[data-details-id]").forEach((el) => {
+    const id = el.dataset.detailsId;
+    if (el.open) state.expandedDetails.add(id);
+    else state.expandedDetails.delete(id);
+  });
+}
+
+// ---- Focus preservation across full innerHTML rebuilds ----
+//
+// app.innerHTML replacement destroys every node, including whichever one is
+// currently focused -- focus silently falls back to <body>. This records a
+// stable identifier (element id) plus text-selection range before the wipe,
+// then restores both after the new DOM is mounted. Only elements with a
+// stable `id` are restorable (that covers every input this app renders
+// except the two auth-token inputs, which is why those two get explicit ids
+// below); anything else (e.g. a plain button) degrades gracefully to no-op.
+function captureFocusInfo() {
+  const el = document.activeElement;
+  if (!el || el === document.body || !el.id || !app.contains(el)) return null;
+  return {
+    id: el.id,
+    selectionStart: typeof el.selectionStart === "number" ? el.selectionStart : null,
+    selectionEnd: typeof el.selectionEnd === "number" ? el.selectionEnd : null
+  };
+}
+
+function restoreFocusInfo(info) {
+  if (!info) return;
+  const el = document.getElementById(info.id);
+  if (!el) return;
+  el.focus({ preventScroll: true });
+  if (info.selectionStart !== null && typeof el.setSelectionRange === "function") {
+    try {
+      el.setSelectionRange(info.selectionStart, info.selectionEnd ?? info.selectionStart);
+    } catch {
+      // Some input types (e.g. checkbox, number) throw on setSelectionRange; ignore.
+    }
+  }
+}
+
+function render() {
+  const focusInfo = captureFocusInfo();
+  captureFormStateBeforeRender();
 
   // .messages 容器每次都会随 app.innerHTML 整体重建（新容器 scrollTop 永远是
   // 0），所以必须在替换之前，趁旧容器还在文档里量一次它当时的滚动状态：既要
@@ -2420,6 +2542,8 @@ function render() {
 
   const messagesEl = document.querySelector(".messages");
   if (messagesEl) restoreScrollPosition(messagesEl, prevDistance, shouldSnapToBottom);
+
+  restoreFocusInfo(focusInfo);
 }
 
 async function importRepository({ sample = false, repoUrl: repoUrlArg, file: fileArg } = {}) {
@@ -2603,14 +2727,25 @@ async function generateOnboarding() {
 }
 
 async function sendFeedback(answerId, type) {
+  // Guard against double submission: the button is rendered `disabled` once
+  // message.feedbackGiven is set (see feedbackBar()), but disabled elements
+  // don't fire click events anyway -- this second check just makes the
+  // function itself safe to call directly (e.g. from a retry) too.
+  const message = state.messages.find((item) => item.answerId === answerId);
+  if (message?.feedbackGiven) return;
   try {
     const payload = await api("/api/feedback", {
       method: "POST",
       body: JSON.stringify({ answerId, type })
     });
     state.metrics = payload.metrics;
-    const button = document.querySelector(`[data-answer="${answerId}"][data-feedback="${type}"]`);
-    if (button) button.classList.add("selected");
+    // Write the result back onto the message itself instead of mutating the
+    // clicked DOM node directly: any DOM-only change is destroyed by the
+    // very next render() (a different answer's feedback, a language switch,
+    // a background metrics poll, ...), which both dropped the visible
+    // "selected" state and left the button group enabled for resubmission.
+    if (message) message.feedbackGiven = type;
+    render();
   } catch (error) {
     showError(error);
   }
@@ -2744,11 +2879,28 @@ async function refreshAuthAdmin(shouldRender = true) {
   if (shouldRender) render();
 }
 
+// Both token inputs (topbar + Auth Operations panel) must be pushed to the
+// same value at once whenever we programmatically commit one: render()'s own
+// captureFormStateBeforeRender() re-reads whichever token input it finds
+// (focused one, else the first) *before* rebuilding the DOM, so if only one
+// of the two live DOM nodes were updated here, that capture step could pick
+// up the *other*, still-stale one and clobber the value we just committed.
+// Writing directly into every matching node sidesteps that race entirely.
+function syncAuthTokenInputsDom(value) {
+  document.querySelectorAll("[data-auth-token-input]").forEach((el) => {
+    el.value = value;
+  });
+}
+
 function saveBrowserAuthToken(sourceElement = null) {
   const token = sourceElement?.closest(".auth-token-row, .topbar-auth")?.querySelector("[data-auth-token-input]")?.value?.trim()
     || document.querySelector("[data-auth-token-input]")?.value?.trim()
     || "";
   state.authToken = token;
+  // Once saved, the draft is committed -- clear it so future renders read
+  // from state.authToken (the two token inputs stay in sync via that).
+  state.draftAuthToken = null;
+  syncAuthTokenInputsDom(token);
   if (token) localStorage.setItem("aido-api-token", token);
   else localStorage.removeItem("aido-api-token");
   state.auth = { ...(state.auth || {}), createdToken: null };
@@ -2771,6 +2923,26 @@ async function createAuthUserFromForm() {
     });
     await refreshAuthAdmin(false);
     state.auth = { ...(state.auth || {}), error: null, createdToken: payload.token || null };
+    // User created successfully -- reset the form. Resetting only
+    // state.authUserForm is not enough: render()'s own
+    // captureFormStateBeforeRender() re-reads these same five inputs'
+    // *current* (still-filled-in) DOM values before rebuilding, which would
+    // immediately clobber the reset back to what was just submitted. Clear
+    // the live DOM nodes directly first so that capture step reads (and
+    // therefore re-confirms) the reset values instead of stale ones.
+    // Left untouched on error so the user doesn't lose what they typed.
+    const resetForm = { userId: "", role: "viewer", scopes: "project:read", orgId: "", issueToken: true };
+    const userIdEl = document.querySelector("#authUserIdInput");
+    const roleEl = document.querySelector("#authRoleInput");
+    const scopesEl = document.querySelector("#authScopesInput");
+    const orgEl = document.querySelector("#authOrgInput");
+    const issueTokenEl = document.querySelector("#authIssueTokenInput");
+    if (userIdEl) userIdEl.value = resetForm.userId;
+    if (roleEl) roleEl.value = resetForm.role;
+    if (scopesEl) scopesEl.value = resetForm.scopes;
+    if (orgEl) orgEl.value = resetForm.orgId;
+    if (issueTokenEl) issueTokenEl.checked = resetForm.issueToken;
+    state.authUserForm = resetForm;
     render();
   } catch (error) {
     showError(error);
@@ -2843,11 +3015,36 @@ document.addEventListener("click", (event) => {
 
   const question = event.target.closest("[data-question]");
   if (question) {
+    // Root cause of the "click fills nothing" bug: render() always re-reads
+    // whatever #questionInput *currently* contains into state.draftQuestion
+    // at its very top, before rebuilding the DOM (see
+    // captureFormStateBeforeRender()) -- that is exactly what used to race
+    // with (and usually lose to) a requestAnimationFrame callback that wrote
+    // the chosen question straight into the DOM after the fact: setPage()
+    // below runs a render() synchronously, and requestAnimationFrame also
+    // does not fire at all while the document is hidden/backgrounded, which
+    // silently dropped the value in exactly the kind of headless/automated
+    // check that first caught this. Fixing it the same way draftQuestion
+    // fixed manual typing: route the value through state (or the live DOM
+    // node render() is about to read from) instead of a side-channel DOM
+    // write that competes with render()'s own capture step.
+    const questionText = question.dataset.question;
+    const existingInput = document.querySelector("#questionInput");
+    if (existingInput) {
+      // Already on a tab with a live textarea (qa/impact/agent): write into
+      // it now so the render() inside setPage() picks it up via its own
+      // DOM-capture step and carries it through the rebuild.
+      existingInput.value = questionText;
+    } else {
+      // No textarea mounted yet -- either we're not on the chat page at all
+      // (Overview/Landing quick actions), or the onboarding tab is active
+      // (it has no free-text box). Either way there is nothing to write
+      // into, so set the state directly and land on the qa tab, which is
+      // guaranteed to render the textarea.
+      state.draftQuestion = questionText;
+      state.activeTab = "qa";
+    }
     setPage("chat");
-    requestAnimationFrame(() => {
-      const input = document.querySelector("#questionInput");
-      if (input) input.value = question.dataset.question;
-    });
     return;
   }
 
@@ -2882,6 +3079,8 @@ document.addEventListener("click", (event) => {
     if (action === "save-token") saveBrowserAuthToken(authAction);
     if (action === "clear-token") {
       state.authToken = "";
+      state.draftAuthToken = null;
+      syncAuthTokenInputsDom("");
       localStorage.removeItem("aido-api-token");
       state.auth = { users: [], tokens: [], events: [], error: null, createdToken: null };
       render();
