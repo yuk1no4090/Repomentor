@@ -326,6 +326,7 @@ The `modelAdapter` boundary uses an OpenAI-compatible chat completions call when
 | `POST` | `/api/agent-impact` | LangGraph multi-agent impact workflow. |
 | `POST` | `/api/onboarding` | Generate role-based onboarding plan. |
 | `POST` | `/api/feedback` | Record answer feedback. |
+| `GET` | `/api/answers` | Return the most recent persisted Q&A/impact/agent-impact/onboarding answers for one `projectId` (with paired question text and any recorded feedback), for reconstructing conversation history after a page refresh. Supports `limit` (default 50, capped at 200). |
 | `GET` | `/api/evaluation` | Return quality, memory, safety, and fallback metrics. |
 | `GET` | `/api/harness-run` | Return one persisted harness run audit by `projectId` and `runId`. |
 | `GET` | `/api/langgraph-checkpoint` | Return one persisted LangGraph checkpoint summary by `projectId`, `runId`, and `checkpointId` for read-only time-travel inspection. |

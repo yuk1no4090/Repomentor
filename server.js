@@ -1044,6 +1044,44 @@ async function handleApiUnlocked(req, res, pathname) {
       return;
     }
 
+    // Read-only replay endpoint for the frontend's "restore conversation
+    // history after a refresh" feature (see public/app.js's
+    // restoreConversationHistory()): store.answers/store.questions already
+    // hold the full Q&A/impact/agent-impact/onboarding history for a project
+    // (every write path above pushes one of each per request), this just
+    // reads the most recent `limit` of them back out instead of leaving that
+    // data write-only. Neither record carries a userId of its own (see
+    // lib/store.js's normalizeStore() and every push site above) -- project
+    // ownership is the only scoping boundary that exists for them, so this
+    // reuses the exact same findProject(store, projectId, userId) ownership
+    // check that /api/evaluation and /api/harness-run above already rely on
+    // to keep one user's answers from leaking into another's project view
+    // under AUTH_REQUIRED.
+    if (req.method === "GET" && pathname === "/api/answers") {
+      const url = new URL(req.url, `http://${req.headers.host}`);
+      const userId = resolveAuthenticatedUserId(req, {}, store);
+      const project = findProject(store, url.searchParams.get("projectId"), userId);
+      const limit = parsePositiveInteger(url.searchParams.get("limit"), 50, 200);
+      const answers = store.answers
+        .filter((item) => item.projectId === project.id)
+        .slice(-limit)
+        .map((answer) => {
+          const question = store.questions.find((item) => item.id === answer.questionId);
+          const feedbackRecord = store.feedback.filter((item) => item.answerId === answer.id).at(-1);
+          return {
+            answerId: answer.id,
+            questionId: answer.questionId,
+            kind: answer.kind,
+            question: question?.question || "",
+            payload: answer.payload,
+            createdAt: answer.createdAt,
+            feedbackGiven: feedbackRecord?.type || null
+          };
+        });
+      sendJson(res, 200, { projectId: project.id, limit, answers });
+      return;
+    }
+
     if (req.method === "GET" && pathname === "/api/harness-run") {
       const url = new URL(req.url, `http://${req.headers.host}`);
       const userId = resolveAuthenticatedUserId(req, {}, store);

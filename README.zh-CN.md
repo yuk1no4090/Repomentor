@@ -326,6 +326,7 @@ input safety
 | `POST` | `/api/agent-impact` | LangGraph 多 Agent 影响分析工作流。 |
 | `POST` | `/api/onboarding` | 生成按角色区分的 onboarding 计划。 |
 | `POST` | `/api/feedback` | 记录回答反馈。 |
+| `GET` | `/api/answers` | 按 `projectId` 返回该项目最近持久化的问答/影响分析/agent-impact/onboarding 回答（附带配对的问题文本和已记录的反馈），用于页面刷新后重建对话历史。支持 `limit`（默认 50，上限 200）。 |
 | `GET` | `/api/evaluation` | 返回质量、记忆、安全和 fallback 相关指标。 |
 | `GET` | `/api/harness-run` | 按 `projectId` 和 `runId` 返回一条已持久化的 harness run 审计记录。 |
 | `GET` | `/api/langgraph-checkpoint` | 按 `projectId`、`runId` 和 `checkpointId` 返回一条已持久化的 LangGraph checkpoint 摘要，供只读时间旅行检视使用。 |
