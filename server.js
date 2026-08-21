@@ -1165,6 +1165,45 @@ async function handleApiUnlocked(req, res, pathname) {
         if (resumed.payload.memory_suggestions?.length) {
           appendMemorySuggestions(commitStore, resumed.payload.memory_suggestions);
         }
+        // Decision resumes (approve/reject) only ever pushed a brand-new
+        // question/answer pair for the resumed execution below — the ORIGINAL
+        // paused answer record was never touched server-side. That was
+        // invisible as long as the frontend's in-memory patch (see
+        // handleHitlDecision() in public/app.js, which patches
+        // message.payload.hitl on the already-rendered message) was the only
+        // place the "decided" state ever lived: a refresh had no persisted
+        // history to reload anyway. Once GET /api/answers started replaying
+        // that original record verbatim (see restoreConversationHistory() in
+        // public/app.js), its still-stale payload.hitl.paused=true resurrected
+        // clickable Approve/Reject buttons on an already-decided run — and
+        // clicking them again pushed another duplicate resume record every
+        // time. The original paused answer is located the same way
+        // findHarnessRunAudit() above locates any run's answer: by
+        // projectId + payload.harness.run_id, where the run_id is the one
+        // this request named (the ORIGINAL run being resumed, always distinct
+        // from the brand-new run_id the resumed execution below gets, so this
+        // stays a stable 1:1 lookup across repeated resume calls for the same
+        // source run). Patched in place with the exact hitl object the graph
+        // itself just computed for this decision (resumed.payload.hitl —
+        // paused:false plus approved/rejected/reason/decision), a superset of
+        // the paused/approved/rejected fields handleHitlDecision()'s
+        // in-memory patch applies, so a refreshed view and a live
+        // never-refreshed view render identically. A missing original record
+        // (e.g. trimmed by STORE_MAX_ANSWERS) is tolerated silently — this is
+        // a best-effort consistency fix, not a precondition for the resume
+        // itself to have already succeeded above.
+        const sourceRunId = body.runId || body.run_id;
+        if (body.decision && resumed.payload?.hitl?.paused === false && sourceRunId) {
+          const originalAnswer = commitStore.answers.find((item) => {
+            return item.projectId === resumed.project.id && item.payload?.harness?.run_id === sourceRunId;
+          });
+          if (originalAnswer?.payload?.hitl) {
+            originalAnswer.payload = {
+              ...originalAnswer.payload,
+              hitl: { ...resumed.payload.hitl }
+            };
+          }
+        }
         commitStore.questions.push(questionRecord);
         commitStore.answers.push(answerRecord);
         recordHarnessRun(commitStore, answerRecord);

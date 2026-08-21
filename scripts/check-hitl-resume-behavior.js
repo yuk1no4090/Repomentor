@@ -161,6 +161,11 @@ async function main() {
     const runId = paused.payload.harness?.run_id;
     assert(runId, "paused agent-impact answer did not report a harness run id");
     assert(paused.payload.harness.checkpointing?.enabled === true, "paused run should still persist LangGraph checkpoints");
+    // Captured so step 2/3 below can check GET /api/answers replays this
+    // exact answer record with its payload.hitl patched in place after a
+    // decision, not just the brand-new resumed answer's own payload.hitl.
+    const pausedAnswerId = paused.answerId;
+    assert(pausedAnswerId, "paused agent-impact answer did not report an answerId");
 
     // ── 2. Decision resume (approve) must NOT replay the paused snapshot ──
     // Before the fix: runLangGraphResumeFromCheckpoint's mode is
@@ -187,6 +192,29 @@ async function main() {
     assert(!approved.payload.summary.includes("[HITL PAUSED"), "approved summary must not still be the paused snapshot's summary");
     assert(approved.payload.harness.run_id !== runId, "resume should execute under a new harness run id");
 
+    // ── 2b. The ORIGINAL paused answer record must be patched in place, not
+    // just the brand-new resumed answer above. GET /api/answers is the same
+    // read-only replay endpoint the frontend's restoreConversationHistory()
+    // calls after a page refresh (see public/app.js) — before this fix,
+    // server.js only ever pushed a new question/answer pair for the resumed
+    // execution and never touched the record that originally paused, so a
+    // refresh replayed hitl.paused=true forever and resurrected clickable
+    // Approve/Reject buttons on an already-decided run (confirmed
+    // reproducible: every refresh+click produced another duplicate resume
+    // record). ──
+    const historyAfterApprove = await requestTo(baseUrl, `/api/answers?projectId=${projectId}`);
+    const originalAfterApprove = historyAfterApprove.answers.find((item) => item.answerId === pausedAnswerId);
+    assert(originalAfterApprove, "GET /api/answers should still include the original paused answer record");
+    assert(originalAfterApprove.payload.hitl?.paused === false,
+      "REGRESSION: the original paused answer record still reports hitl.paused=true after approval — refreshing would resurrect clickable Approve/Reject buttons");
+    assert(originalAfterApprove.payload.hitl?.approved === true, "original paused answer record should report hitl.approved=true after approval");
+    assert(originalAfterApprove.payload.hitl?.decision === "approve", "original paused answer record should record the approve decision");
+    // The brand-new resumed answer (pushed alongside the patch, at a
+    // different answerId) must also show up in the same history replay —
+    // patching the original must not have replaced or dropped it.
+    assert(historyAfterApprove.answers.some((item) => item.answerId === approved.answerId),
+      "GET /api/answers should also include the new resumed answer record");
+
     // Calling resume again with the same source run must not reproduce a
     // second, still-clickable paused card (the "可无限重复触发" symptom from
     // the bug report) — it should deterministically re-synthesize an approved
@@ -210,6 +238,22 @@ async function main() {
     assert(rejected.payload.hitl.decision === "reject", "reject resume should record the reject decision");
     assert(rejected.payload.summary.startsWith("[HITL REJECTED]"), "rejected summary should carry the HITL rejected marker");
 
+    // ── 3b. Same persisted-replay check as 2b, now for reject — and proof
+    // that the original record's patched hitl state tracks the *latest*
+    // decision for its source run (flipping from approved to rejected here,
+    // since this reuses the same runId the approve calls above already
+    // decided once) rather than getting stuck on whichever decision arrived
+    // first. ──
+    const historyAfterReject = await requestTo(baseUrl, `/api/answers?projectId=${projectId}`);
+    const originalAfterReject = historyAfterReject.answers.find((item) => item.answerId === pausedAnswerId);
+    assert(originalAfterReject, "GET /api/answers should still include the original paused answer record");
+    assert(originalAfterReject.payload.hitl?.paused === false,
+      "REGRESSION: the original paused answer record still reports hitl.paused=true after rejection");
+    assert(originalAfterReject.payload.hitl?.rejected === true, "original paused answer record should report hitl.rejected=true after rejection");
+    assert(originalAfterReject.payload.hitl?.decision === "reject",
+      "original paused answer record should track the latest decision (reject), not stay stuck on the earlier approve");
+    assert(originalAfterReject.payload.hitl?.approved === false, "original paused answer record should clear hitl.approved once superseded by a reject decision");
+
     // ── 4. Plain checkpoint continuation (no decision) is unaffected ──
     // A resume call that carries no decision must keep behaving exactly as
     // before: it replays the persisted checkpoint (mode=checkpoint_continuation)
@@ -225,14 +269,24 @@ async function main() {
     assert(plainResume.payload?.harness?.resume?.mode === "checkpoint_continuation",
       `resume without a decision must still report mode=checkpoint_continuation, got ${plainResume.payload?.harness?.resume?.mode}`);
     assert(plainResume.payload.hitl.paused === true, "resume without a decision should keep replaying the paused checkpoint as-is");
+    // A plain (no-decision) resume must not touch the original paused
+    // answer's persisted hitl state -- it's still "reject" from step 3b, and
+    // this call carried no decision at all, so the server-side patch above
+    // (gated on `body.decision` being truthy) must have been a no-op here.
+    const historyAfterPlainResume = await requestTo(baseUrl, `/api/answers?projectId=${projectId}`);
+    const originalAfterPlainResume = historyAfterPlainResume.answers.find((item) => item.answerId === pausedAnswerId);
+    assert(originalAfterPlainResume.payload.hitl?.decision === "reject",
+      "a plain resume (no decision) must not alter the original paused answer's already-persisted decision");
 
     console.log(JSON.stringify({
       ok: true,
       scenario: "hitl-decision-resume-no-longer-replays-paused-snapshot",
       pausedRunId: runId,
+      pausedAnswerId,
       approvedResumeRunId: approved.payload.harness.run_id,
       rejectedResumeRunId: rejected.payload.harness.run_id,
-      plainResumeMode: plainResume.payload.harness.resume.mode
+      plainResumeMode: plainResume.payload.harness.resume.mode,
+      originalAnswerHitlAfterReject: originalAfterReject.payload.hitl
     }, null, 2));
   } catch (error) {
     console.error(stdout);
