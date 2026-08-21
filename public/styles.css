@@ -244,6 +244,47 @@ nav {
   box-shadow: 0 1px 3px rgba(79, 70, 229, 0.08);
 }
 
+/* ---- Project Switcher ---- */
+.project-switcher {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+}
+
+.project-switcher-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.project-switcher select {
+  max-width: 220px;
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  padding: 0 8px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.project-switcher select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.project-switcher-status {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 /* ---- Language Toggle ---- */
 .language-toggle {
   display: inline-flex;
@@ -857,6 +898,59 @@ textarea {
   color: var(--muted);
   font-size: 11px;
   line-height: 1.45;
+}
+
+/* ---- Existing Projects (import page) ---- */
+.existing-projects {
+  margin-top: 18px;
+}
+
+.existing-projects-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.existing-projects-list button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--ink);
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 650;
+  transition: all var(--transition);
+}
+
+.existing-projects-list button:hover {
+  border-color: var(--accent-light);
+  background: var(--accent-light);
+}
+
+.existing-projects-list button.active {
+  border-color: var(--accent-light);
+  background: var(--accent-light);
+  color: var(--accent);
+}
+
+.existing-projects-list button span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.existing-projects-list button.active span {
+  color: var(--accent);
+}
+
+.existing-projects-list button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 /* ---- Capability Strip ---- */
@@ -2684,6 +2778,15 @@ code {
   .nav-right {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .project-switcher {
+    width: 100%;
+  }
+
+  .project-switcher select {
+    max-width: none;
+    flex: 1;
   }
 
   h1 {
