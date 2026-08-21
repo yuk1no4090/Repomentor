@@ -199,6 +199,7 @@ npm run dev
 | POST | `/api/agent-impact` | LangGraph Agent 工作流影响分析，返回 memory / harness / safety 状态 |
 | POST | `/api/onboarding` | 生成入职学习计划 |
 | POST | `/api/feedback` | 提交回答反馈 |
+| GET | `/api/answers` | 按 projectId 返回最近的问答/影响分析/agent-impact/onboarding 历史（配对问题文本 + 反馈），用于刷新后重建对话历史；支持 limit（默认 50，上限 200） |
 | GET | `/api/evaluation` | 获取评估指标 |
 | GET | `/api/harness-run` | 按 projectId 和 runId 查看单次 harness 执行快照 |
 | GET | `/api/langgraph-checkpoint` | 按 projectId、runId 和 checkpointId 查看单个 LangGraph checkpoint 摘要 |

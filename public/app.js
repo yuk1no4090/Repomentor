@@ -59,7 +59,27 @@ const state = {
   // `auth-disable:${userId}`），同一个 key 在进入 await 之前同步 add()、
   // finally 里统一 delete()，配合 render() 时按 key 判断 disabled，避免每个
   // 操作都单独发明一个专属布尔字段。
-  busyKeys: new Set()
+  busyKeys: new Set(),
+  // 已经成功从 GET /api/answers 拉取过历史问答、重建进 state.messages 的
+  // projectId。restoreConversationHistory() 用它把"每次 setPage 进
+  // chat tab"这个天然会被反复触发的入口收窄成"每个项目至多真正发一次请求"：
+  // 命中同一个项目直接短路返回，避免每次切 tab/刷新触发的 setPage("chat")
+  // 都重新拉一遍已经拉过的历史（接口本身是幂等只读的，重复调用不会出错，
+  // 这里纯粹是省一次没必要的网络请求）。切换到别的项目后这个值不匹配，会
+  // 重新拉一次该项目的历史。
+  //
+  // reviewer 非阻塞观察（留给后续项目切换器任务处理，本卡不实现切换器）：
+  // 这是个单标量，本身没有失效/清理机制，纯粹依赖"和当前 state.project.id
+  // 是否相等"这一次性比较来判断要不要重新拉取——现在成立是因为整个会话
+  // 期间最多只有一个"当前项目"会被换入换出（导入新项目、或刷新后恢复上次
+  // 项目），值不匹配就重新拉，从未出现需要主动清空的场景。等后续任务卡
+  // 实现"项目切换器"（允许不刷新页面、在已导入的多个项目间来回切换）时，
+  // 需要同步处理两件事：① 切换项目时清空/重置这个标记（否则切回一个曾经
+  // 成功恢复过的旧项目会被当成"已恢复过"而跳过重新拉取，即便这期间可能已
+  // 有新问答写入 store）；② state.messages 本身目前没有按 projectId 过滤
+  // （messagesForTab() 只按 message.tab 过滤），切换项目前如果不清空
+  // state.messages，不同项目的消息会在同一个 tab 里混在一起显示。
+  historyRestoredForProjectId: null
 };
 
 const app = document.querySelector("#app");
@@ -951,13 +971,170 @@ async function refreshMemory(shouldRender = true) {
   if (shouldRender) render();
 }
 
+// Maps a stored answer's `kind` (the values server.js's answer records use:
+// "qa"/"impact" from /api/chat, "agent_impact" from /api/agent-impact,
+// "onboarding" from /api/onboarding) to the chat tab id that owns it. This is
+// the same kind-to-tab mapping ask()/runAgentImpact()/generateOnboarding()
+// already bake into every message they push live (see message.tab --
+// messagesForTab() filters on it); restoreConversationHistory() below needs
+// it to reconstruct that same `tab` field for messages that were never
+// pushed live in this session at all.
+function tabForAnswerKind(kind) {
+  if (kind === "agent_impact") return "agent";
+  if (kind === "onboarding") return "onboarding";
+  if (kind === "impact") return "impact";
+  return "qa";
+}
+
+// Refresh-survives-conversation-history: GET /api/answers replays a
+// project's persisted Q&A/impact/agent-impact/onboarding history. server.js
+// already stores the full answer payload (trace, harness, safety, citations
+// -- everything renderMessage() needs), so this reconstructs state.messages
+// at full fidelity instead of a stub, keyed by the same answerId the live
+// flow already uses.
+//
+// Called from setPage() every time the chat page is entered (see below), but
+// state.historyRestoredForProjectId short-circuits every call after the
+// first successful one for the same project: this is meant to run once per
+// project per session (right after a refresh, or the first time a returning
+// visitor opens the chat tab), not to re-fetch on every tab click. A failed
+// attempt deliberately leaves that flag unset (only a *successful* restore
+// counts), so a transient failure gets a real retry the next time the user
+// enters the chat tab instead of being stuck silently empty for the rest of
+// the session; state.busyKeys still guards against two of those retries
+// racing each other concurrently.
+//
+// Historical messages must not replay the typewriter animation (they were
+// already "typed" in a previous session) -- see mountTypewriters()/
+// typewriterParagraph(), which skip any answerId already in
+// state.playedMessages. Restored messages are deduplicated against whatever
+// is already in state.messages by answerId, so a restore that races with (or
+// follows) a live answer already pushed into memory this session can't
+// duplicate it.
+async function restoreConversationHistory() {
+  if (!state.project) return;
+  const projectId = state.project.id;
+  if (state.historyRestoredForProjectId === projectId) return;
+  const busyKey = `history-restore:${projectId}`;
+  if (state.busyKeys.has(busyKey)) return;
+  state.busyKeys.add(busyKey);
+  try {
+    const payload = await api(`/api/answers?projectId=${encodeURIComponent(projectId)}&limit=50`);
+    const existingIds = new Set(state.messages.map((message) => message.answerId));
+    const restored = (payload.answers || [])
+      .filter((answer) => !existingIds.has(answer.answerId))
+      .map((answer) => ({
+        kind: answer.kind,
+        tab: tabForAnswerKind(answer.kind),
+        answerId: answer.answerId,
+        question: answer.question,
+        payload: answer.payload,
+        ...(answer.feedbackGiven ? { feedbackGiven: answer.feedbackGiven } : {})
+      }));
+    // Older messages first: this history came from the same store-persisted
+    // project state.project already points at, so nothing already in
+    // state.messages this session can predate it.
+    state.messages = [...restored, ...state.messages];
+    restored.forEach((message) => state.playedMessages.add(message.answerId));
+    state.historyRestoredForProjectId = projectId;
+  } catch (error) {
+    // Best-effort enhancement, not a critical path: restoring history is not
+    // allowed to block or fail the rest of the page, so this only logs.
+    console.error("restoreConversationHistory failed:", error);
+  } finally {
+    state.busyKeys.delete(busyKey);
+  }
+}
+
+// ── Hash-based routing ──
+// The SPA never touched the History API: the URL never changed regardless
+// of which page/tab was active, so the browser back button always left the
+// site entirely (there was never anything to go "back" to inside it) and a
+// refresh always dropped back to the marketing landing page. Hash routing
+// needs zero server-side config -- a hash fragment never leaves the browser
+// as part of the request path, so serveStatic() in server.js needs no
+// changes at all -- while still giving the browser a real history entry per
+// page/tab to step through.
+//
+// Format: "#/<page>" for every page except chat, which nests its active tab
+// as "#/chat/<tab>" (HASH_PAGES/HASH_TABS below list exactly the values
+// state.page/state.activeTab already take on elsewhere in this file).
+const HASH_PAGES = ["landing", "import", "overview", "chat", "dashboard"];
+const HASH_TABS = ["qa", "impact", "agent", "onboarding"];
+
+function hashForState() {
+  if (state.page === "chat") return `#/chat/${state.activeTab}`;
+  return `#/${state.page}`;
+}
+
+// Parses location.hash into { page, tab } (tab only meaningful for
+// page === "chat", defaulting to "qa" if the hash names an unrecognized or
+// missing tab) or returns null for an empty/unrecognized page. Callers
+// decide what to fall back to (see applyRouteFromHash() just below and the
+// bootstrap sequence at the bottom of this file) rather than this function
+// silently guessing one.
+function parseHash() {
+  const raw = location.hash.replace(/^#\/?/, "");
+  if (!raw) return null;
+  const [page, tab] = raw.split("/");
+  if (!HASH_PAGES.includes(page)) return null;
+  if (page !== "chat") return { page, tab: null };
+  return { page, tab: HASH_TABS.includes(tab) ? tab : "qa" };
+}
+
+// Set right before this file assigns location.hash itself, so the
+// hashchange listener below can tell "the URL changed because setPage()/
+// switchTab() just wrote it" apart from "the URL changed because the user
+// clicked back/forward or hand-edited the address bar" and only react to the
+// latter. Without this, every setPage()/switchTab() call would loop straight
+// back into applyRouteFromHash() and re-run render() (and, for chat/
+// dashboard, their side-effect fetches) a second redundant time for a
+// navigation that had already fully completed.
+let isSelfDrivenHashChange = false;
+
+// Called at the end of setPage()/switchTab() so the URL always mirrors
+// state.page/state.activeTab, and symmetrically so the browser's back/
+// forward history gets an entry for every page/tab actually visited. Skips
+// the write when the hash already matches -- the standard guard for this
+// pattern: besides being a no-op, assigning location.hash to its own current
+// value still fires `hashchange` in some browsers, which would trip the loop
+// guard above for nothing.
+function syncLocationHash() {
+  const next = hashForState();
+  if (location.hash === next) return;
+  isSelfDrivenHashChange = true;
+  location.hash = next;
+}
+
+// Applies whatever route the URL currently names. Used by the hashchange
+// listener (back/forward navigation, or a hand-edited address bar) and once
+// at startup to restore a refreshed or deep-linked page/tab. An empty or
+// unrecognized hash falls back to "landing" -- the same page state.page
+// already starts on -- instead of leaving state untouched, so a mistyped or
+// stale hash always recovers to a real page rather than silently doing
+// nothing.
+function applyRouteFromHash() {
+  const route = parseHash();
+  if (route?.page === "chat") state.activeTab = route.tab;
+  setPage(route?.page || "landing");
+}
+
+window.addEventListener("hashchange", () => {
+  if (isSelfDrivenHashChange) {
+    isSelfDrivenHashChange = false;
+    return;
+  }
+  applyRouteFromHash();
+});
+
 function setPage(page) {
   state.page = page;
-  if (page === "chat") Promise.all([checkHealth(), refreshMemory(false)]).then(render);
+  if (page === "chat") Promise.all([checkHealth(), refreshMemory(false), restoreConversationHistory()]).then(render);
   if (page === "dashboard" && state.project) {
     refreshMetrics();
     refreshAuthAdmin(false);
   }
+  syncLocationHash();
   render();
 }
 
@@ -2726,6 +2903,14 @@ async function importRepository({ sample = false, repoUrl: repoUrlArg, file: fil
     state.memory = null;
     state.progress = progressSteps.slice();
     state.page = "overview";
+    // Not routed through setPage() (this already runs its own
+    // refreshMetrics()/refreshMemory() above, and setPage()'s would be
+    // redundant), so it has to call syncLocationHash() itself -- otherwise
+    // a successful import would land on the Overview page while the URL
+    // hash stayed wherever it was before (e.g. "#/landing" or "#/import"),
+    // silently breaking the "hash always mirrors state.page" invariant every
+    // other page transition in this file relies on.
+    syncLocationHash();
     await refreshMetrics(false);
     await refreshMemory(false);
     render();
@@ -3232,6 +3417,7 @@ async function loadHarnessAudit(runId) {
 
 function switchTab(tab) {
   state.activeTab = tab;
+  syncLocationHash();
   render();
 }
 
@@ -3405,5 +3591,15 @@ document.addEventListener("keydown", (event) => {
 });
 
 await loadProjects();
+// Restore whatever page/tab the URL names (survives a refresh or a pasted
+// deep link like "#/dashboard") before the very first render.
+// loadProjects() must finish first: chatPage()/dashboardPage() key off
+// state.project, which it populates from the store's persisted projects, so
+// by the time a hash names e.g. "#/chat/agent" there is already a project to
+// show real content for (or not, in which case those pages fall back to
+// their own "import a repo first" empty state exactly as they would from a
+// manual nav click).
+const initialRoute = parseHash();
+if (initialRoute?.page === "chat") state.activeTab = initialRoute.tab;
 await checkHealth();
-render();
+setPage(initialRoute?.page || "landing");
