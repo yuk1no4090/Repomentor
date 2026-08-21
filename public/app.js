@@ -68,17 +68,12 @@ const state = {
   // 这里纯粹是省一次没必要的网络请求）。切换到别的项目后这个值不匹配，会
   // 重新拉一次该项目的历史。
   //
-  // reviewer 非阻塞观察（留给后续项目切换器任务处理，本卡不实现切换器）：
-  // 这是个单标量，本身没有失效/清理机制，纯粹依赖"和当前 state.project.id
-  // 是否相等"这一次性比较来判断要不要重新拉取——现在成立是因为整个会话
-  // 期间最多只有一个"当前项目"会被换入换出（导入新项目、或刷新后恢复上次
-  // 项目），值不匹配就重新拉，从未出现需要主动清空的场景。等后续任务卡
-  // 实现"项目切换器"（允许不刷新页面、在已导入的多个项目间来回切换）时，
-  // 需要同步处理两件事：① 切换项目时清空/重置这个标记（否则切回一个曾经
-  // 成功恢复过的旧项目会被当成"已恢复过"而跳过重新拉取，即便这期间可能已
-  // 有新问答写入 store）；② state.messages 本身目前没有按 projectId 过滤
-  // （messagesForTab() 只按 message.tab 过滤），切换项目前如果不清空
-  // state.messages，不同项目的消息会在同一个 tab 里混在一起显示。
+  // 项目切换器落地（switchProject()，见下方）已经处理了 reviewer 之前留下的
+  // 两个待办：① 切换项目时把这个标记重置为 null，让切回一个曾经恢复过的旧
+  // 项目也能重新拉一次（这期间 store 里可能已经有新问答写入）；② state.messages
+  // 本身依然不按 projectId 过滤（messagesForTab() 只按 message.tab 过滤），
+  // 所以 switchProject() 里连同这个标记一起清空 state.messages，不依赖这里
+  // 单独加过滤逻辑。
   historyRestoredForProjectId: null
 };
 
@@ -111,6 +106,12 @@ const copy = {
     brand: "Repomentor",
     nav: { landing: "Product", import: "Import", overview: "Overview", chat: "Copilot", dashboard: "Evaluation", brandAria: "Go to product page", languageAria: "Language switch" },
     common: { retry: "Retry", dismiss: "Dismiss" },
+    projectSwitcher: {
+      label: "Project",
+      aria: "Switch project",
+      switching: "Switching...",
+      empty: "No projects yet"
+    },
     home: {
       title: "Repository onboarding, with evidence.",
       subtitle: "Import a repo, inspect the project map, ask grounded questions, analyze change impact, and measure answer quality.",
@@ -152,7 +153,8 @@ const copy = {
         ["Guardrails", "Answers require cited repository files."],
         ["Retrieval", "Top chunks include file path, type, and line ranges."],
         ["Metrics", "Feedback feeds the evaluation dashboard."]
-      ]
+      ],
+      switchExisting: "Or switch to an existing project"
     },
     pipeline: {
       Uploading: "Receive GitHub ZIP, uploaded ZIP, or sample repository.",
@@ -472,6 +474,12 @@ const copy = {
     brand: "Repomentor",
     nav: { landing: "产品", import: "导入", overview: "总览", chat: "Copilot", dashboard: "评估", brandAria: "前往产品首页", languageAria: "语言切换" },
     common: { retry: "重试", dismiss: "关闭" },
+    projectSwitcher: {
+      label: "项目",
+      aria: "切换项目",
+      switching: "切换中…",
+      empty: "暂无项目"
+    },
     home: {
       title: "有证据的代码库入门。",
       subtitle: "导入仓库，查看项目地图，提出有引用的问题，分析变更影响，并衡量 AI 回答质量。",
@@ -513,7 +521,8 @@ const copy = {
         ["Guardrails", "回答必须引用仓库文件。"],
         ["检索", "检索结果包含文件路径、类型和行号范围。"],
         ["指标", "用户反馈会进入评估仪表盘。"]
-      ]
+      ],
+      switchExisting: "或切换到已有项目"
     },
     pipeline: {
       Uploading: "接收 GitHub ZIP、上传 ZIP 或示例仓库。",
@@ -927,11 +936,27 @@ function clearError() {
   render();
 }
 
+// Boot-time default: before the project switcher existed, this always
+// resolved to "whatever was imported most recently" (payload.projects.at(-1))
+// with no way to land anywhere else after a refresh -- there was nothing to
+// choose between since only the last import was ever reachable. Now that
+// switchProject() lets a session have several live projects, a refresh
+// should restore *the one the user was actually looking at*, not silently
+// snap back to the newest import out from under them. switchProject()
+// persists the chosen id to localStorage on every switch; this prefers that
+// id (if it still resolves to a project the server returned) and only falls
+// back to "most recent" for a first-ever visit or a persisted id that no
+// longer exists (e.g. a different browser/profile with its own project
+// list).
 async function loadProjects() {
   try {
     const payload = await api("/api/projects");
     state.projects = payload.projects;
-    state.project ||= payload.projects.at(-1) || null;
+    if (!state.project) {
+      const persistedId = localStorage.getItem("aido-active-project");
+      const persisted = persistedId ? payload.projects.find((item) => item.id === persistedId) : null;
+      state.project = persisted || payload.projects.at(-1) || null;
+    }
   } catch {
     state.projects = [];
   }
@@ -951,6 +976,10 @@ async function refreshMemory(shouldRender = true) {
     state.memory = null;
     return;
   }
+  // Captured up front so the response can be checked against whatever
+  // state.project is by the time the request actually resolves -- see the
+  // guard right after the await below.
+  const projectId = state.project.id;
   // Mirrors checkHealth()'s own try/catch just above: this is a best-effort
   // background refresh of a side panel, called both directly from setPage()
   // (via Promise.all(...).then(render), which has no .catch of its own) and
@@ -963,8 +992,13 @@ async function refreshMemory(shouldRender = true) {
   // error banner. Swallow it here (log only) so callers only ever see
   // failures in the request they actually care about.
   try {
-    const payload = await api(`/api/memory?projectId=${encodeURIComponent(state.project.id)}`);
-    state.memory = payload;
+    const payload = await api(`/api/memory?projectId=${encodeURIComponent(projectId)}`);
+    // switchProject() can reassign state.project while this request is still
+    // in flight (e.g. the user switches again before the first switch's own
+    // memory refresh has resolved). Committing a response keyed by the *old*
+    // projectId at that point would overwrite the new project's memory panel
+    // with the previous project's data -- discard it instead of applying it.
+    if (state.project?.id === projectId) state.memory = payload;
   } catch (error) {
     console.error("refreshMemory failed:", error);
   }
@@ -1020,6 +1054,16 @@ async function restoreConversationHistory() {
   state.busyKeys.add(busyKey);
   try {
     const payload = await api(`/api/answers?projectId=${encodeURIComponent(projectId)}&limit=50`);
+    // switchProject() can move state.project on to a *different* project
+    // while this fetch is still in flight (e.g. two switches fired in quick
+    // succession). Merging this response at that point would splice the
+    // first project's history into whatever the second project has already
+    // rendered -- the exact cross-project leakage the switcher is supposed
+    // to prevent. Bail out without merging and, importantly, without setting
+    // historyRestoredForProjectId: the next time the user lands back on this
+    // project, restoreConversationHistory() should still treat it as
+    // "never successfully restored" and actually retry the fetch.
+    if (state.project?.id !== projectId) return;
     const existingIds = new Set(state.messages.map((message) => message.answerId));
     const restored = (payload.answers || [])
       .filter((answer) => !existingIds.has(answer.answerId))
@@ -1043,6 +1087,84 @@ async function restoreConversationHistory() {
     console.error("restoreConversationHistory failed:", error);
   } finally {
     state.busyKeys.delete(busyKey);
+  }
+}
+
+// localStorage key for the last project the user explicitly switched to (or
+// imported). Read by loadProjects() on boot so a refresh lands back on the
+// project the user was actually looking at instead of always snapping to
+// "whatever was imported most recently" -- see the comment on loadProjects().
+const ACTIVE_PROJECT_STORAGE_KEY = "aido-active-project";
+
+// Switches the workspace to a different already-imported project (picked
+// from the project switcher in nav(), or the "switch to an existing project"
+// shortcut on the import page). Before this existed, state.project could
+// only ever move forward to whatever importRepository() had just created --
+// there was no UI path back to an earlier import, even though both
+// state.projects and GET /api/projects already supported it.
+//
+// Three things have to happen together, all called out in the reviewer note
+// that used to sit on historyRestoredForProjectId's declaration:
+//   1. state.messages must be cleared. It is not filtered by projectId
+//      anywhere (messagesForTab() only filters by message.tab), so leaving
+//      it populated would show the previous project's Q&A/impact/agent
+//      history mixed into the new project's chat tabs.
+//   2. state.historyRestoredForProjectId must be reset to null so
+//      restoreConversationHistory() actually re-fetches for the new project
+//      instead of short-circuiting on a stale "already restored" comparison
+//      (it compares against state.project.id, which just changed).
+//   3. Everything else that is a per-project *snapshot* rather than
+//      per-message UI state -- state.memory, state.metrics, state.harnessAudit --
+//      must also be cleared so a stale render doesn't briefly (or, if the
+//      refetch fails, indefinitely) show the old project's numbers under the
+//      new project's name. expandedDetails/feedbackInFlight/playedMessages
+//      are keyed by answerId, not projectId: once state.messages is emptied
+//      nothing in the new project can collide with a leftover id, so they
+//      are left alone (clearing them would just be dead work). state.drafts
+//      is unsent input text with no relationship to which project is active;
+//      switching projects should not discard something the user typed but
+//      hasn't submitted yet.
+async function switchProject(projectId) {
+  if (!projectId || state.project?.id === projectId) return;
+  const project = state.projects.find((item) => item.id === projectId);
+  if (!project) return;
+  // Same synchronous check-then-add-before-any-await guard as every other
+  // busyKeys-gated action in this file (see feedbackInFlight's comment for
+  // the canonical explanation): the project switcher is disabled while this
+  // key is set (see projectSwitcherControl()), but this is the real guard --
+  // disabled is only a render()-cycle-late DOM attribute, not a lock.
+  const busyKey = "project-switch";
+  if (state.busyKeys.has(busyKey)) return;
+  state.busyKeys.add(busyKey);
+  render();
+  try {
+    state.project = project;
+    state.messages = [];
+    state.historyRestoredForProjectId = null;
+    state.memory = null;
+    state.metrics = null;
+    state.harnessAudit = null;
+    localStorage.setItem(ACTIVE_PROJECT_STORAGE_KEY, projectId);
+    // refreshMemory() is already best-effort (internal try/catch, logs on
+    // failure) -- safe to await directly. refreshMetrics() is not (see its
+    // own definition), so it is wrapped here the same way: a flaky
+    // evaluation endpoint should not surface as a scary error banner over
+    // what is, from the user's point of view, an ancillary side-panel
+    // refresh, not the switch itself. Both are worth refreshing regardless
+    // of the current page, since metrics feed the landing preview and the
+    // chat quality snapshot in addition to the dashboard.
+    const tasks = [refreshMemory(false)];
+    tasks.push(refreshMetrics(false).catch((error) => {
+      console.error("refreshMetrics failed during project switch:", error);
+    }));
+    // Only the chat page needs conversation history re-fetched immediately;
+    // other pages will trigger it themselves via setPage("chat") the next
+    // time the user opens a chat tab, same as a fresh project already does.
+    if (state.page === "chat") tasks.push(restoreConversationHistory());
+    await Promise.all(tasks);
+  } finally {
+    state.busyKeys.delete(busyKey);
+    render();
   }
 }
 
@@ -1144,6 +1266,37 @@ function setLanguage(lang) {
   render();
 }
 
+// Renders the topbar's project switcher: a single <select> over
+// state.projects (already populated by loadProjects()/importRepository()),
+// with the current state.project.id selected. Lives in nav() -- which
+// render() prepends ahead of every page -- rather than tucked into a single
+// page's sidebar, so switching is possible from wherever the user happens to
+// be (landing, overview, a chat tab, the dashboard), not just from the one
+// page that happens to render a "current workspace" card. Renders nothing
+// when there is nothing to switch between: an empty <select> (zero imports)
+// or a single option (only one project) would just be topbar clutter with
+// no decision to make.
+function projectSwitcherControl() {
+  if (state.projects.length < 2) return "";
+  const c = t();
+  const switching = state.busyKeys.has("project-switch");
+  const disabled = switching || state.loading;
+  const options = state.projects.map((project) => {
+    const label = `${project.name} (${sourceLabel(project.source)})`;
+    const selected = state.project?.id === project.id ? "selected" : "";
+    return `<option value="${escapeHtml(project.id)}" ${selected}>${escapeHtml(label)}</option>`;
+  }).join("");
+  return html`
+    <div class="project-switcher">
+      <label class="project-switcher-label" for="projectSwitcherSelect">${escapeHtml(c.projectSwitcher.label)}</label>
+      <select id="projectSwitcherSelect" data-project-switch aria-label="${escapeHtml(c.projectSwitcher.aria)}" ${disabled ? "disabled" : ""}>
+        ${options}
+      </select>
+      ${switching ? `<span class="project-switcher-status">${escapeHtml(c.projectSwitcher.switching)}</span>` : ""}
+    </div>
+  `;
+}
+
 function nav() {
   const c = t();
   const items = [
@@ -1161,6 +1314,7 @@ function nav() {
         <span>${c.brand}</span>
       </button>
       <div class="nav-right">
+        ${projectSwitcherControl()}
         <nav>
           ${items.map(([page, label]) => `<button class="nav-item ${state.page === page ? "active" : ""}" data-page="${page}">${label}</button>`).join("")}
         </nav>
@@ -1293,10 +1447,42 @@ function importPage() {
         </section>
       </div>
 
+      ${existingProjectsStrip()}
+
       <section class="capability-strip">
         ${c.import.caps.map(([title, text]) => `<div><strong>${title}</strong><span>${text}</span></div>`).join("")}
       </section>
     </main>
+  `;
+}
+
+// Lightweight "or switch to an existing project" shortcut on the import
+// page: state.projects.push(payload.project) already makes a freshly
+// imported project available the moment importRepository() finishes (see
+// its own comment), so anyone re-visiting Import after importing a couple of
+// repos otherwise has no way back to them short of the topbar switcher.
+// Deliberately not a second full <select> -- one already exists in the
+// topbar on every page including this one -- just a few small pills for
+// "pick one of these instead of importing yet another copy". Hidden with no
+// projects yet, same "nothing to switch between" rule as
+// projectSwitcherControl().
+function existingProjectsStrip() {
+  if (state.projects.length === 0) return "";
+  const c = t();
+  const busy = state.busyKeys.has("project-switch") || state.loading;
+  return html`
+    <section class="existing-projects">
+      <p class="eyebrow">${escapeHtml(c.import.switchExisting)}</p>
+      <div class="existing-projects-list">
+        ${state.projects.map((project) => `
+          <button
+            class="${state.project?.id === project.id ? "active" : ""}"
+            data-switch-project="${escapeHtml(project.id)}"
+            ${busy ? "disabled" : ""}
+          >${escapeHtml(project.name)} <span>${escapeHtml(sourceLabel(project.source))}</span></button>
+        `).join("")}
+      </div>
+    </section>
   `;
 }
 
@@ -3249,8 +3435,15 @@ async function forgetMemoryPreference(key, value) {
 
 async function refreshMetrics(shouldRender = true) {
   if (!state.project) return;
-  const payload = await api(`/api/evaluation?projectId=${encodeURIComponent(state.project.id)}`);
-  state.metrics = payload.metrics;
+  // Same stale-response guard as refreshMemory() above: capture the id this
+  // call is fetching for, and only commit if state.project hasn't moved on
+  // to a different project (via switchProject()) by the time the response
+  // lands. Otherwise a slow response for a project the user has since
+  // switched away from could overwrite the new project's metrics with the
+  // old project's numbers.
+  const projectId = state.project.id;
+  const payload = await api(`/api/evaluation?projectId=${encodeURIComponent(projectId)}`);
+  if (state.project?.id === projectId) state.metrics = payload.metrics;
   if (shouldRender) render();
 }
 
@@ -3447,6 +3640,18 @@ document.addEventListener("click", (event) => {
     return;
   }
 
+  // existingProjectsStrip()'s pills on the import page -- unlike the topbar
+  // switcher (a <select>, wired through the "change" listener below this
+  // one), these are plain buttons, so a click reaches this handler directly.
+  // Also lands on Overview afterward, same as a fresh import would: picking
+  // an existing project here is standing in for "import it", and Overview is
+  // where importRepository() already sends a successful import.
+  const switchProjectButton = event.target.closest("[data-switch-project]");
+  if (switchProjectButton) {
+    switchProject(switchProjectButton.dataset.switchProject).then(() => setPage("overview"));
+    return;
+  }
+
   const langButton = event.target.closest("[data-lang]");
   if (langButton) {
     setLanguage(langButton.dataset.lang);
@@ -3568,6 +3773,18 @@ document.addEventListener("click", (event) => {
   const dismissError = event.target.closest("[data-dismiss-error]");
   if (dismissError) {
     clearError();
+    return;
+  }
+});
+
+// Separate "change" listener rather than shoehorning this into the "click"
+// one above: a <select> fires "change" (after the browser's own native
+// dropdown UI closes), not "click" on the option that ends up chosen, so it
+// would never reach the click handler's data-action dispatch at all.
+document.addEventListener("change", (event) => {
+  const projectSelect = event.target.closest("[data-project-switch]");
+  if (projectSelect) {
+    switchProject(projectSelect.value);
     return;
   }
 });
