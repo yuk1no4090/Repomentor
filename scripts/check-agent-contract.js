@@ -10,6 +10,8 @@ const [serverSource, readme, appSource] = await Promise.all([
 const requiredPayloadFields = [
   "memory_used",
   "memory_suggestions",
+  "supervisor_plan",
+  "critic_review",
   "harness",
   "safety"
 ];
@@ -36,6 +38,7 @@ const requiredHarnessFields = [
   "model_mode",
   "model_provider",
   "model_adapter",
+  "model_calls",
   "steps_executed",
   "duration_ms",
   "fallback_used",

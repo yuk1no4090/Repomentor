@@ -18,24 +18,24 @@ New hires typically take days to weeks to build working context on an unfamiliar
 
 **Highlights**
 
-- **Multi-agent LangGraph orchestration** — a supervisor node dynamically routes between classify / retrieve / impact-analysis / QA-planning / synthesis, with human-in-the-loop approval gating high-risk changes and MemorySaver checkpoints that let a run resume mid-graph instead of restarting.
+- **Three model-agent LangGraph orchestration** — independently prompted Supervisor, ImpactAnalyst, and QACritic calls are coordinated with deterministic retrieval/safety nodes, human-in-the-loop approval for high-risk changes, and resumable MemorySaver checkpoints. Offline runs degrade each role separately to deterministic logic.
 - **Change-impact briefings for PMs and QA** — one plain-language requirement in, impacted modules / business paths / risk level / testing focus out, in language a non-engineer can act on. Backed by market research on where this gap actually exists (see [docs/POSITIONING.md](docs/POSITIONING.md)).
 - **An AI quality dashboard built into the product, not bolted on** — citation coverage, answer-schema compliance, and guardrail hit rates are first-class product UI instead of an external LLMOps tool a PM has to ask an engineer to open.
 - **An MCP Server** exposing 4 tools (repository Q&A, impact analysis, onboarding plans, project listing) so AI coding agents such as Claude Code or Cursor can consume this project's analysis directly.
 
-**Quality bar:** 41 `node:test` unit tests, 25 static-check gates, and 9 runtime black-box test suites — all running end-to-end with zero API key required (`npm test`).
+**Quality bar:** 100 `node:test` unit tests, 27 static-check gates, and 9 runtime black-box test suites — all running end-to-end with zero API key required (`npm test`).
 
 More: [docs/POSITIONING.md](docs/POSITIONING.md) (positioning + market validation) · [docs/AGENT_RUNTIME_ARCHITECTURE.md](docs/AGENT_RUNTIME_ARCHITECTURE.md) (implementation boundary) · [docs/PRD.md](docs/PRD.md) (requirements + scope decisions) · [docs/CHANGELOG.md](docs/CHANGELOG.md) (development log)
 
 ## Architecture
 
-**Module layering.** `server.js` is a thin ~1,200-line HTTP routing layer; all application logic lives in 12 single-purpose modules under `lib/`, grouped below by config / storage / domain. Dependencies between `lib/` modules are unidirectional and acyclic — see [docs/AGENT_RUNTIME_ARCHITECTURE.md § Code Organization](docs/AGENT_RUNTIME_ARCHITECTURE.md#code-organization) for the full dependency list.
+**Module layering.** `server.js` is a thin ~1,200-line HTTP routing layer; all application logic lives in 13 single-purpose modules under `lib/`, grouped below by config / storage / domain. Dependencies between `lib/` modules are unidirectional and acyclic — see [docs/AGENT_RUNTIME_ARCHITECTURE.md § Code Organization](docs/AGENT_RUNTIME_ARCHITECTURE.md#code-organization) for the full dependency list.
 
 ```mermaid
 flowchart TD
     HTTP["server.js<br/>HTTP routing layer (~1,200 lines)<br/>handleApi / handleApiUnlocked / serveStatic<br/>bootstrap: setStoreRecordNormalizers(), setCheckpointCollaborators()"]
 
-    subgraph LIB["lib/ — 12 single-purpose modules"]
+    subgraph LIB["lib/ — 13 single-purpose modules"]
         direction LR
         subgraph CFG["config"]
             C1["lib/config.js"]
@@ -54,6 +54,7 @@ flowchart TD
             D6["lib/answers.js"]
             D7["lib/agent-graph.js"]
             D8["lib/metrics.js"]
+            D9["lib/agent-contracts.js"]
         end
     end
 
@@ -73,16 +74,17 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    Classify["Classify"] --> Retrieve["Retrieve"]
-    Retrieve --> Impact["Impact Analysis"]
-    Impact -->|"high risk + AGENT_HITL_ENABLED"| HITL{{"human_review<br/>(paused — resume via POST /api/langgraph-resume)"}}
-    Impact -->|"else"| Guardrails["Safety Guardrails"]
+    Supervisor["Supervisor Agent<br/>plan + retrieval queries"] --> Retrieve["Retriever tool nodes"]
+    Retrieve --> Impact["ImpactAnalyst Agent"]
+    Impact --> Critic["QACritic Agent"]
+    Critic --> Guardrails["Safety Guardrails"]
+    Guardrails -->|"high risk + AGENT_HITL_ENABLED"| HITL{{"human_review<br/>(paused — resume via POST /api/langgraph-resume)"}}
+    Guardrails -->|"else"| Synthesize["Synthesize"]
     HITL -->|"decision: approve"| Guardrails
     HITL -->|"decision: reject"| Stop["Run ends (rejected)"]
-    Guardrails --> Synthesize["Synthesize"]
 
     CP[("Checkpoint<br/>MemorySaver → SQLite<br/>langgraph_checkpoints")]
-    Classify -.-> CP
+    Supervisor -.-> CP
     Retrieve -.-> CP
     Impact -.-> CP
     Guardrails -.-> CP
@@ -115,7 +117,7 @@ export OPENAI_MODEL=gpt-4o-mini
 - Import-time safety review with prompt-risk and sensitive-content file counts in the project overview.
 - Repository Q&A with related files, uncertainty, suggested next questions, feedback buttons, lightweight harness metadata, safety status, guardrail details, and pending memory suggestions.
 - Impact analysis with impacted modules, risk level, testing suggestions, and open questions.
-- Agent Workflow tab backed by a LangGraph StateGraph with classifier, retriever, context expansion, impact analysis, QA planning, memory, safety guardrails, structured synthesis, and MemorySaver checkpointing.
+- Agent Workflow tab backed by a LangGraph StateGraph that coordinates the Supervisor, ImpactAnalyst, and QACritic model agents with deterministic classification, retrieval, memory, safety, synthesis, and MemorySaver checkpointing.
 - Onboarding plans run through a lightweight deterministic harness with trace, safety, guardrails, citations, and pending memory suggestions.
 - Optional token-bound auth with user, role, scope, local store-backed tokens, and audit metadata. `/api/auth/me` returns the current resolved identity, `/api/auth/users` lists configured and local users, `POST /api/auth/users` creates a local user and returns a one-time visible token, `POST /api/auth/users/disable` disables a local user and its tokens, and `/api/auth/events` lists recent auth decisions without exposing token values. This is not a password-login or session-management system.
 - User preference memory suggestions that require explicit confirmation before being saved. Confirmed preferences are scoped by `userId`, defaulting to `local-user` for local/backward-compatible use. API clients can pass `userId` in JSON bodies or the `X-User-Id` header. Confirmed preferences can shape both impact analysis and ordinary Q&A emphasis; confirmed memory is also written to SQLite long-term memory for searchable reuse across later Agent Workflow and Direct Chat runs. Memory suggestions carry user and project ownership so confirmation/ignore actions can verify the active boundary. Ignored suggestions suppress the same key/value suggestion from being repeated for that user. The Copilot inspector includes a lightweight preference and long-term memory manager for viewing, removing one preference value, or clearing all preferences.
@@ -298,15 +300,20 @@ The LangGraph workflow is deterministic-first so the product remains demoable wi
 
 ```text
 input safety
+  -> Supervisor agent plan
   -> preference memory
   -> classifier
   -> retriever
   -> context expander
-  -> impact analyst
-  -> QA planner
+  -> ImpactAnalyst agent
+  -> QACritic agent
   -> safety guardrails
   -> structured synthesizer
 ```
+
+With an API key, Supervisor, ImpactAnalyst, and QACritic have separate prompts, schemas, and model calls through `runAgentModelAdapter()`. `harness.model_calls` exposes each result; the backward-compatible `harness.model_adapter` field summarizes ImpactAnalyst. Without a key, each role falls back independently to deterministic logic.
+
+The impact response exposes the Supervisor decision as `supervisor_plan` and the independent review as `critic_review`, alongside the cited impact areas and merged testing suggestions.
 
 The `modelAdapter` boundary uses an OpenAI-compatible chat completions call when configured and otherwise reports deterministic offline retrieval. LLM transport failures, timeouts, context token budget overruns, HTTP errors, invalid JSON, and schema errors are reported through `harness.model_adapter` before the deterministic fallback is used. The `agentHarness` boundary records runtime metadata for each agent run: run id, model mode, provider, adapter, executed steps, duration, fallback status, fallback reason, schema status, budgets, budget status, read-only tool registry, checkpointing, and errors. The LangGraph workflow runs with `MemorySaver`, keeps runtime `store` out of graph state, persists checkpoint summaries to SQLite `langgraph_checkpoints`, and persists sanitized executable MemorySaver payloads to `langgraph_checkpoint_payloads`; `/api/harness-run` returns checkpoints for the selected run, `/api/langgraph-checkpoint` returns one checkpoint summary for read-only time-travel inspection plus executable-resume availability, and `/api/langgraph-replay` reconstructs the persisted checkpoint timeline as a checkpoint summary replay without invoking the graph, tools, or model. SQLite migration/backfill audit rows are kept in `schema_migrations` and surfaced through `/api/health` plus evaluation metrics. The tool policy is exposed as `mode: "read-only"`, `allow_external_network: false`, `allow_repository_writes: false`, and `allow_shell_execution: false`. `/api/chat` uses a lighter `Direct Chat Harness` with the same model adapter, schema validation, trace shape, deterministic fallback metadata, `memory_used`, pending `memory_suggestions`, input/retrieval/output safety reports, and guardrail details. `/api/onboarding` uses an `Onboarding Harness` for deterministic plan generation with the same trace, safety, guardrail, memory suggestion, and evaluation visibility conventions. Feedback records preserve `harness_run_id` when the answer came from an observable harness run. Repository files are treated as untrusted evidence; retrieved text is never promoted into system instructions. Sensitive-looking values, including API keys, tokens, passwords, credentials, and secrets, are redacted before repository context is sent to a model.
 

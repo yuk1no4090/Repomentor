@@ -49,11 +49,11 @@ const requiredScenarios = [
   "phase 6 -> qa_plan (low risk)",
   "phase 8 -> synthesize",
   "phase 9 -> END (__end__)",
-  "phase 6 + high risk + HITL enabled -> human_review",
+  "phase 8 + high risk + HITL enabled -> human_review after critic and guardrails",
   "phase 6 + high risk + HITL disabled (default) -> qa_plan",
   "post-human_review (high risk) -> synthesize",
-  "phase 6 + HITL approve -> synthesize",
-  "phase 6 + HITL reject -> synthesize",
+  "phase 8 + HITL approve -> synthesize",
+  "phase 8 + HITL reject -> synthesize",
   "finalPayload set -> END (__end__), prevents infinite loop"
 ];
 

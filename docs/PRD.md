@@ -13,7 +13,7 @@
 
 ### 产品定位
 
-这个产品不是普通“代码问答机器人”，而是一个面向研发 onboarding 场景的 AI 工作台。它展示从用户问题发现、MVP 定义、RAG 方案、轻量 Agentic Workflow、AI guardrails、质量评估到产品迭代的完整 AI PM 能力。
+这个产品不是普通“代码问答机器人”，而是一个面向研发 onboarding 场景的 AI 工作台。它展示从用户问题发现、MVP 定义、RAG 方案、三 Agent 协作工作流、AI guardrails、质量评估到产品迭代的完整 AI PM 能力。
 
 ## 2. 背景与问题
 
@@ -40,7 +40,7 @@ RAG 可以把代码和文档变成可检索上下文；引用来源和不确定�
 3. 帮助 QA 根据代码和文档生成测试场景和边界条件。
 4. 通过文件引用、不确定性标记和反馈机制降低 AI 幻觉。
 5. 用 evaluation dashboard 展示 AI 产品质量管理能力。
-6. 通过 Agentic Impact Workflow 展示 tools、trace、guardrails 和 structured output 的 Agent 产品设计理解。
+6. 通过 Supervisor、ImpactAnalyst、QACritic 三 Agent 协作展示独立模型角色、tools、handoff、trace、guardrails 和 structured output 的 Agent 产品设计理解。
 
 ### MVP 非目标
 
@@ -206,29 +206,42 @@ RAG 可以把代码和文档变成可检索上下文；引用来源和不确定�
 }
 ```
 
-### 6.5 Agentic Impact Workflow
+### 6.5 Multi-Agent Impact Workflow
 
-在普通影响范围分析之外，MVP 增加一个可解释的轻量 Agent 工作流。它不是自动改代码 Agent，而是面向“改动影响分析”的 LangGraph stateful workflow，用来展示 Agent 框架思维。
+在普通影响范围分析之外，MVP 增加一个可解释的三 Agent 工作流。它不是自动改代码 Agent，而是面向“改动影响分析”的 LangGraph stateful workflow。只有具备独立 prompt、独立 schema 和独立模型调用的角色称为 Agent；检索、记忆、安全扫描和格式化仍定义为确定性节点或工具。
 
-用户输入计划改动后，Agent 按步骤执行：
+三个模型 Agent 的职责：
 
-1. `classify_change_request`：识别改动类型，例如状态变更、数据模型变更、API 合约变更、UI 行为变更。
-2. `retrieve_repository_chunks`：检索与请求最相关的代码和文档 chunks。
-3. `expand_dependency_context`：扩展搜索 models、routes、services、UI、tests 等相邻风险区域。
-4. `estimate_impact_risk`：按模块聚合影响范围，并给出风险等级。
-5. `validate_citations`：执行引用 guardrail，确保影响范围引用的文件存在于当前仓库。
-6. `compose_structured_answer`：输出 PM / QA 可读的影响摘要、测试建议和开放问题。
+1. `Supervisor`：理解改动意图、形成风险假设、指定必须参与的专家、生成 1-4 条仓库检索查询，并判断是否建议人工审核。
+2. `ImpactAnalyst`：读取 Supervisor 计划和检索证据，生成带文件引用的影响范围、风险等级和开放问题。
+3. `QACritic`：独立复核 ImpactAnalyst，识别缺少证据的结论、遗漏的测试范围和需要补充检索的问题，不与 ImpactAnalyst 共用输出 schema。
+
+确定性节点和工具负责：
+
+1. `input_safety`：在任何外部模型调用前扫描输入。
+2. `memory`：读取已确认偏好和长期记忆。
+3. `classify_change_request`：生成可测试的确定性变更分类信号。
+4. `retrieve_repository_chunks`：使用 Supervisor 的检索计划查找代码和文档 chunks。
+5. `expand_dependency_context`：扩展 models、routes、services、UI、tests 等相邻风险区域。
+6. `validate_citations`：确保 ImpactAnalyst 和 QACritic 引用的文件存在于当前仓库。
+7. `human_review`：高风险且启用 HITL 时暂停并等待批准或拒绝。
+8. `compose_structured_answer`：合并分析和独立复核结果。
+
+配置模型时，一次完整影响分析目标是产生 3 条可审计模型调用记录；没有 API key 或任一 Agent 调用失败时，该角色单独降级到确定性实现，整个工作流仍可完成。
 
 输出结构：
 
 ```json
 {
   "agent": {
-    "name": "Impact Analysis Agent",
-    "pattern": "stateful multi-agent graph workflow",
-    "framework_concepts": ["LangGraph StateGraph", "nodes", "state", "tools", "trace", "guardrails", "structured output", "memory"],
+    "name": "LangGraph Impact Analysis Team",
+    "pattern": "three-model-agent workflow with deterministic tool nodes",
+    "model_agents": ["Supervisor", "ImpactAnalyst", "QACritic"],
+    "framework_concepts": ["LangGraph StateGraph", "independent model agents", "state", "tools", "trace", "guardrails", "structured output", "memory"],
     "instructions": ["string"]
   },
+  "supervisor_plan": {},
+  "critic_review": {},
   "summary": "string",
   "trace": [
     {
@@ -248,10 +261,12 @@ RAG 可以把代码和文档变成可检索上下文；引用来源和不确定�
 }
 ```
 
+选择 LangGraph 的原因不是节点数量，而是需要共享状态、条件路由、模型 Agent handoff、checkpoint、HITL 暂停与续跑，以及逐 Agent 模型调用审计。`harness.model_calls` 必须分别记录 Supervisor、ImpactAnalyst、QACritic 的模型、耗时、schema、fallback 和 token 估算。
+
 该设计可映射到真实 Agent 框架：
 
 - OpenAI Agents SDK：Agent instructions + tool calling + guardrails + tracing。
-- LangGraph：将 classify / retrieve / expand / guardrail / finalize 建模为 stateful graph nodes。
+- LangGraph：编排三个模型 Agent、确定性工具节点、checkpoint 和 HITL resume。
 - Vercel AI SDK：将 agent trace 和 structured outputs 渲染到前端工作台。
 
 ### 6.6 新人学习路径生成

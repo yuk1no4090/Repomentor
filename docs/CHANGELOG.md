@@ -5,6 +5,23 @@
 
 ---
 
+## 2026-08-23 — 从角色标签升级为三模型 Agent 编排 + PRD 口径校正
+
+背景：此前 LangGraph 虽然为多个节点标注了 `agent_role`，但影响分析主链只有一次真正的 LLM 调用，其余大多是确定性函数。严格来说，这是“单模型 Agent + 多角色工具节点”，不能充分支撑“多 Agent 编排”的产品表述。本轮按真实执行边界完成最小多 Agent 升级，并同步修正 PRD、README 和架构文档。
+
+- **三个独立模型 Agent**：新增 `lib/agent-contracts.js`，分别定义 Supervisor、ImpactAnalyst、QACritic 的独立 prompt、输出 schema、校验器、证据约束和确定性 fallback。三个角色各自产生一次可审计的模型调用；它们默认可以共用同一个 provider/model，因此这里的“三模型 Agent”指三个独立的 model-backed agent calls，不等于强制使用三个不同基础模型。
+- **Supervisor**：在输入安全检查后理解改动意图，生成风险假设、必须参与的专家、1-4 条仓库检索查询和 HITL 建议。检索节点把 Supervisor 计划合并进查询，使计划实际影响 RAG，而不是只作为展示字段。
+- **ImpactAnalyst**：读取 Supervisor 计划和检索到的仓库证据，独立生成带文件引用的影响范围、风险等级、测试建议和开放问题。
+- **QACritic**：使用不同于 ImpactAnalyst 的 prompt/schema 独立复核引用、证据缺口、遗漏范围和回归测试建议；不存在于当前仓库的引用会被约束移除，复核建议经过去重后合并回最终影响分析。为兼容既有 checkpoint，LangGraph node 名仍保留 `qa_plan`，但执行角色和工具已改为 QACritic。
+- **Agent 与工具边界校正**：只有 Supervisor、ImpactAnalyst、QACritic 被定义为模型 Agent。SafetyGuard、MemoryCurator、Classifier、Retriever、OnboardingPlanner、Synthesizer、Harness 保持为确定性角色、工具节点或基础设施，不再因为出现在 StateGraph 中就被描述成独立 Agent。
+- **LangGraph/HITL 顺序**：共享 state 新增 `supervisorPlan`、`qaReview` 和逐角色模型事件；高风险 HITL 从 ImpactAnalyst 后移到 QACritic 和输出 guardrails 之后，保证人工审核看到的是已经独立复核和安全检查过的结果。`harness.model_calls` 逐项记录角色、模型、耗时、schema、fallback 和 token 估算，兼容字段 `harness.model_adapter` 继续汇总 ImpactAnalyst。
+- **前端和评估指标**：Agent 技术详情新增 Supervisor 执行计划、QACritic 独立复核和 Model Agent Calls；Dashboard 新增完整三 Agent 运行数、模型 Agent 调用总数、成功/fallback 调用数和角色分布。
+- **配置可靠性修复**：`.env` 加载器改为只在环境变量确实不存在时写入，显式传入 `OPENAI_API_KEY=""` 不再被 `.env` 中的值覆盖，确保离线/fallback 测试和部署覆盖行为可预测。
+- **文档同步**：更新 `docs/PRD.md`、`docs/AGENT_RUNTIME_ARCHITECTURE.md`、`docs/MULTI_AGENT_PLAN.md`、`docs/USER_GUIDE.md`、`docs/HANDOVER.md`、中英文 README 和定位文档，统一三 Agent 与确定性工具节点的口径。
+- **测试**：新增 Agent contract 单元测试并扩展 fake OpenAI-compatible smoke server，使其按角色返回不同 schema，断言一次影响分析按 `Supervisor → ImpactAnalyst → QACritic` 产生 3 次独立调用。最终 `npm test` 全量通过：27 个静态检查脚本、100 条 `node:test` 单元测试，以及 smoke、UI、安全红队、记忆压缩、用户记忆隔离、认证、embedding provider、benchmark、MCP 全部通过。
+
+---
+
 ## 2026-08-18 下午 — 影响简报 briefing + 无界增长治理 + 看板故事化 + 写锁粒度收窄
 
 本轮同样由多个 worker agent 在独立分支/worktree 并行完成，逐一经 reviewer 审核通过后合并（`A`/`G`/`B`/`D`），全程 `npm test` 保持全绿。

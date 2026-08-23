@@ -298,6 +298,9 @@ const copy = {
       hitlRejectedMessage: "[HITL] Reviewer rejected the high-risk change",
       agentRoster: "Agent Roster",
       agentHandoff: "Agent Handoff Flow",
+      modelAgents: "Model Agent Calls",
+      supervisorPlan: "Supervisor Plan",
+      criticReview: "QA Critic Review",
       preferenceMemory: "Preference memory",
       noSavedPreferences: "No saved preferences",
       clearAll: "Clear all",
@@ -666,6 +669,9 @@ const copy = {
       hitlRejectedMessage: "[HITL] 审核员已拒绝该高风险改动",
       agentRoster: "Agent 角色列表",
       agentHandoff: "Agent 交接流程",
+      modelAgents: "模型 Agent 调用",
+      supervisorPlan: "Supervisor 执行计划",
+      criticReview: "QA Critic 独立复核",
       preferenceMemory: "偏好记忆",
       noSavedPreferences: "暂无已保存偏好",
       clearAll: "清空",
@@ -1914,6 +1920,7 @@ function renderRuntimeStatus(payload) {
   const outputRedaction = safety.output_redaction || {};
   const budget = harness.budget_status || {};
   const modelAdapter = harness.model_adapter || {};
+  const modelCalls = harness.model_calls || [];
   const pendingMemory = (payload.memory_suggestions || []).filter((item) => item.status === "pending").length;
   const memoryStatus = [
     memory.used ? memory.summary : c.chat.noMemory,
@@ -1929,6 +1936,7 @@ function renderRuntimeStatus(payload) {
     harness.fallback_reason,
     modelAdapter.error_code,
     modelAdapter.http_status ? `HTTP ${modelAdapter.http_status}` : null,
+    modelCalls.length ? `${modelCalls.filter((call) => call.llm_used).length}/${modelCalls.length} ${c.chat.modelAgents}` : null,
     budget.step_budget_exceeded || budget.timeout_exceeded || budget.context_budget_exceeded ? c.chat.budgetExceeded : c.chat.budgetOk
   ].filter(Boolean).join(" | ");
   const safetyStatus = [
@@ -2046,6 +2054,40 @@ function renderAgentImpactMessage(message) {
         <div class="tag-list">${renderList(payload.agent?.framework_concepts, (item) => `<span>${escapeHtml(item)}</span>`)}</div>
       </section>
     </div>
+
+    ${payload.supervisor_plan ? html`
+      <div class="agent-meta-grid">
+        <section>
+          <h3>${c.chat.supervisorPlan}</h3>
+          <p>${escapeHtml(payload.supervisor_plan.rationale)}</p>
+          <div class="tag-list">
+            <span>${escapeHtml(payload.supervisor_plan.risk_hypothesis)}</span>
+            ${renderList(payload.supervisor_plan.required_agents, (role) => `<span>${escapeHtml(role)}</span>`)}
+          </div>
+          <div class="compact-files">${renderList(payload.supervisor_plan.retrieval_queries, (query) => `<code>${escapeHtml(query)}</code>`)}</div>
+        </section>
+        <section>
+          <h3>${c.chat.criticReview}</h3>
+          <p>${escapeHtml(payload.critic_review?.summary || "")}</p>
+          <div class="tag-list"><span>${escapeHtml(payload.critic_review?.verdict || c.chat.unknown)}</span></div>
+          <ul>${renderList(payload.critic_review?.findings, (finding) => `<li><strong>${escapeHtml(finding.severity)}</strong> ${escapeHtml(finding.finding)}</li>`)}</ul>
+        </section>
+      </div>
+    ` : ""}
+
+    ${(payload.harness?.model_calls || []).length ? html`
+      <h3>${c.chat.modelAgents}</h3>
+      <div class="trace-list">
+        ${renderList(payload.harness.model_calls, (call) => `
+          <div class="trace-step">
+            <strong>${escapeHtml(call.agent_role)}</strong>
+            <span class="agent-role-badge">${escapeHtml(call.llm_used ? "LLM" : "fallback")}</span>
+            <code>${escapeHtml(call.model)}</code>
+            <small>${escapeHtml(`${call.duration_ms}ms | ${call.prompt_tokens_estimated} estimated tokens${call.error_code ? ` | ${call.error_code}` : ""}`)}</small>
+          </div>
+        `)}
+      </div>
+    ` : ""}
 
     <h3>${c.chat.agentTrace}</h3>
     <div class="trace-list">

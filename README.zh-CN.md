@@ -18,24 +18,24 @@ _一个帮助新工程师、技术 PM 和 QA 快速理解代码仓库的 MVP Web
 
 **亮点**
 
-- **LangGraph 多 Agent 编排** —— supervisor 节点在分类/检索/影响分析/QA 规划/合成之间动态路由，高风险变更触发人工审批（HITL），MemorySaver checkpoint 支持从图中断点续跑而不是从头重来。
+- **LangGraph 三模型 Agent 编排** —— Supervisor、ImpactAnalyst、QACritic 使用独立 prompt、schema 和模型调用，并与确定性检索/安全节点协作；高风险变更触发人工审批（HITL），MemorySaver checkpoint 支持续跑。离线运行时每个角色独立降级为确定性逻辑。
 - **面向 PM/QA 的改动影响简报** —— 输入一句自然语言需求描述，输出受影响模块、业务链路、风险级别、测试重点，非工程师可直接读懂。这一差异化切入有调研背书（见 [docs/POSITIONING.md](docs/POSITIONING.md)）。
 - **产品内置的 AI 质量看板，而非外挂工具** —— 引用覆盖率、答案 schema 合规率、guardrail 命中率是产品 UI 的一部分，而不是需要工程介入才能打开的外部 LLMOps 工具。
 - **MCP Server** 暴露 4 个工具（仓库问答、影响分析、onboarding 计划生成、项目列表），让 Claude Code、Cursor 等 AI coding agent 可以直接消费本项目的分析能力。
 
-**质量证据**：41 条 `node:test` 单元测试、25 项静态检查门禁、9 套运行时黑盒测试套件——全部无需 API key 即可端到端运行（`npm test`）。
+**质量证据**：100 条 `node:test` 单元测试、27 项静态检查门禁、9 套运行时黑盒测试套件——全部无需 API key 即可端到端运行（`npm test`）。
 
 延伸阅读：[docs/POSITIONING.md](docs/POSITIONING.md)（定位与市场验证）· [docs/AGENT_RUNTIME_ARCHITECTURE.md](docs/AGENT_RUNTIME_ARCHITECTURE.md)（实现边界）· [docs/PRD.md](docs/PRD.md)（需求与取舍决策）· [docs/CHANGELOG.md](docs/CHANGELOG.md)（开发日志）
 
 ## 架构
 
-**模块分层。** `server.js` 是一个约 1200 行的瘦 HTTP 路由层；全部业务逻辑位于 `lib/` 下 12 个单一职责模块中，下图按 config / 存储 / 领域三组呈现。`lib/` 模块间依赖单向无环——完整依赖清单见 [docs/AGENT_RUNTIME_ARCHITECTURE.md 的 Code Organization 小节](docs/AGENT_RUNTIME_ARCHITECTURE.md#code-organization)。
+**模块分层。** `server.js` 是一个约 1200 行的瘦 HTTP 路由层；全部业务逻辑位于 `lib/` 下 13 个单一职责模块中，下图按 config / 存储 / 领域三组呈现。`lib/` 模块间依赖单向无环——完整依赖清单见 [docs/AGENT_RUNTIME_ARCHITECTURE.md 的 Code Organization 小节](docs/AGENT_RUNTIME_ARCHITECTURE.md#code-organization)。
 
 ```mermaid
 flowchart TD
     HTTP["server.js<br/>HTTP 路由层（约 1200 行）<br/>handleApi / handleApiUnlocked / serveStatic<br/>bootstrap: setStoreRecordNormalizers(), setCheckpointCollaborators()"]
 
-    subgraph LIB["lib/ —— 12 个单一职责模块"]
+    subgraph LIB["lib/ —— 13 个单一职责模块"]
         direction LR
         subgraph CFG["config"]
             C1["lib/config.js"]
@@ -54,6 +54,7 @@ flowchart TD
             D6["lib/answers.js"]
             D7["lib/agent-graph.js"]
             D8["lib/metrics.js"]
+            D9["lib/agent-contracts.js"]
         end
     end
 
@@ -73,16 +74,17 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    Classify["分类"] --> Retrieve["检索"]
-    Retrieve --> Impact["影响分析"]
-    Impact -->|"高风险 + AGENT_HITL_ENABLED"| HITL{{"human_review<br/>（暂停，经 POST /api/langgraph-resume 续跑）"}}
-    Impact -->|"其他情况"| Guardrails["安全护栏"]
+    Supervisor["Supervisor Agent<br/>计划 + 检索查询"] --> Retrieve["Retriever 工具节点"]
+    Retrieve --> Impact["ImpactAnalyst Agent"]
+    Impact --> Critic["QACritic Agent"]
+    Critic --> Guardrails["安全护栏"]
+    Guardrails -->|"高风险 + AGENT_HITL_ENABLED"| HITL{{"human_review<br/>（暂停，经 POST /api/langgraph-resume 续跑）"}}
+    Guardrails -->|"其他情况"| Synthesize["合成"]
     HITL -->|"decision: approve"| Guardrails
     HITL -->|"decision: reject"| Stop["运行终止（被拒绝）"]
-    Guardrails --> Synthesize["合成"]
 
     CP[("Checkpoint<br/>MemorySaver → SQLite<br/>langgraph_checkpoints")]
-    Classify -.-> CP
+    Supervisor -.-> CP
     Retrieve -.-> CP
     Impact -.-> CP
     Guardrails -.-> CP
@@ -115,7 +117,7 @@ export OPENAI_MODEL=gpt-4o-mini
 - 导入时的安全审查会在项目概览中给出 prompt 风险和敏感内容文件的计数。
 - 仓库问答提供相关文件、不确定性说明、建议的后续问题、反馈按钮、轻量 harness 元数据、安全状态、护栏详情，以及待处理的记忆建议。
 - 影响分析提供受影响模块、风险级别、测试建议和待澄清问题。
-- Agent Workflow 标签页由一个 LangGraph StateGraph 驱动，包含分类器、检索器、上下文扩展、影响分析、问答规划、记忆、安全护栏、结构化综合，以及 MemorySaver checkpoint。
+- Agent Workflow 标签页由 LangGraph StateGraph 驱动，编排 Supervisor、ImpactAnalyst、QACritic 三个模型 Agent，并配合确定性的分类、检索、记忆、安全、综合节点和 MemorySaver checkpoint。
 - Onboarding 计划通过一个轻量的确定性 harness 生成，带有 trace、安全、护栏、引用和待处理记忆建议。
 - 可选的、绑定 token 的认证支持用户、角色、scope、本地 store 存储的 token 以及审计元数据。`/api/auth/me` 返回当前解析出的身份，`/api/auth/users` 列出配置和本地用户，`POST /api/auth/users` 创建本地用户并返回一次性可见的 token，`POST /api/auth/users/disable` 禁用一个本地用户及其 token，`/api/auth/events` 列出最近的认证决策而不暴露 token 值。这不是一套密码登录或 session 管理系统。
 - 用户偏好记忆建议需要显式确认才会保存。已确认的偏好按 `userId` 隔离，未提供时默认使用 `local-user`，以保持本地/向后兼容的使用方式。API 客户端可以在 JSON body 或 `X-User-Id` 请求头中传入 `userId`。已确认的偏好可以同时影响影响分析和普通问答的侧重点；已确认的记忆也会写入 SQLite 长期记忆，供后续的 Agent Workflow 和 Direct Chat 运行复用检索。记忆建议携带用户和项目归属信息，便于确认/忽略操作校验当前生效的边界。被忽略的建议会抑制该用户下相同 key/value 建议的重复出现。Copilot inspector 内置一个轻量的偏好和长期记忆管理器，可查看、移除单个偏好值，或清空全部偏好。
@@ -298,15 +300,20 @@ LangGraph 工作流采用确定性优先（deterministic-first）的设计，因
 
 ```text
 input safety
+  -> Supervisor agent plan
   -> preference memory
   -> classifier
   -> retriever
   -> context expander
-  -> impact analyst
-  -> QA planner
+  -> ImpactAnalyst agent
+  -> QACritic agent
   -> safety guardrails
   -> structured synthesizer
 ```
+
+配置 API key 后，Supervisor、ImpactAnalyst、QACritic 通过 `runAgentModelAdapter()` 使用独立 prompt、schema 和模型调用。`harness.model_calls` 展示每个角色的结果，兼容字段 `harness.model_adapter` 汇总 ImpactAnalyst；没有 key 时每个角色独立回退到确定性逻辑。
+
+影响分析响应通过 `supervisor_plan` 暴露 Supervisor 决策，通过 `critic_review` 暴露独立复核结果，并保留带引用的影响区域与合并后的测试建议。
 
 `modelAdapter` 边界在已配置模型时使用 OpenAI-compatible 的 chat completions 调用，否则报告为确定性的离线检索。LLM 传输失败、超时、上下文 token 预算超限、HTTP 错误、非法 JSON 和 schema 错误都会在使用确定性回退之前通过 `harness.model_adapter` 上报。`agentHarness` 边界为每次 agent 运行记录运行时元数据：run id、model mode、provider、adapter、已执行步数、耗时、fallback 状态、fallback 原因、schema 状态、预算、预算状态、只读工具注册表、checkpoint 情况以及错误。LangGraph 工作流使用 `MemorySaver` 运行，运行时 `store` 不会进入图 state，checkpoint 摘要会持久化到 SQLite 的 `langgraph_checkpoints`，经过脱敏处理的可执行 MemorySaver payload 会持久化到 `langgraph_checkpoint_payloads`；`/api/harness-run` 返回所选 run 的 checkpoint，`/api/langgraph-checkpoint` 返回单个 checkpoint 摘要，用于只读的时间旅行检视，并说明是否支持可执行续跑，`/api/langgraph-replay` 会在不调用图、工具或模型的情况下，把已持久化的 checkpoint 时间线重建为一次 checkpoint 摘要回放。SQLite 的迁移/回填审计记录保存在 `schema_migrations` 中，并通过 `/api/health` 和评估指标对外暴露。工具策略被暴露为 `mode: "read-only"`、`allow_external_network: false`、`allow_repository_writes: false` 和 `allow_shell_execution: false`。`/api/chat` 使用一个更轻量的 `Direct Chat Harness`，复用同一套 model adapter、schema 校验、trace 结构、确定性 fallback 元数据、`memory_used`、待处理的 `memory_suggestions`、输入/检索/输出安全报告和护栏详情。`/api/onboarding` 使用 `Onboarding Harness` 做确定性的计划生成，遵循相同的 trace、安全、护栏、记忆建议和评估可观测性约定。当答案来自可观测的 harness run 时，反馈记录会保留 `harness_run_id`。仓库文件一律被当作不可信证据；检索到的文本永远不会被提升为系统指令。疑似敏感的值（包括 API key、token、密码、凭据和密钥）会在仓库上下文发送给模型之前被脱敏。
 

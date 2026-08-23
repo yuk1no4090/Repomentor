@@ -29,7 +29,7 @@
 | RAG | 分块/检索/查询扩展，回答逐条带文件引用 |
 | Agentic Workflow | LangGraph supervisor 路由、HITL 人工审批、checkpoint 断点续跑、预算与超时控制、结构化输出 |
 | Guardrails | 输入/检索/输出三级安全扫描、敏感信息脱敏、红队测试脚本 |
-| Evals | 内置评估看板 + agent benchmark（5 案例全过）+ 41 条 node:test 单测 + 25 项静态检查门禁 |
+| Evals | 内置评估看板 + agent benchmark（5 案例全过）+ 100 条 node:test 单测 + 27 项静态检查门禁 |
 | 记忆与个性化 | 用户偏好长期记忆（SQLite+FTS+向量）、记忆确认闭环、用户隔离 |
 | 工程素养 | 单文件 6029 行重构为 12 模块（1213 行主文件）、CI、Docker、双语文档、全程测试全绿 |
 

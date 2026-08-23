@@ -291,6 +291,7 @@ npm.cmd test
 ### 已实现的超越版本（2026-08-07）
 
 以下能力原列在第一版边界之外，现已实现：
+- **三模型 Agent 协作**：Supervisor、ImpactAnalyst、QACritic 分别拥有独立 prompt、输出 schema、模型调用审计和确定性 fallback；检索、记忆、安全与综合仍作为确定性工具节点。
 - **Supervisor 动态路由**：`AGENT_GRAPH_MODE=supervisor`（默认），`decideNextRoute()` 确定性规则表驱动，`addConditionalEdges` 实现动态编排。`AGENT_GRAPH_MODE=linear` 一键回退。
 - **Human-in-the-Loop 审核**：`AGENT_HITL_ENABLED=true` 时高风险变更暂停到 `human_review` 节点，通过 `POST /api/langgraph-resume` 提交 approve/reject 决策。
 
@@ -320,4 +321,3 @@ npm.cmd test
 ## 参考依据说明
 
 方案方向参考了 LangGraph 的 workflow/stateful orchestration 模型、OWASP LLM 应用风险中与 prompt injection、敏感信息泄露、过度代理相关的内容，以及 NIST AI RMF 的风险管理思路。项目实现仍以本仓库代码和测试为边界，不宣称获得这些组织的正式遵循认证。
-

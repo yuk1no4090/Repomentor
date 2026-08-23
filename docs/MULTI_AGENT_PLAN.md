@@ -2,7 +2,7 @@
 
 > **场景编号**：scene#17「Agent 应用」
 > **关联 PRD**：V0.3 "supervisor 动态派发 + human-in-the-loop 审核节点"
-> **状态**：P1-P4 已全部实现（2026-08-07）
+> **状态**：P1-P4 已实现；2026-08-23 已升级为 Supervisor + ImpactAnalyst + QACritic 三模型 Agent 架构
 > **创建日期**：2026-08-07
 > **维护人**：AI PM 作品集
 
@@ -12,7 +12,7 @@
 
 | 课程评分点 | 对应章节 | 说明 |
 |---|---|---|
-| 多 Agent 架构设计 | §2 架构设计 | Supervisor + 7 专家 Agent，conditional edges 动态路由 |
+| 多 Agent 架构设计 | §2 架构设计 | 3 个独立模型 Agent + 确定性工具节点 + conditional edges |
 | 角色分工 | §2.2 专家 Agent | 每 Agent 职责、工具子集、输入输出契约 |
 | 通信/协调机制 | §2.3 状态与 handoff | State 字段（handoffs/routeDecisions/hitlRequest）、交接记录 |
 | 演示场景 | §4 演示场景 | 高风险变更提问 → 路由 → HITL → 批准的端到端故事 |
@@ -43,17 +43,14 @@ input_safety → memory → classify → retrieve → expand_context
 
 ### 2.2 专家 Agent 角色划分
 
-将 9 个节点重组为 **7 个专家 Agent**，各配工具子集：
+当前实现只把具有独立 prompt、schema 和模型调用的角色定义为 Agent。其余步骤保留为确定性角色或工具节点：
 
 | # | Agent 名称 | 来自节点 | 核心职责 | 工具子集 | 走 modelAdapter？ |
 |---|---|---|---|---|---|
-| 1 | **SafetyGuard** | input_safety + guardrails | 输入安全扫描 + 输出安全审核 | `safety.scan_input`、`safety_guardrail_agent.validate_output` | 否 |
-| 2 | **MemoryCurator** | memory | 加载用户偏好 / 建议新记忆 | `memory.load_preferences` | 否 |
-| 3 | **Classifier** | classify | 变更分类 + 风险评级 + 路由信号 | 无（纯推理） | 否 |
-| 4 | **Retriever** | retrieve + expand_context | 代码块检索 + 上下文扩展 | `retriever_agent.*`、`context_expander_agent.*` | 否 |
-| 5 | **ImpactAnalyst** | impact_analysis | 影响范围分析 | `impact_analyst_agent.*` | **是（唯一）** |
-| 6 | **QAPlanner** | qa_plan | 生成测试计划 | 无 | 否 |
-| 7 | **Synthesizer** | synthesize | 汇总各 Agent 输出生成最终回答 | 无 | 否 |
+| 1 | **Supervisor** | supervisor | 形成风险假设、选择专家、生成检索计划 | `supervisor_agent.plan_workflow` | **是** |
+| 2 | **ImpactAnalyst** | impact_analysis | 基于仓库证据完成影响范围分析 | `impact_analyst_agent.*` | **是** |
+| 3 | **QACritic** | qa_plan（兼容旧 checkpoint 节点名） | 独立复核引用、遗漏和测试范围 | `qa_critic_agent.*` | **是** |
+| - | SafetyGuard / MemoryCurator / Classifier / Retriever / Synthesizer | 其余节点 | 安全、记忆、分类、检索、格式化 | 对应只读工具 | 否，确定性节点 |
 
 ### 2.3 状态扩展（State Annotation）
 
@@ -89,11 +86,11 @@ Supervisor 读取 state 信号后查表决策：
 | Retriever | retrieved_count < threshold（第 1 次） | Retriever（重试） |
 | Retriever | retrieved_count < threshold（第 2 次） | Synthesizer（检索不足降级） |
 | ImpactAnalyst | riskLevel = "high" 且 HITL 开启 | HumanReview |
-| ImpactAnalyst | riskLevel != "high" 或 HITL 关闭 | QAPlanner |
+| ImpactAnalyst | 始终 | QACritic |
 | HumanReview | decision = "approve" | Synthesizer |
 | HumanReview | decision = "reject" | END |
-| HumanReview | decision = "edit" | QAPlanner（用编辑内容重走后续流程） |
-| QAPlanner | 始终 | Synthesizer |
+| HumanReview | decision = "edit" | 重新执行三 Agent 链路并合并编辑内容 |
+| QACritic | 始终 | SafetyGuard / HumanReview |
 | Synthesizer | 始终 | SafetyGuard（输出安全审核）→ END |
 
 ### 2.5 架构图
@@ -120,7 +117,7 @@ Supervisor 读取 state 信号后查表决策：
                        └──────┬──────┘                                       │
                               │                                               │
                        ┌──────▼──────┐        ┌──────────────┐                │
-                       │  QAPlanner  │───◄────│ HumanReview  │(可选 HITL)     │
+                       │  QACritic   │───────▸│ HumanReview  │(可选 HITL)     │
                        └──────┬──────┘        └──────────────┘                │
                               │                                               │
                        ┌──────▼──────┐                                       │
@@ -228,10 +225,10 @@ Supervisor 读取 state 信号后查表决策：
 > 5. **ImpactAnalyst** 调用 modelAdapter，分析影响范围：auth boundary、所有受保护路由、前端 token 存储
 > 6. supervisor 发现 riskLevel=high → **路由到 HumanReview**，中断等待
 > 7. 审核人看到风险摘要 → 点击"批准"
-> 8. **QAPlanner** 生成测试清单
+> 8. **QACritic** 独立复核并补充测试清单
 > 9. **Synthesizer** 汇总 → **SafetyGuard** 审核输出 → 返回最终回答
 >
-> 泳道面板显示完整 handoff 链路：SafetyGuard → MemoryCurator → Classifier → Retriever → ImpactAnalyst → ⏸ HumanReview → ✅ QAPlanner → Synthesizer → ✅
+> 泳道面板显示完整 handoff 链路：SafetyGuard → Supervisor → MemoryCurator → Classifier → Retriever → ImpactAnalyst → QACritic → SafetyGuard → ⏸ HumanReview → Synthesizer
 
 ---
 

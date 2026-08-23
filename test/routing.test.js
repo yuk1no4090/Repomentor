@@ -31,7 +31,7 @@ function decideNextRouteWithHitlEnabled(state) {
     encoding: "utf8",
     env: { ...process.env, AGENT_HITL_ENABLED: "true" }
   });
-  return JSON.parse(output).result;
+  return JSON.parse(output.trim().split(/\r?\n/).at(-1)).result;
 }
 
 describe("ROUTE_RULES.phaseMap", () => {
@@ -80,10 +80,10 @@ describe("decideNextRoute (ported from check-routing-unit-test.js)", () => {
     assert.equal(decideNextRoute({ trace: [{}, {}, {}, {}, {}, {}, {}, {}, {}], riskLevel: "low" }), "__end__");
   });
 
-  test("phase 6 + high risk + HITL enabled -> human_review", () => {
+  test("phase 8 + high risk + HITL enabled -> human_review after critic and guardrails", () => {
     // Exercises the real AGENT_HITL_ENABLED=true branch via a child process (see
     // decideNextRouteWithHitlEnabled() above for why this can't run in-process).
-    const result = decideNextRouteWithHitlEnabled({ trace: [{}, {}, {}, {}, {}, {}], riskLevel: "high" });
+    const result = decideNextRouteWithHitlEnabled({ trace: [{}, {}, {}, {}, {}, {}, {}, {}], riskLevel: "high" });
     assert.equal(result, "human_review");
   });
 
@@ -102,13 +102,13 @@ describe("decideNextRoute (ported from check-routing-unit-test.js)", () => {
     assert.equal(decideNextRoute(state), "synthesize");
   });
 
-  test("phase 6 + HITL approve -> synthesize", () => {
-    const state = { trace: [{}, {}, {}, {}, {}, {}], riskLevel: "high", hitlRequest: { decision: "approve" } };
+  test("phase 8 + HITL approve -> synthesize", () => {
+    const state = { trace: [{}, {}, {}, {}, {}, {}, {}, {}], riskLevel: "high", hitlRequest: { decision: "approve" } };
     assert.equal(decideNextRoute(state), "synthesize");
   });
 
-  test("phase 6 + HITL reject -> synthesize", () => {
-    const state = { trace: [{}, {}, {}, {}, {}, {}], riskLevel: "high", hitlRequest: { decision: "reject" } };
+  test("phase 8 + HITL reject -> synthesize", () => {
+    const state = { trace: [{}, {}, {}, {}, {}, {}, {}, {}], riskLevel: "high", hitlRequest: { decision: "reject" } };
     assert.equal(decideNextRoute(state), "synthesize");
   });
 
@@ -148,9 +148,9 @@ describe("decideNextRoute boundary cases", () => {
     assert.equal(decideNextRoute(state), "guardrails");
   });
 
-  test("hitlRequest.decision set at a phase other than qa_plan does not override routing", () => {
-    // The decision-skip override only fires when the phaseMap's next node is
-    // "qa_plan"; at phase 2 the next node is "classify", so it is returned as-is.
+  test("hitlRequest.decision does not skip unfinished specialist phases", () => {
+    // A resume decision only bypasses the final HITL gate. Earlier classifier,
+    // retrieval, analyst, and critic work still runs to rebuild current evidence.
     const state = { trace: [{}, {}], riskLevel: "high", hitlRequest: { decision: "approve" } };
     assert.equal(decideNextRoute(state), "classify");
   });

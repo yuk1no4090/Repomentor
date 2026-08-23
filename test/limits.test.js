@@ -197,7 +197,7 @@ function runCheckpointPruneScenario({ totalRuns, maxRuns, dataDir }) {
     encoding: "utf8",
     env: { ...process.env, CHECKPOINT_MAX_RUNS: String(maxRuns), DATA_DIR: dataDir, MEMORY_DB_PATH: path.join(dataDir, "memory.sqlite") }
   });
-  return JSON.parse(output);
+  return JSON.parse(output.trim().split(/\r?\n/).at(-1));
 }
 
 describe("LangGraph checkpoint retention window (lib/checkpoints.js)", () => {

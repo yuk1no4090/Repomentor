@@ -91,9 +91,11 @@ npm run dev
 
 #### 4.3 Agent Tab — 多 Agent 协同工作流
 
-**功能**：展示 7 专家 Agent 的 Supervisor 协同工作流。默认使用 Supervisor 动态路由（`AGENT_GRAPH_MODE=supervisor`），可通过环境变量切回线性模式（`AGENT_GRAPH_MODE=linear`）。
+**功能**：展示 Supervisor、ImpactAnalyst、QACritic 三个模型 Agent 与确定性工具节点的协同工作流。默认使用 Supervisor 路由（`AGENT_GRAPH_MODE=supervisor`），可通过环境变量切回线性模式（`AGENT_GRAPH_MODE=linear`）。
 
-**Agent 角色**：SafetyGuard、MemoryCurator、Classifier、Retriever、ImpactAnalyst、QAPlanner、Synthesizer — 每步 trace 标注 agent_role，handoff 链展示 Agent 间交接流转。
+**模型 Agent**：Supervisor、ImpactAnalyst、QACritic。三者分别拥有独立 prompt、输出 schema、模型调用记录和确定性 fallback。
+
+**确定性角色/工具节点**：SafetyGuard、MemoryCurator、Classifier、Retriever、OnboardingPlanner、Synthesizer、Harness。它们不因出现在 LangGraph node 中就被定义成独立模型 Agent。
 
 **新特性（2026-08-07）**：
 - **Supervisor 路由**：确定性规则表 `ROUTE_RULES` 驱动动态编排，支持 `AGENT_GRAPH_MODE=linear` 一键回退。
@@ -106,13 +108,13 @@ npm run dev
 2. MemoryCurator — 加载已确认偏好，并生成待确认记忆建议
 3. Classifier — 识别改动类型
 4. Retriever — 检索相关 chunks 并扩展依赖上下文
-5. ImpactAnalyst — 调用 LLM 按模块聚合风险（唯一走模型的节点）
+5. ImpactAnalyst — 独立调用 LLM，按仓库证据聚合影响和风险
 6. [human_review] — HITL 启用时，高风险变更暂停等待审批
-7. QAPlanner — 生成回归测试建议
+7. QACritic — 独立调用 LLM，复核引用、遗漏范围和回归测试建议
 8. SafetyGuard — 校验引用、敏感输出、过度自信
 9. Synthesizer — 生成结构化输出
 
-**状态卡**：Agent header 展示 Memory、Harness、Safety 三类状态。Memory 显示已使用偏好和待确认数量；Harness 显示模型模式、步骤数、耗时、fallback、budget、handoff_count；Safety 显示护栏通过或需要复核。
+**状态卡**：Agent header 展示 Memory、Harness、Safety 三类状态。Memory 显示已使用偏好和待确认数量；Harness 显示模型模式、步骤数、耗时、fallback、budget、handoff_count；Safety 显示护栏通过或需要复核。技术详情里的 **Model Agent Calls** 分别展示三个模型 Agent 是否使用 LLM、是否 fallback、模型、耗时和 token 估算。未配置 API key 时三个角色都会走确定性 fallback，该次执行不应描述成真实的多模型 Agent 协作。
 
 **面试价值**：展示 Supervisor 动态路由 / Agent 角色分工 / conditional edges / Handoff 机制 / HITL 人在回路 / trace / guardrails / structured output 等 Agent 工程核心理念。
 

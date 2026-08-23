@@ -34,14 +34,15 @@ for (const tool of tools) {
   roleMap.get(tool.agent_role).push(tool.name);
 }
 
-// Expected core agents (7 from the multi-agent plan + OnboardingPlanner + Harness)
+// Three model-backed agents plus deterministic specialist/tool roles.
 const expectedRoles = [
   "SafetyGuard",
+  "Supervisor",
   "MemoryCurator",
   "Classifier",
   "Retriever",
   "ImpactAnalyst",
-  "QAPlanner",
+  "QACritic",
   "Synthesizer",
   "OnboardingPlanner", // separate from the 7, used by /api/onboarding
   "Harness"            // harness fallback tool
@@ -98,8 +99,17 @@ if (!serverSource.includes("agent_role")) {
 if (!serverSource.includes("agent_roster:")) {
   throw new Error("MULTI_AGENT_ROLES: finalPayload missing 'agent_roster' field.");
 }
+if (!serverSource.includes("model_calls:") || !serverSource.includes("runAgentModelAdapter")) {
+  throw new Error("MULTI_AGENT_ROLES: model-backed agent calls are not exposed through the harness.");
+}
+for (const role of ["Supervisor", "ImpactAnalyst", "QACritic"]) {
+  if (!serverSource.includes(`role: "${role}"`)) {
+    throw new Error(`MULTI_AGENT_ROLES: missing independent model contract for ${role}.`);
+  }
+}
 
 console.log("[OK] State annotation includes multi-agent fields (handoffs, agentRoster).");
 console.log("[OK] makeTraceStep() supports agent_role.");
 console.log("[OK] finalPayload includes agent_roster.");
+console.log("[OK] Supervisor, ImpactAnalyst, and QACritic have model contracts and observable calls.");
 console.log("[PASS] All multi-agent role checks passed.");

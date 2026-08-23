@@ -4,7 +4,7 @@ This document records the first production-shaped implementation boundary for th
 
 ## Scope
 
-- The agent workflow is implemented as a LangGraph `StateGraph`.
+- The impact workflow is implemented as a LangGraph `StateGraph` with three model-backed agents: Supervisor, ImpactAnalyst, and QACritic.
 - The LangGraph workflow runs with `MemorySaver` checkpointing and persists checkpoint summaries plus sanitized executable checkpoint payloads to SQLite.
 - The first memory module is user preference memory only.
 - The harness is the runtime boundary around model calls, graph execution, tool policy, budgets, trace, schema validation, fallback, and errors.
@@ -14,7 +14,7 @@ This document records the first production-shaped implementation boundary for th
 
 `server.js` is now a thin HTTP layer only: `handleApi`/`handleApiUnlocked` route dispatch, `serveStatic`, a small number of helpers that stay coupled to routing (`sendJson`, `readBody`, `findHarnessRunAudit`), and process bootstrap (wiring `setStoreRecordNormalizers()` / `setCheckpointCollaborators()`, `http.createServer`, graceful shutdown). It shrank from 6,029 lines to roughly 1,200 lines across three decomposition passes — a storage-layer pass, then two domain-layer passes — that moved logic into `lib/` with no behavior changes.
 
-All application logic lives in 12 single-purpose modules under `lib/`:
+All application logic lives in 13 single-purpose modules under `lib/`:
 
 - `lib/config.js` — env loading, all configuration constants, and the shared `apiError`/`normalizeUserId` helpers.
 - `lib/store.js` — `ensureStore`/`saveStore`/`normalizeStore`/`backupCorruptStore`/`withWriteLock`, plus a resident in-memory store cache keyed on an `fs.stat` mtime+size signature.
@@ -24,16 +24,17 @@ All application logic lives in 12 single-purpose modules under `lib/`:
 - `lib/importer.js` — repository import: ZIP parsing, GitHub fetch, `createProject`, tech-stack/tree inference, and import-time safety scanning.
 - `lib/retrieval.js` — tokenization, query expansion, file chunking, and chunk retrieval.
 - `lib/safety.js` — input, retrieval, and output safety scanning and redaction.
-- `lib/llm.js` — model provider resolution and `runModelAdapter()`.
+- `lib/llm.js` — model provider resolution, the direct-chat `runModelAdapter()`, and role-aware `runAgentModelAdapter()` calls.
+- `lib/agent-contracts.js` — independent Supervisor/ImpactAnalyst/QACritic prompts, output validators, evidence constraints, and deterministic per-agent fallbacks.
 - `lib/answers.js` — the QA/impact/onboarding deterministic answer generators, preference apply/CRUD, and memory suggestion generation.
 - `lib/agent-graph.js` — `decideNextRoute`/`ROUTE_RULES`, trace and tool-registry helpers, the harness report builders (`buildAgentHarnessReport`, `buildChatHarnessReport`, `buildOnboardingHarnessReport`), the `StateGraph` node definitions, and `runAgenticImpactWorkflow`.
 - `lib/metrics.js` — `computeMetrics()` and `FEEDBACK_TYPES`.
 
-Dependencies between `lib/` modules are unidirectional and acyclic: `lib/agent-graph.js` depends on `lib/llm.js`, `lib/answers.js`, `lib/retrieval.js`, `lib/safety.js`, `lib/memory-db.js`, and `lib/checkpoints.js`; `lib/answers.js` depends on `lib/memory-db.js` (only `normalizeMemorySuggestion`); `lib/metrics.js` depends on `lib/agent-graph.js` (reusing `createHarnessRunSnapshot`) plus `lib/memory-db.js`, `lib/checkpoints.js`, and `lib/safety.js`; `lib/importer.js` depends on `lib/retrieval.js` and `lib/safety.js`; `lib/llm.js` depends only on `lib/config.js` and `lib/safety.js`. No `lib/` module imports back up toward `server.js`.
+Dependencies between `lib/` modules are unidirectional and acyclic: `lib/agent-graph.js` depends on `lib/agent-contracts.js`, `lib/llm.js`, `lib/answers.js`, `lib/retrieval.js`, `lib/safety.js`, `lib/memory-db.js`, and `lib/checkpoints.js`; `lib/answers.js` depends on `lib/memory-db.js` (only `normalizeMemorySuggestion`); `lib/metrics.js` depends on `lib/agent-graph.js` (reusing `createHarnessRunSnapshot`) plus `lib/memory-db.js`, `lib/checkpoints.js`, and `lib/safety.js`; `lib/importer.js` depends on `lib/retrieval.js` and `lib/safety.js`; `lib/llm.js` depends only on `lib/config.js` and `lib/safety.js`; `lib/agent-contracts.js` is dependency-free. No `lib/` module imports back up toward `server.js`.
 
 Two injection points keep `lib/store.js` and `lib/checkpoints.js` decoupled from the domain modules that own the record shapes they normalize or the handlers they call, avoiding circular imports: `server.js` imports the actual normalizer functions from `lib/auth.js`, `lib/answers.js`, `lib/agent-graph.js`, and `lib/memory-db.js`, then calls `setStoreRecordNormalizers()` once at bootstrap; `setCheckpointCollaborators()` similarly injects `findProject`, `findHarnessRunAudit`, and `runAgenticImpactWorkflow` (from `lib/agent-graph.js`) into `lib/checkpoints.js` before the HTTP server starts.
 
-A `test/` directory holds pure-function unit tests on Node's built-in `node:test` runner (`routing.test.js`, `safety.test.js`, `retrieval.test.js`; 41 cases total) that import and exercise the real functions exported by `lib/agent-graph.js`, `lib/safety.js`, and `lib/retrieval.js` directly, instead of re-implementing the logic under test. `scripts/check-unit-tests.js` runs `node --test test/**/*.js` and is picked up automatically by `static-checks.js`'s `scripts/check-*.js` auto-discovery, so it participates in `npm test` with no separate wiring.
+A `test/` directory holds 100 pure-function/unit cases on Node's built-in `node:test` runner, including routing, safety, retrieval, Agent contracts, checkpoint retention, preference purity, briefing, frontend import helpers, and workflow timeout behavior. Tests import and exercise the real exported functions instead of re-implementing logic mirrors. `scripts/check-unit-tests.js` runs `node --test test/**/*.js` and is picked up automatically by `static-checks.js`'s `scripts/check-*.js` auto-discovery, so it participates in `npm test` with no separate wiring.
 
 ## Graph Nodes
 
@@ -47,14 +48,14 @@ START → supervisor
   supervisor → (conditional) → retrieve
   supervisor → (conditional) → expand_context
   supervisor → (conditional) → impact_analysis
-  supervisor → (conditional) → human_review  (when HITL enabled + riskLevel=high)
-  supervisor → (conditional) → qa_plan
+  supervisor → (conditional) → qa_plan  (checkpoint-compatible node name; runs QACritic)
   supervisor → (conditional) → guardrails
+  supervisor → (conditional) → human_review  (after QACritic + guardrails when HITL enabled + riskLevel=high)
   supervisor → (conditional) → synthesize
   supervisor → (conditional) → END
 ```
 
-The `supervisor` node calls `decideNextRoute(state)` — a deterministic pure function based on `state.trace.length` and state signals (riskLevel, hitlRequest, AGENT_HITL_ENABLED). It appends `routeDecisions` and `handoffs` records to state.
+After `input_safety` passes, the `supervisor` node invokes the Supervisor model agent once to produce `supervisorPlan` (risk hypothesis, required agents, retrieval queries, HITL recommendation). The plan changes the Retriever query. Later supervisor visits use deterministic `decideNextRoute(state)` based on graph phase and state signals so routing stays bounded and testable. The ImpactAnalyst then makes its own model call against repository evidence, and the `qa_plan` node retains its checkpoint-compatible name while acting as the independently prompted QACritic model agent. Each role has a separate schema and deterministic fallback.
 
 ### Linear fallback (`AGENT_GRAPH_MODE=linear`)
 
@@ -114,7 +115,7 @@ The normalized JSON store includes `authUsers`, derived from configured token id
 
 ## modelAdapter
 
-`runModelAdapter()` is the only agent model boundary.
+`runModelAdapter()` remains the direct-chat model boundary. `runAgentModelAdapter()` is the role-aware boundary for Supervisor, ImpactAnalyst, and QACritic; it adds the role contract, specialist input, role-specific schema validation, and `agent_role` audit metadata while reusing the same OpenAI-compatible transport and safety rules.
 
 It supports OpenAI-compatible chat completions through:
 
@@ -128,7 +129,7 @@ If no API key is configured, the model adapter reports deterministic offline ret
 
 ## agentHarness
 
-`buildAgentHarnessReport()` creates the public harness payload for `/api/agent-impact`.
+`buildAgentHarnessReport()` creates the public harness payload for `/api/agent-impact`. Its backward-compatible `model_adapter` field summarizes ImpactAnalyst, while `model_calls` records every Supervisor, ImpactAnalyst, and QACritic attempt independently, including role, provider, model, schema/fallback result, duration, and estimated prompt tokens.
 
 Agent workflow execution uses `MemorySaver` from `@langchain/langgraph-checkpoint` with `thread_id` set to the harness `run_id`. Runtime `store` and full project objects are not graph-state channels; nodes access them through the runtime closure so executable checkpoint payloads do not serialize auth users, token hashes, or the whole JSON store. After execution, checkpoint tuple summaries are persisted into SQLite under `langgraph_checkpoints`, while the serialized MemorySaver storage/writes snapshot is persisted under `langgraph_checkpoint_payloads`. Persisted summary rows store metadata, compact state summaries, and a bounded resume input snapshot (`projectId`, question, user id, source run id). Audits can inspect checkpoint lineage, source, node, trace-step count, memory usage, and safety status without duplicating the full answer payload.
 
@@ -235,7 +236,7 @@ The current version intentionally does not include:
 
 - **Supervisor routing**: `AGENT_GRAPH_MODE=supervisor` (default) uses a deterministic `decideNextRoute()` function with `addConditionalEdges` for dynamic agent orchestration. Set `AGENT_GRAPH_MODE=linear` to fall back to the original 9-node linear pipeline.
 - **Human-in-the-loop (HITL)**: Enable with `AGENT_HITL_ENABLED=true`. High-risk (`riskLevel="high"`) changes are paused at a `human_review` node and resumed via `POST /api/langgraph-resume` with `{ decision: "approve"|"reject" }`.
-- **Agent role metadata**: All 11 tools in `AGENT_TOOL_REGISTRY` carry `agent_role` fields mapping to 9 agent roles (SafetyGuard, MemoryCurator, Classifier, Retriever, ImpactAnalyst, QAPlanner, OnboardingPlanner, Synthesizer, Harness). Trace steps, handoffs, and an agent roster are returned in API payloads.
+- **Agent boundaries**: Supervisor, ImpactAnalyst, and QACritic have independent prompts, schemas, model calls, and fallbacks. SafetyGuard, MemoryCurator, Classifier, Retriever, OnboardingPlanner, Synthesizer, and Harness remain deterministic roles or infrastructure. Trace steps, model calls, handoffs, and an agent roster are returned in API payloads.
 
 ## Verification Gates
 
@@ -251,7 +252,7 @@ Static checks cover:
 - locale key sync
 - text quality
 - agent benchmark contract
-- pure-function unit tests under `test/` (`node --test test/**/*.js`, 41 cases covering routing, safety, and retrieval)
+- unit tests under `test/` (`node --test test/**/*.js`, 100 cases across nine test files)
 
 Smoke tests cover:
 

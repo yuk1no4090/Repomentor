@@ -201,6 +201,7 @@ function startFakeLlmServer() {
     }
     const requestBody = rawBody ? JSON.parse(rawBody) : {};
     const userContent = requestBody.messages?.find((message) => message.role === "user")?.content || "";
+    const systemContent = requestBody.messages?.find((message) => message.role === "system")?.content || "";
     userContents.push(userContent);
     if (userContent.includes("timeout validation")) {
       await new Promise((resolve) => setTimeout(resolve, 500));
@@ -249,7 +250,31 @@ function startFakeLlmServer() {
       testing_suggestions: ["Confirm every impact area needs its own cited files."],
       open_questions: ["Which repository files support this impact area?"]
     };
-    const responsePayload = userContent.includes("missing citation validation")
+    const supervisorPayload = {
+      intent: "impact_analysis",
+      risk_hypothesis: "medium",
+      required_agents: ["ImpactAnalyst", "QACritic"],
+      retrieval_queries: ["order status model service tests"],
+      require_human_review: false,
+      rationale: "Use repository evidence, then require an independent critic review."
+    };
+    const criticPayload = {
+      verdict: "approve",
+      summary: "The assessment has enough file-level evidence for the smoke scenario.",
+      findings: [{
+        severity: "low",
+        finding: "Runtime dependencies still require regression validation.",
+        evidence_files: ["src/models/order.ts"]
+      }],
+      testing_suggestions: ["Exercise the cited order model through success and failure paths."],
+      open_questions: [],
+      additional_queries: []
+    };
+    const responsePayload = systemContent.includes("You are the Supervisor agent")
+      ? supervisorPayload
+      : systemContent.includes("You are the QACritic agent")
+        ? criticPayload
+        : userContent.includes("missing citation validation")
       ? missingCitationPayload
       : userContent.includes("sensitive output validation")
         ? sensitiveOutputPayload
@@ -336,6 +361,9 @@ async function runLlmSchemaFallbackSmoke() {
     assert(result.payload.harness.schema_valid === false, "invalid schema should be reported as schema invalid");
     assert(result.payload.harness.model_adapter.schema_errors.some((item) => item.includes("risk_level")), "schema errors should include invalid risk level");
     assert(result.payload.harness.model_adapter.schema_errors.some((item) => item.includes("testing_suggestions")), "schema errors should include invalid testing suggestions");
+    assert(result.payload.harness.model_calls?.length === 3, "fake LLM run should call all three model agents");
+    assert(result.payload.harness.model_calls.find((call) => call.agent_role === "Supervisor")?.llm_used === true, "Supervisor fake response should pass schema validation");
+    assert(result.payload.harness.model_calls.find((call) => call.agent_role === "QACritic")?.llm_used === true, "QACritic fake response should pass schema validation");
     assert(result.payload.harness.errors.some((item) => item.includes("model_adapter schema:")), "harness errors should include schema validation details");
     const missingCitation = await requestTo(baseUrl, "/api/agent-impact", {
       method: "POST",
@@ -823,6 +851,10 @@ async function main() {
     assert(agent.payload.harness.model_adapter.llm_attempted === false, "offline model adapter should not attempt LLM call");
     assert(agent.payload.harness.model_adapter.llm_used === false, "offline model adapter should not report LLM use");
     assert(Array.isArray(agent.payload.harness.model_adapter.schema_errors), "model adapter schema errors should be an array");
+    assert(agent.payload.harness.model_calls?.length === 3, "impact workflow should expose Supervisor, ImpactAnalyst, and QACritic model calls");
+    assert(agent.payload.harness.model_calls.map((call) => call.agent_role).join(",") === "Supervisor,ImpactAnalyst,QACritic", "model call roles are incomplete or out of order");
+    assert(agent.payload.supervisor_plan?.required_agents?.includes("QACritic"), "supervisor plan should require QACritic");
+    assert(["approve", "revise"].includes(agent.payload.critic_review?.verdict), "critic review verdict missing");
     assert(agent.payload?.harness?.fallback_used === true, "offline smoke test should report fallback use");
     assert(agent.payload.harness.fallback_reason.includes("OPENAI_API_KEY"), "offline fallback reason should mention missing API key");
     assert(agent.payload?.harness?.schema_valid === true, "harness schema status should be valid");
@@ -864,6 +896,8 @@ async function main() {
     assert(agent.payload.handoffs.every((h) => h.sender && h.recipient), "handoff entry missing sender or recipient");
     assert(agent.payload.agent_roster && Object.keys(agent.payload.agent_roster).length >= 7, "agent_roster should have >= 7 roles");
     assert(agent.payload.agent_roster.SafetyGuard && agent.payload.agent_roster.SafetyGuard.length >= 1, "agent_roster missing SafetyGuard tools");
+    assert(agent.payload.agent_roster.Supervisor?.length >= 1, "agent_roster missing Supervisor tool");
+    assert(agent.payload.agent_roster.QACritic?.length >= 1, "agent_roster missing QACritic tool");
     assert(typeof agent.payload.harness.handoff_count === "number" && agent.payload.harness.handoff_count >= 8, "harness handoff_count should be >= 8");
     const agentRunAudit = await request(`/api/harness-run?projectId=${encodeURIComponent(projectId)}&runId=${encodeURIComponent(agent.payload.harness.run_id)}`);
     assert(agentRunAudit.run.run_id === agent.payload.harness.run_id, "harness run audit returned wrong run id");
