@@ -34,7 +34,7 @@ Dependencies between `lib/` modules are unidirectional and acyclic: `lib/agent-g
 
 Two injection points keep `lib/store.js` and `lib/checkpoints.js` decoupled from the domain modules that own the record shapes they normalize or the handlers they call, avoiding circular imports: `server.js` imports the actual normalizer functions from `lib/auth.js`, `lib/answers.js`, `lib/agent-graph.js`, and `lib/memory-db.js`, then calls `setStoreRecordNormalizers()` once at bootstrap; `setCheckpointCollaborators()` similarly injects `findProject`, `findHarnessRunAudit`, and `runAgenticImpactWorkflow` (from `lib/agent-graph.js`) into `lib/checkpoints.js` before the HTTP server starts.
 
-A `test/` directory holds 100 pure-function/unit cases on Node's built-in `node:test` runner, including routing, safety, retrieval, Agent contracts, checkpoint retention, preference purity, briefing, frontend import helpers, and workflow timeout behavior. Tests import and exercise the real exported functions instead of re-implementing logic mirrors. `scripts/check-unit-tests.js` runs `node --test test/**/*.js` and is picked up automatically by `static-checks.js`'s `scripts/check-*.js` auto-discovery, so it participates in `npm test` with no separate wiring.
+A `test/` directory holds 134 pure-function/unit cases on Node's built-in `node:test` runner, including routing (including the bounded QACritic revise loop), safety, retrieval, Agent contracts, checkpoint retention, preference purity, briefing, frontend import helpers, and workflow timeout behavior. Tests import and exercise the real exported functions instead of re-implementing logic mirrors. `scripts/check-unit-tests.js` runs `node --test test/**/*.js` and is picked up automatically by `static-checks.js`'s `scripts/check-*.js` auto-discovery, so it participates in `npm test` with no separate wiring.
 
 ## Graph Nodes
 
@@ -45,10 +45,11 @@ START → supervisor
   supervisor → (conditional) → input_safety
   supervisor → (conditional) → memory
   supervisor → (conditional) → classify
-  supervisor → (conditional) → retrieve
-  supervisor → (conditional) → expand_context
-  supervisor → (conditional) → impact_analysis
-  supervisor → (conditional) → qa_plan  (checkpoint-compatible node name; runs QACritic)
+  supervisor → (conditional) → retrieve  ─┐  (re-entered for a bounded QACritic revise round)
+  supervisor → (conditional) → expand_context  │
+  supervisor → (conditional) → impact_analysis │
+  supervisor → (conditional) → qa_plan  ───────┘  (checkpoint-compatible node name; runs QACritic)
+    qa_plan verdict="revise" (and revisionRound < AGENT_MAX_REVISION_ROUNDS) → loops back to retrieve
   supervisor → (conditional) → guardrails
   supervisor → (conditional) → human_review  (after QACritic + guardrails when HITL enabled + riskLevel=high)
   supervisor → (conditional) → synthesize
@@ -56,6 +57,23 @@ START → supervisor
 ```
 
 After `input_safety` passes, the `supervisor` node invokes the Supervisor model agent once to produce `supervisorPlan` (risk hypothesis, required agents, retrieval queries, HITL recommendation). The plan changes the Retriever query. Later supervisor visits use deterministic `decideNextRoute(state)` based on graph phase and state signals so routing stays bounded and testable. The ImpactAnalyst then makes its own model call against repository evidence, and the `qa_plan` node retains its checkpoint-compatible name while acting as the independently prompted QACritic model agent. Each role has a separate schema and deterministic fallback.
+
+#### The bounded QACritic revise cycle (the graph's one genuine loop)
+
+Every other transition in this graph is a straight, acyclic walk through `ROUTE_RULES.phaseMap`'s 9 phases — the kind of thing a plain `for` loop could drive without a graph framework. The `retrieve ⇄ qa_plan` cycle is the exception, and the reason this workflow is a graph at all: `qa_plan` (QACritic) can send execution back to `retrieve` for one more evidence-gathering pass instead of always advancing to `guardrails`.
+
+- **Trigger**: `qa_plan` returns `qaReview.verdict === "revise"` (the deterministic critic sets this when `impact.impact_areas` comes back empty, or when any impact area lacks cited files).
+- **Bound**: `AGENT_MAX_REVISION_ROUNDS` (env-configurable via `parseNonNegativeIntegerEnv`, default `1`; `0` disables the loop entirely). `decideNextRoute` only takes the `retrieve` branch while `state.revisionRound < AGENT_MAX_REVISION_ROUNDS`; once the budget is spent, a persisting `"revise"` verdict is reported to the user instead of looping again — the run always completes.
+- **Loop target and payload**: the loop always re-enters at `retrieve`, not `impact_analysis`, specifically so `qaReview.additional_queries` (previously dead data — nothing routed on `verdict` or read `additional_queries` before this) can be folded into the next retrieval pass. `retrieve` itself detects a revise-round re-entry (`state.qaReview?.verdict === "revise"`) and bumps `state.revisionRound` as part of the same state update that appends its own trace step — that single atomic update is what keeps the phase cursor (below) correct.
+- **Phase-cursor-vs-cycle**: `decideNextRoute`'s `phase` used to be exactly `state.trace.length`, which stays aligned with `phaseMap` only while the walk is strictly monotonic. A revise round re-runs 4 already-counted phase-map nodes (`retrieve`, `expand_context`, `impact_analysis`, `qa_plan`), so `trace.length` overshoots `phaseMap`'s indices afterward. `phase` is computed as `state.trace.length - (state.revisionRound || 0) * REVISION_ROUND_NODE_COUNT` (`REVISION_ROUND_NODE_COUNT = 4`) — an offset subtracted per completed revise round — so `phase` keeps meaning "how far along the original 9-phase walk" even after a loop, without a second parallel cursor channel to keep in sync.
+- **Precedence**: the revise check sits strictly after the `finalPayload → END` and post-`human_review → synthesize` guards (so it can never preempt either) and strictly before the generic `phaseMap` lookup (so it only overrides the one `qa_plan → guardrails` transition).
+- **Observability**: `harness.revision_rounds`, `harness.revision_max_rounds`, `harness.revision_reason`, `harness.revision_budget_exhausted`, and `harness.revision_metrics` (`pre_revision_impact_area_count`, `pre_revision_uncited_area_count`, `final_impact_area_count`, `final_uncited_area_count`) make the loop's mechanics (did it run, how many rounds, was the budget exhausted, did the cited-evidence count change) inspectable on every answer, whether or not the round actually resolved anything.
+- **What `scripts/check-revise-loop.js` does and does not prove**: it is a mechanism proof, not a general answer-quality claim. Offline (no API key), the deterministic critic (`createDeterministicQaCriticReview`) can only return `verdict="revise"` when `impact.impact_areas` comes back completely empty — the deterministic impact generator never emits a non-empty area without files, so an "uncited-but-present" area is not reachable this way, and `uncited_area_count` is `0` before and after in every offline scenario. The script proves the graph genuinely cycles, that the critic's `additional_queries` genuinely reach the next retrieval pass (not dead data), and that the loop terminates on budget even when the critic never approves — plus, in one deliberately constructed fixture (a project with exactly one file discoverable only via the critic's own fixed query, not via the Supervisor's queries or the original question), that the revise round can find evidence the first pass structurally could not. That one fixture's `pre_revision_impact_area_count(0) < final_impact_area_count(1)` result is a property of how the fixture was built, not a measurement of how often real-world revise rounds improve coverage.
+- **LangGraph's own `recursionLimit`**: because supervisor mode routes every real node back through the `supervisor` hub, one 9-phase walk already costs ~19 supersteps, and each revise round adds ~8 more. `AGENT_MAX_STEPS` has no relationship to this — it only bounds the harness's own reported trace-length budget — so `recursionLimit` must scale with `AGENT_MAX_REVISION_ROUNDS` instead (the thing that actually grows LangGraph's superstep count). `computeGraphRecursionLimit(AGENT_MAX_REVISION_ROUNDS)` derives it from an explicit superstep cost model (19 baseline + 8 per configured revise round + 2 for `human_review` + a 6-step margin); `runAgenticImpactWorkflow` passes `recursionLimit: computeGraphRecursionLimit(AGENT_MAX_REVISION_ROUNDS)` to `graph.invoke()`. `decideNextRoute`'s own `AGENT_MAX_REVISION_ROUNDS` bound remains the actual termination guarantee — this just keeps LangGraph's separate, lower-level ceiling from ever being the thing that cuts a legitimately bounded run short. `AGENT_BUDGETS.max_steps`'s own `step_budget_exceeded` flag is computed against an `effective_max_steps` (`AGENT_BUDGETS.max_steps + REVISION_ROUND_NODE_COUNT * AGENT_MAX_REVISION_ROUNDS`) for the same reason — a healthy run that used its configured revise-round budget must not be mislabeled as having exceeded it. `scripts/check-recursion-limit-scaling.js` proves both scale correctly at `AGENT_MAX_REVISION_ROUNDS` = 0, 1, 2, and 3.
+
+#### Per-query retrieval (retrieve node)
+
+`retrieve` calls `retrieveChunks()` once **per planned query** (the original question, the Supervisor's `retrieval_queries`, and — on a revise round — the QACritic's `additional_queries`) instead of joining every query into one bag-of-words string. The planned-query list is de-duplicated (`[...new Set(...)]`) before retrieval: `createDeterministicSupervisorPlan()` already puts the original question text as `retrieval_queries[0]`, so without de-duplication the question would be retrieved twice with byte-identical queries — wasted work, and a direct contradiction of "every query gets an equal turn" (a query present twice gets two turns). The per-query result lists are merged with a deterministic round-robin interleave (`interleaveChunks()`, deduped by `chunk.id`, capped at 8 — the same size the old single joined-query call produced). Joining N queries into one string dilutes each query's own discriminative terms in `lib/retrieval.js`'s TF-like scorer (term counts, phrase bonus, and path bonus are all computed against the merged term set), so a term that would rank a file #1 for its own query can get buried under terms from unrelated queries; retrieving each query independently preserves that query's intent, and round-robin interleaving (rather than concatenation or a raw cross-query score merge) guarantees no single query dominates the merged result just by scoring more chunks highly. This is a synchronous, in-memory, zero-I/O merge, so it deliberately does not use LangGraph's `Send`/fan-out API — there is nothing to parallelize.
 
 ### Linear fallback (`AGENT_GRAPH_MODE=linear`)
 
@@ -163,9 +181,10 @@ The harness reports:
 - fallback status
 - fallback reason
 - schema status
-- budgets
-- budget status
+- budgets (including `max_revision_rounds`)
+- budget status (including `effective_max_steps`, a revision-aware step ceiling — see "LangGraph `recursionLimit` and step budget scale with `AGENT_MAX_REVISION_ROUNDS`" below)
 - estimated context token usage
+- bounded QACritic revise-loop metrics (`revision_rounds`, `revision_max_rounds`, `revision_reason`, `revision_budget_exhausted`, `revision_metrics`)
 - read-only tool registry
 - errors
 
@@ -246,6 +265,12 @@ The current version intentionally does not include:
 - **Human-in-the-loop (HITL)**: Enable with `AGENT_HITL_ENABLED=true`. High-risk (`riskLevel="high"`) changes call LangGraph's native `interrupt()` inside the `human_review` node, which genuinely pauses graph execution mid-run (the pregel loop persists the checkpoint and `graph.invoke()` returns with `__interrupt__` set instead of a `finalPayload`) — not a soft "paused" flag that a still-running graph continues past. Resume via `POST /api/langgraph-resume` with `{ decision: "approve"|"reject" }`; see the `harness.resume.mode` table above for the three resume paths (`native_interrupt_resume` is the common case — it resumes the same paused execution via `Command({ resume: decision })` instead of re-running the graph from phase 0).
 - **Agent boundaries**: Supervisor, ImpactAnalyst, and QACritic have independent prompts, schemas, model calls, and fallbacks. SafetyGuard, MemoryCurator, Classifier, Retriever, OnboardingPlanner, Synthesizer, and Harness remain deterministic roles or infrastructure. Trace steps, model calls, handoffs, and an agent roster are returned in API payloads.
 
+## What's New (2026-08-25)
+
+- **Bounded QACritic revise cycle**: the graph now has a real cycle. `qa_plan` (QACritic) returning `verdict="revise"` routes back to `retrieve` for one more retrieve→expand_context→impact_analysis→qa_plan round, bounded by `AGENT_MAX_REVISION_ROUNDS` (default `1`, `0` disables it). See "The bounded QACritic revise cycle" above for the trigger, bound, loop target, phase-cursor fix, and precedence rules; see "What `scripts/check-revise-loop.js` does and does not prove" above for exactly what its offline, no-API-key proof does (and does not) demonstrate. `scripts/check-revise-hitl-cross.js` additionally proves the loop composes correctly with the L1 HITL pause/resume path (a revise round resolving before a high-risk pause, then a correct resume).
+- **Per-query retrieval**: `retrieve` now calls `retrieveChunks()` once per planned query (question, Supervisor `retrieval_queries`, and — on a revise round — the QACritic's `additional_queries`) and merges the per-query result lists with a deterministic round-robin interleave, instead of joining every query into one string. See "Per-query retrieval (retrieve node)" above.
+- **LangGraph `recursionLimit` and step budget scale with `AGENT_MAX_REVISION_ROUNDS`**: the supervisor-hub topology plus each revise round pushes total supersteps past LangGraph's default `recursionLimit` of 25. `computeGraphRecursionLimit(AGENT_MAX_REVISION_ROUNDS)` derives the limit from an explicit superstep cost model instead of a value derived from the unrelated `AGENT_MAX_STEPS`; `budget_status.step_budget_exceeded` similarly compares against a revision-aware `effective_max_steps` instead of the raw single-pass `AGENT_BUDGETS.max_steps`, so a healthy run that used its configured revise-round budget is not mislabeled as over budget. `scripts/check-recursion-limit-scaling.js` proves both at `AGENT_MAX_REVISION_ROUNDS` = 0, 1, 2, 3.
+
 ## Verification Gates
 
 `npm test` runs static checks, smoke tests, UI acceptance tests, safety red-team tests, memory compaction tests, user memory isolation tests, auth boundary tests, embedding provider tests, and the agent benchmark.
@@ -260,7 +285,10 @@ Static checks cover:
 - locale key sync
 - text quality
 - agent benchmark contract
-- unit tests under `test/` (`node --test test/**/*.js`, 100 cases across nine test files)
+- unit tests under `test/` (`node --test test/**/*.js`, 134 cases across nine test files)
+- bounded QACritic revise-loop mechanism (`scripts/check-revise-loop.js`): offline, no-API-key proof that a revise verdict loops back to `retrieve`, folds `additional_queries` into the next retrieval pass, resolves in a constructed fixture (or exhausts its round budget and still terminates in another) — see "What it does and does not prove" above
+- revise loop × HITL cross-feature regression (`scripts/check-revise-hitl-cross.js`): a fake-LLM-backed fixture (the deterministic critic cannot produce "revise" and a cited high-risk area at the same time) proving a revise round can resolve, then a high-risk pause via native `interrupt()`, then a decision resume, still compose correctly through the SAME `decideNextRoute` and persisted graph state
+- `AGENT_MAX_REVISION_ROUNDS` scaling for LangGraph's `recursionLimit` and the effective step budget (`scripts/check-recursion-limit-scaling.js`): runs the same offline, perpetually-revising fixture at `AGENT_MAX_REVISION_ROUNDS` = 0, 1, 2, 3, asserting no recursion-limit error and no false `step_budget_exceeded` at any setting
 
 Smoke tests cover:
 

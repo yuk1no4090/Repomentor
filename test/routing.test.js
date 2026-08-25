@@ -160,3 +160,91 @@ describe("decideNextRoute boundary cases", () => {
     assert.equal(decideNextRoute(state), "qa_plan");
   });
 });
+
+// ── Bounded QACritic revise cycle (Task L3, Part B) ──
+// After qa_plan (phase 6) runs, the supervisor would normally hand off to
+// "guardrails" (phase 7). A verdict="revise" loops back to "retrieve" instead,
+// bounded by AGENT_MAX_REVISION_ROUNDS (default 1, unset in this process so the
+// default applies) and state.revisionRound (bumped by the "retrieve" node
+// itself on re-entry, never by decideNextRoute).
+describe("decideNextRoute QACritic revise loop", () => {
+  test("verdict=revise at the qa_plan->guardrails transition loops back to retrieve", () => {
+    const state = {
+      trace: [{}, {}, {}, {}, {}, {}, {}], // trace.length 7 -> phase 7 -> would be "guardrails"
+      riskLevel: "low",
+      qaReview: { verdict: "revise", additional_queries: ["dependency callers tests"] }
+    };
+    assert.equal(decideNextRoute(state), "retrieve");
+  });
+
+  test("verdict=revise is ignored once the round budget is exhausted (revisionRound >= AGENT_MAX_REVISION_ROUNDS)", () => {
+    // Default AGENT_MAX_REVISION_ROUNDS is 1 in this process (unset env), so a
+    // state that already recorded 1 completed round must not loop again, even
+    // though the critic is still asking for revision -- this is what proves the
+    // loop terminates instead of looping forever.
+    const state = {
+      trace: [{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}], // trace.length 11, revisionRound 1 -> phase 11-4=7
+      riskLevel: "low",
+      qaReview: { verdict: "revise", additional_queries: ["dependency callers tests"] },
+      revisionRound: 1
+    };
+    assert.equal(decideNextRoute(state), "guardrails");
+  });
+
+  test("verdict=revise cannot preempt the finalPayload -> END guard", () => {
+    const state = {
+      trace: [{}, {}, {}, {}, {}, {}, {}],
+      riskLevel: "low",
+      qaReview: { verdict: "revise", additional_queries: [] },
+      finalPayload: {}
+    };
+    assert.equal(decideNextRoute(state), "__end__");
+  });
+
+  test("verdict=revise cannot preempt the post-human_review HITL gate", () => {
+    // Same phase position (7) and the same revisable qaReview as the first test
+    // above, but hitlRequest.node/riskLevel also satisfy the HITL post-review
+    // check, which sits earlier in decideNextRoute and must win.
+    const state = {
+      trace: [{}, {}, {}, {}, {}, {}, {}],
+      riskLevel: "high",
+      hitlRequest: { node: "human_review", decision: null },
+      qaReview: { verdict: "revise", additional_queries: ["dependency callers tests"] }
+    };
+    assert.equal(decideNextRoute(state), "synthesize");
+  });
+
+  test("phase cursor stays correct immediately after the revise round's retrieve re-entry", () => {
+    // "retrieve" itself bumps revisionRound to 1 as part of the SAME state
+    // update that appends its own trace entry, so by the time supervisor asks
+    // for the next route, trace.length (8) and revisionRound (1) already agree:
+    // phase = 8 - 1*4 = 4 -> phaseMap[4] = "expand_context", not the raw,
+    // un-offset phaseMap[8] = "synthesize".
+    const state = {
+      trace: [{}, {}, {}, {}, {}, {}, {}, {}], // trace.length 8
+      riskLevel: "low",
+      qaReview: { verdict: "revise", additional_queries: [] },
+      revisionRound: 1
+    };
+    assert.equal(decideNextRoute(state), "expand_context");
+  });
+
+  test("phase cursor is correct at the end of a completed revise round when the critic now approves", () => {
+    const state = {
+      trace: [{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}], // trace.length 11, revisionRound 1 -> phase 7
+      riskLevel: "low",
+      qaReview: { verdict: "approve" },
+      revisionRound: 1
+    };
+    assert.equal(decideNextRoute(state), "guardrails");
+  });
+
+  test("no qaReview at all at the qa_plan->guardrails transition does not trigger the loop", () => {
+    // Same phase position (7) as the loopback test above, but qaReview is still
+    // the Annotation default (null) -- confirms the revise-branch guard
+    // (`state.qaReview?.verdict === "revise"`) never misfires on an absent
+    // qaReview, it only fires on an explicit "revise" verdict.
+    const state = { trace: [{}, {}, {}, {}, {}, {}, {}], riskLevel: "low" };
+    assert.equal(decideNextRoute(state), "guardrails");
+  });
+});
