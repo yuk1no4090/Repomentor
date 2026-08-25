@@ -1,5 +1,5 @@
 import { ok as assert } from "node:assert/strict";
-import { readServerSource, stripComments } from "./shared/source-reader.js";
+import { readServerSource, readServerSourceStripped } from "./shared/source-reader.js";
 
 const serverSource = await readServerSource();
 // Comment-free view of the same source, used by section 7 below. A snippet
@@ -8,7 +8,14 @@ const serverSource = await readServerSource();
 // scripts/shared/source-reader.js for why that turns an assertion into a
 // tautology that can never fail regardless of what the real implementation
 // does. `codeOnlySource` closes that gap for the assertions where it matters.
-const codeOnlySource = stripComments(serverSource);
+//
+// Uses readServerSourceStripped() (strips each file independently, THEN
+// joins) rather than stripComments(serverSource) (which would strip the
+// already-concatenated 14-file blob in one pass): stripComments() is a
+// heuristic scanner, not a full parser, and if it ever misjudges some
+// construct in one file badly enough to desync, that desync must not bleed
+// into whichever file happens to be concatenated right after it.
+const codeOnlySource = await readServerSourceStripped();
 
 // ── 1. HITL env var ──
 assert(serverSource.includes("AGENT_HITL_ENABLED"), "AGENT_HITL_ENABLED env var not referenced");
