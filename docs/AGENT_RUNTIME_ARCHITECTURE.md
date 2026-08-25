@@ -137,7 +137,15 @@ Agent workflow execution uses `MemorySaver` from `@langchain/langgraph-checkpoin
 
 `GET /api/langgraph-replay` returns the ordered checkpoint summary replay for one LangGraph run by `projectId` and `runId`. The replay is deterministic and audit-only: it reconstructs the persisted checkpoint timeline from SQLite summaries and explicitly does not invoke the graph, tools, or model.
 
-`POST /api/langgraph-resume` first looks for the persisted MemorySaver payload for the source run. When present, the payload is cloned into a new harness run thread and LangGraph is invoked with the selected `checkpoint_id`, producing `harness.resume.mode=checkpoint_continuation`. This is executable continuation from a historical checkpoint boundary, not a read-only replay. Older checkpoints without executable payloads still use the persisted input snapshot and report `harness.resume.mode=input_snapshot_reexecution`; checkpoints created before resume snapshots existed return `LANGGRAPH_RESUME_UNAVAILABLE`.
+`POST /api/langgraph-resume` looks for the persisted MemorySaver payload for the source run and picks one of three resume modes, reported as `harness.resume.mode`:
+
+| mode | when | mechanism |
+| --- | --- | --- |
+| `native_interrupt_resume` | a persisted checkpoint payload exists AND a `decision` (`approve`/`reject`) was supplied | The payload is cloned into a new harness run thread and LangGraph is invoked with `new Command({ resume: decision })` against the thread's latest checkpoint. Inside `human_review`, the pending `interrupt()` call returns `decision` directly instead of throwing again, so only `human_review` and `synthesize` re-run — `input_safety` through `guardrails` are not re-executed, because their state already lives in the persisted checkpoint. |
+| `checkpoint_continuation` | a persisted checkpoint payload exists AND no `decision` was supplied | The payload is cloned and LangGraph is invoked with `graph.invoke(null, ...)` pinned to the selected `checkpoint_id`. `human_review`'s `interrupt()` call finds no resume value available and throws again immediately, so the run stays paused (byte-for-byte the same paused shape). This is executable continuation from a historical checkpoint boundary, not a read-only replay. |
+| `input_snapshot_reexecution` | no persisted checkpoint payload survives (e.g. pruned by `CHECKPOINT_MAX_RUNS`) | Legacy fallback: the persisted input snapshot (`projectId`, question, user id) is re-executed from phase 0 with the decision injected directly into the initial state (`baseInput.hitlRequest`). Checkpoints created before resume snapshots existed return `LANGGRAPH_RESUME_UNAVAILABLE` instead. |
+
+**Node re-run caveat**: LangGraph resumes a paused thread by re-running the *interrupted node from its top*, not by replaying only the code after the `interrupt()` call. `human_review` is written so nothing side-effectful precedes its `interrupt()` call, for exactly this reason.
 
 `buildChatHarnessReport()` creates the equivalent lightweight payload for `/api/chat`.
 
@@ -235,7 +243,7 @@ The current version intentionally does not include:
 ## What's New (2026-08-07)
 
 - **Supervisor routing**: `AGENT_GRAPH_MODE=supervisor` (default) uses a deterministic `decideNextRoute()` function with `addConditionalEdges` for dynamic agent orchestration. Set `AGENT_GRAPH_MODE=linear` to fall back to the original 9-node linear pipeline.
-- **Human-in-the-loop (HITL)**: Enable with `AGENT_HITL_ENABLED=true`. High-risk (`riskLevel="high"`) changes are paused at a `human_review` node and resumed via `POST /api/langgraph-resume` with `{ decision: "approve"|"reject" }`.
+- **Human-in-the-loop (HITL)**: Enable with `AGENT_HITL_ENABLED=true`. High-risk (`riskLevel="high"`) changes call LangGraph's native `interrupt()` inside the `human_review` node, which genuinely pauses graph execution mid-run (the pregel loop persists the checkpoint and `graph.invoke()` returns with `__interrupt__` set instead of a `finalPayload`) — not a soft "paused" flag that a still-running graph continues past. Resume via `POST /api/langgraph-resume` with `{ decision: "approve"|"reject" }`; see the `harness.resume.mode` table above for the three resume paths (`native_interrupt_resume` is the common case — it resumes the same paused execution via `Command({ resume: decision })` instead of re-running the graph from phase 0).
 - **Agent boundaries**: Supervisor, ImpactAnalyst, and QACritic have independent prompts, schemas, model calls, and fallbacks. SafetyGuard, MemoryCurator, Classifier, Retriever, OnboardingPlanner, Synthesizer, and Harness remain deterministic roles or infrastructure. Trace steps, model calls, handoffs, and an agent roster are returned in API payloads.
 
 ## Verification Gates

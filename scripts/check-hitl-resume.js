@@ -35,10 +35,22 @@ assert(serverSource.includes("baseInput.hitlRequest"), "resume must inject hitlR
 // ── 6. State fields ──
 assert(serverSource.includes("hitlRequest: Annotation"), "State annotation must include hitlRequest");
 
+// ── 7. Native LangGraph interrupt()/Command resume (P4 upgrade) ──
+// human_review must genuinely pause the graph via interrupt() instead of just
+// flagging a "paused" state and letting the graph continue to synthesize in the
+// same invoke() call. Resuming a decision must use LangGraph's own Command(resume)
+// contract against the persisted checkpoint, not only a fresh re-executed baseInput.
+assert(serverSource.includes("interrupt("), "human_review must call interrupt() to genuinely pause graph execution");
+assert(serverSource.includes("new Command({ resume"), "decision resume must invoke the graph with new Command({ resume: ... }) to continue the paused execution");
+assert(serverSource.includes("__interrupt__"), "workflow must inspect the graph's __interrupt__ signal to detect a genuine pause (not just a state flag)");
+assert(serverSource.includes('"native_interrupt_resume"'), "decision resume with a persisted checkpoint payload must report harness.resume.mode=native_interrupt_resume");
+assert(serverSource.includes("isInterrupted"), "workflow must use LangGraph's isInterrupted() helper (or equivalent) to detect the interrupted result");
+
 console.log("[OK] AGENT_HITL_ENABLED env var properly initialized.");
 console.log("[OK] human_review node sets hitlRequest and reports hitl_paused.");
 console.log("[OK] Routing: QACritic + guardrails → high-risk human_review → synthesize.");
 console.log("[OK] synthesize produces hitl field (paused/approved/rejected).");
 console.log("[OK] /api/langgraph-resume accepts decision parameter.");
 console.log("[OK] Resume handler injects hitlRequest into workflow state.");
+console.log("[OK] human_review uses native interrupt()/Command resume (native_interrupt_resume mode present).");
 console.log("[PASS] All HITL checks passed.");
