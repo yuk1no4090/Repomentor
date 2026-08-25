@@ -139,15 +139,19 @@ It supports OpenAI-compatible chat completions through:
 
 - `OPENAI_API_KEY`
 - `OPENAI_BASE_URL`
-- `OPENAI_MODEL`
+- `OPENAI_MODEL` / `OPENAI_TEMPERATURE` (shared default; also used by the non-agent `runModelAdapter()` path)
+- `OPENAI_MODEL_SUPERVISOR` / `OPENAI_MODEL_IMPACT_ANALYST` / `OPENAI_MODEL_QA_CRITIC` (per-role model override, `runAgentModelAdapter()` only)
+- `OPENAI_TEMPERATURE_SUPERVISOR` / `OPENAI_TEMPERATURE_IMPACT_ANALYST` / `OPENAI_TEMPERATURE_QA_CRITIC` (per-role temperature override, `runAgentModelAdapter()` only)
 - `LLM_REQUEST_TIMEOUT_MS`
 - `LLM_CONTEXT_TOKEN_BUDGET`
+
+`resolveLlmModelForRole(role)`/`resolveLlmTemperatureForRole(role)` resolve in this order: role-specific env var -> the shared `OPENAI_MODEL`/`OPENAI_TEMPERATURE` -> the hardcoded default (`gpt-4o-mini` / `0.2`). The role -> env var mapping is an explicit lookup table keyed by the three known agent-contract roles (not derived by string-mangling `agent.role`), so an unrecognized or renamed role falls straight through to the shared resolution instead of silently reading the wrong variable. Empty-string and whitespace-only env values are treated as unset. This repository does not measure the cost or latency of any model/role combination (every check and test here runs offline); per-role selection makes the model/temperature choice per role configurable and observable, nothing more.
 
 If no API key is configured, the model adapter reports deterministic offline retrieval. If estimated prompt tokens exceed `LLM_CONTEXT_TOKEN_BUDGET`, the adapter does not call the external model and uses deterministic fallback with `LLM_CONTEXT_BUDGET_EXCEEDED`. If a model response times out, fails transport, returns a non-2xx HTTP response, returns invalid JSON, or fails schema validation, the workflow uses deterministic fallback and records the failure under `harness.model_adapter.error_code`, `error`, `http_status`, `duration_ms`, `prompt_tokens_estimated`, `max_context_tokens`, `context_budget_exceeded`, and `schema_errors` when applicable. Repository chunks are scanned in raw form for safety, but sensitive-looking values such as API keys, tokens, passwords, credentials, and secrets are redacted before the retrieved context is sent to an external model.
 
 ## agentHarness
 
-`buildAgentHarnessReport()` creates the public harness payload for `/api/agent-impact`. Its backward-compatible `model_adapter` field summarizes ImpactAnalyst, while `model_calls` records every Supervisor, ImpactAnalyst, and QACritic attempt independently, including role, provider, model, schema/fallback result, duration, and estimated prompt tokens.
+`buildAgentHarnessReport()` creates the public harness payload for `/api/agent-impact`. Its backward-compatible `model_adapter` field summarizes ImpactAnalyst, while `model_calls` records every Supervisor, ImpactAnalyst, and QACritic attempt independently, including role, provider, model, temperature, schema/fallback result, duration, and estimated prompt tokens. `model_config` additionally reports, per role, the currently effective model/temperature and whether each came from a role-specific override or from inheriting the shared `OPENAI_MODEL`/`OPENAI_TEMPERATURE` default — independent of whether that role happened to be called on this particular run.
 
 Agent workflow execution uses `MemorySaver` from `@langchain/langgraph-checkpoint` with `thread_id` set to the harness `run_id`. Runtime `store` and full project objects are not graph-state channels; nodes access them through the runtime closure so executable checkpoint payloads do not serialize auth users, token hashes, or the whole JSON store. After execution, checkpoint tuple summaries are persisted into SQLite under `langgraph_checkpoints`, while the serialized MemorySaver storage/writes snapshot is persisted under `langgraph_checkpoint_payloads`. Persisted summary rows store metadata, compact state summaries, and a bounded resume input snapshot (`projectId`, question, user id, source run id). Audits can inspect checkpoint lineage, source, node, trace-step count, memory usage, and safety status without duplicating the full answer payload.
 

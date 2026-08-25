@@ -244,7 +244,14 @@ The project targets Node.js 24 because the long-term memory store uses the built
 | `MEMORY_VECTOR_INDEX_NAMESPACE` | `ai-pm-memory` / `ai_pm_memory` | Namespace, Qdrant collection name, or Pinecone namespace passed to the external vector index. |
 | `OPENAI_API_KEY` | unset | Enables AI-enhanced model calls when set. |
 | `OPENAI_BASE_URL` | `https://api.openai.com` | OpenAI-compatible API base URL. |
-| `OPENAI_MODEL` | `gpt-4o-mini` | Chat completion model name. |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Chat completion model name used when a role has no role-specific override (see below), and by the non-agent `/api/chat` endpoint. |
+| `OPENAI_MODEL_SUPERVISOR` | unset (falls back to `OPENAI_MODEL`) | Chat completion model for the Supervisor agent only. |
+| `OPENAI_MODEL_IMPACT_ANALYST` | unset (falls back to `OPENAI_MODEL`) | Chat completion model for the ImpactAnalyst agent only. |
+| `OPENAI_MODEL_QA_CRITIC` | unset (falls back to `OPENAI_MODEL`) | Chat completion model for the QACritic agent only. |
+| `OPENAI_TEMPERATURE` | `0.2` | Sampling temperature used when a role has no role-specific override (see below), and by the non-agent `/api/chat` endpoint. |
+| `OPENAI_TEMPERATURE_SUPERVISOR` | unset (falls back to `OPENAI_TEMPERATURE`) | Sampling temperature for the Supervisor agent only. |
+| `OPENAI_TEMPERATURE_IMPACT_ANALYST` | unset (falls back to `OPENAI_TEMPERATURE`) | Sampling temperature for the ImpactAnalyst agent only. |
+| `OPENAI_TEMPERATURE_QA_CRITIC` | unset (falls back to `OPENAI_TEMPERATURE`) | Sampling temperature for the QACritic agent only. |
 | `LLM_CONTEXT_TOKEN_BUDGET` | `8000` | Estimated prompt context token budget before using deterministic fallback. |
 | `AGENT_GRAPH_MODE` | `supervisor` | Graph routing mode: `supervisor` for dynamic multi-agent routing or `linear` for the original 9-node pipeline. |
 | `AGENT_MAX_STEPS` | `14` | Maximum LangGraph execution steps (increased from 9 to support supervisor routing overhead). |
@@ -255,6 +262,20 @@ The project targets Node.js 24 because the long-term memory store uses the built
 | `MAX_QUESTION_LENGTH` | `16000` | Maximum question text length in characters. |
 | `CORS_ORIGIN` | `*` | CORS allow-origin header value. Set to a specific origin (e.g. `https://yourapp.com`) in production. |
 | `TRUST_PROXY` | `false` | Set to `true` to trust `X-Forwarded-For` header for rate limiting (when behind a reverse proxy). |
+
+### Per-role model selection
+
+The agentic impact-analysis workflow runs three independent model-backed agents (Supervisor, ImpactAnalyst, QACritic — see [Agent Runtime Architecture](#agent-runtime-architecture)) with different jobs: the Supervisor emits a short structured plan, the QACritic makes a bounded approve/revise judgement, and the ImpactAnalyst does the heavy reasoning over repository context. Each can now be pointed at a different model and temperature via the `OPENAI_MODEL_*` / `OPENAI_TEMPERATURE_*` env vars above, instead of all three sharing one global `OPENAI_MODEL`/temperature.
+
+A configuration some teams may want to try: a cheap, fast model for Supervisor and QACritic (short, bounded outputs) and a stronger model for ImpactAnalyst (the one doing the actual repository reasoning), e.g.:
+
+```bash
+export OPENAI_MODEL=gpt-4o-mini            # shared default / fallback
+export OPENAI_MODEL_IMPACT_ANALYST=gpt-4o  # stronger model for the heavy-reasoning role
+# Supervisor and QACritic inherit OPENAI_MODEL (gpt-4o-mini) by not setting an override
+```
+
+This makes the model/temperature choice for each role an explicit, independently configurable, and observable setting — every model-backed call in `harness.model_calls[]` reports the model it actually used, and `harness.model_config` in the agent-impact response shows, per role, which model/temperature is in effect and whether it came from a role-specific override or from inheriting the shared default. This repository does not measure the cost or latency of any configuration (every test in this suite runs offline, with no live API calls), so no cost or latency claim is made here — only that the tradeoff is now configurable and observable per role.
 
 ## Docker Deployment
 

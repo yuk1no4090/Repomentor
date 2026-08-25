@@ -5,6 +5,19 @@
 
 ---
 
+## 2026-08-25 — 分角色模型选择：三个 Agent 可独立配置模型
+
+背景：三个模型驱动 Agent（Supervisor、ImpactAnalyst、QACritic）此前共用 `lib/llm.js` 的单一全局 `resolveLlmModel()`（`OPENAI_MODEL` 或默认 `gpt-4o-mini`），尽管三者的 prompt、输出 schema 和职责完全独立——Supervisor 输出简短结构化计划，QACritic 做有界判断，ImpactAnalyst 承担重度仓库推理。本轮让模型（以及可选的采样温度）成为按角色可独立配置的项，把“三个 Agent”从命名约定变成真正可调的架构决策。
+
+- **按角色环境变量**：新增 `OPENAI_MODEL_SUPERVISOR` / `OPENAI_MODEL_IMPACT_ANALYST` / `OPENAI_MODEL_QA_CRITIC`，解析顺序为「角色专属变量 → 共享 `OPENAI_MODEL` → 硬编码默认值」。角色到环境变量的映射是以 `lib/agent-contracts.js` 中导出的 `SUPERVISOR_AGENT.role`/`IMPACT_ANALYST_AGENT.role`/`QA_CRITIC_AGENT.role` 为键的显式查找表，不是对 `agent.role` 字符串做拼接/变形——未知或被改名的角色会直接落回共享解析路径，而不会读到拼错的变量或报错。空字符串/纯空白的环境变量按未设置处理。非 Agent 的 `/api/chat` 路径（`runModelAdapter`）继续调用原有的 `resolveLlmModel()`，不受影响。
+- **按角色采样温度（可选）**：`temperature` 之前对所有调用硬编码为 `0.2`；现在新增 `OPENAI_TEMPERATURE` / `OPENAI_TEMPERATURE_SUPERVISOR` / `OPENAI_TEMPERATURE_IMPACT_ANALYST` / `OPENAI_TEMPERATURE_QA_CRITIC`，解析顺序、未知角色回退、空白值处理均与模型完全一致；无效数值（非数字、超出 `[0, 2]`）按未设置处理，绝不会把 `NaN` 发给 provider。
+- **可观测性修复**：`buildModelAdapterResult()`（`lib/llm.js`）此前无论调用哪个角色，事件里的 `model` 字段都重新调用全局 `resolveLlmModel()`——这意味着 `harness.model_calls[].model` 即使三个角色配置了不同模型，也会全部显示成同一个全局值。现在 `maybeCallOpenAI()` 把它实际解析并发送给 provider 的 `model`/`temperature` 一路带回到 `modelCall`，`buildModelAdapterResult()` 直接使用这个值，使 `model_calls[]` 逐条如实反映每个角色实际使用的模型。`buildAgentHarnessReport()` 新增 `harness.model_config`，按角色展示当前生效的模型/温度，以及是角色专属覆盖还是继承共享默认值——独立于这条请求本身是否调用了该角色。
+- **诚实的收益表述**：文档只声明「按角色可配置、可观测」，不声明任何成本或延迟节省——本仓库的所有测试都离线运行，没有测量任何真实调用的成本或延迟。README、README.zh-CN、`docs/USER_GUIDE.md`、`docs/AGENT_RUNTIME_ARCHITECTURE.md` 同步更新新增的环境变量与用途说明。
+- **回归修复（review 中发现）**：`normalizeHarnessRun()` 逐字段规范化 `model_calls[]` 时，最初把 `temperature` 按其余数值字段的既有写法处理（`Number.isFinite(Number(x)) ? Number(x) : fallback`）；但 `temperature` 语义上是可空的（离线/无 API key 路径下为 `null`，而 `0` 本身又是合法配置值），而 `Number(null) === 0`，会把持久化的离线运行悄悄写成 `temperature: 0`。改为 `typeof call.temperature === "number"` 判断，null 与合法的 0 都被正确保留，并补了三条针对性回归测试。
+- **测试**：新增 `test/llm-model-config.test.js`（25 条 `node:test` 单元测试）覆盖解析优先级、空白值、越界温度、未知角色回退、`normalizeHarnessRun` 的 null/0 温度回归，以及一个使用本地假 OpenAI-compatible 端点的集成性断言——证明 Supervisor/ImpactAnalyst/QACritic 三个角色各自把配置的模型/温度真正发进了请求体，且 `runAgentModelAdapter()` 返回的 event（`buildAgentHarnessReport()` 逐字段拷贝进 `harness.model_calls[]` 的正是这个 event）如实携带角色专属模型。`npm test` 全量保持绿：31 个静态检查脚本、159 条 `node:test` 单元测试（134 条既有 + 25 条新增），以及 smoke、UI、安全红队、记忆压缩、用户记忆隔离、认证、embedding provider、benchmark、MCP 全部通过；离线/无 API key 路径行为不变。
+
+---
+
 ## 2026-08-23 — 从角色标签升级为三模型 Agent 编排 + PRD 口径校正
 
 背景：此前 LangGraph 虽然为多个节点标注了 `agent_role`，但影响分析主链只有一次真正的 LLM 调用，其余大多是确定性函数。严格来说，这是“单模型 Agent + 多角色工具节点”，不能充分支撑“多 Agent 编排”的产品表述。本轮按真实执行边界完成最小多 Agent 升级，并同步修正 PRD、README 和架构文档。

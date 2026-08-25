@@ -244,7 +244,14 @@ GitHub Actions 会在 push 到 `main` 和创建 pull request 时运行 `npm ci` 
 | `MEMORY_VECTOR_INDEX_NAMESPACE` | `ai-pm-memory` / `ai_pm_memory` | 传给外部向量索引的 namespace、Qdrant collection 名，或 Pinecone namespace。 |
 | `OPENAI_API_KEY` | 未设置 | 设置后启用 AI 增强的模型调用。 |
 | `OPENAI_BASE_URL` | `https://api.openai.com` | OpenAI-compatible API 的 base URL。 |
-| `OPENAI_MODEL` | `gpt-4o-mini` | Chat completion 使用的模型名。 |
+| `OPENAI_MODEL` | `gpt-4o-mini` | 当某个角色没有设置角色专属覆盖时（见下）使用的 chat completion 模型名，非 Agent 的 `/api/chat` 接口也使用该值。 |
+| `OPENAI_MODEL_SUPERVISOR` | 未设置（回退到 `OPENAI_MODEL`） | 仅用于 Supervisor agent 的 chat completion 模型名。 |
+| `OPENAI_MODEL_IMPACT_ANALYST` | 未设置（回退到 `OPENAI_MODEL`） | 仅用于 ImpactAnalyst agent 的 chat completion 模型名。 |
+| `OPENAI_MODEL_QA_CRITIC` | 未设置（回退到 `OPENAI_MODEL`） | 仅用于 QACritic agent 的 chat completion 模型名。 |
+| `OPENAI_TEMPERATURE` | `0.2` | 当某个角色没有设置角色专属覆盖时（见下）使用的采样温度，非 Agent 的 `/api/chat` 接口也使用该值。 |
+| `OPENAI_TEMPERATURE_SUPERVISOR` | 未设置（回退到 `OPENAI_TEMPERATURE`） | 仅用于 Supervisor agent 的采样温度。 |
+| `OPENAI_TEMPERATURE_IMPACT_ANALYST` | 未设置（回退到 `OPENAI_TEMPERATURE`） | 仅用于 ImpactAnalyst agent 的采样温度。 |
+| `OPENAI_TEMPERATURE_QA_CRITIC` | 未设置（回退到 `OPENAI_TEMPERATURE`） | 仅用于 QACritic agent 的采样温度。 |
 | `LLM_CONTEXT_TOKEN_BUDGET` | `8000` | 使用确定性回退之前，估算的 prompt 上下文 token 预算上限。 |
 | `AGENT_GRAPH_MODE` | `supervisor` | 图路由模式：`supervisor` 为动态多 Agent 路由，`linear` 为原始的 9 节点线性管线。 |
 | `AGENT_MAX_STEPS` | `14` | LangGraph 最大执行步数（从 9 上调，以覆盖 supervisor 路由的额外开销）。 |
@@ -255,6 +262,20 @@ GitHub Actions 会在 push 到 `main` 和创建 pull request 时运行 `npm ci` 
 | `MAX_QUESTION_LENGTH` | `16000` | 问题文本的最大字符数。 |
 | `CORS_ORIGIN` | `*` | CORS 的 allow-origin 响应头值。生产环境建议设为具体来源（如 `https://yourapp.com`）。 |
 | `TRUST_PROXY` | `false` | 设为 `true` 时信任 `X-Forwarded-For` 请求头用于限流（部署在反向代理之后时使用）。 |
+
+### 分角色模型选择
+
+Agentic 影响分析工作流运行三个独立的模型驱动 Agent（Supervisor、ImpactAnalyst、QACritic — 见 [Agent Runtime 架构](#agent-runtime-架构)），它们的职责各不相同：Supervisor 输出简短的结构化计划，QACritic 做出有界的 approve/revise 判断，ImpactAnalyst 则对仓库上下文做重度推理。现在可以通过上面的 `OPENAI_MODEL_*` / `OPENAI_TEMPERATURE_*` 环境变量为每个角色单独指定模型和温度，而不是三者共用一个全局 `OPENAI_MODEL`/温度。
+
+一个可以尝试的配置：给 Supervisor 和 QACritic（输出简短、有界）用便宜、快速的模型，给 ImpactAnalyst（真正做仓库推理的角色）用更强的模型，例如：
+
+```bash
+export OPENAI_MODEL=gpt-4o-mini            # 共享默认值/回退值
+export OPENAI_MODEL_IMPACT_ANALYST=gpt-4o  # 重度推理角色使用更强的模型
+# Supervisor 和 QACritic 不设置覆盖，因此继承 OPENAI_MODEL（gpt-4o-mini）
+```
+
+这让每个角色的模型/温度选择变成一个显式的、可独立配置且可观测的设置——`harness.model_calls[]` 中的每一次模型调用都会报告它实际使用的模型；agent-impact 响应中的 `harness.model_config` 会按角色展示当前生效的模型/温度，以及它是来自角色专属覆盖还是继承了共享默认值。本仓库不测量任何配置下的成本或延迟（本测试套件的所有测试都在离线状态下运行，没有真实的 API 调用），因此这里不做任何成本或延迟方面的断言——只是说明这一权衡现在可以按角色配置并被观测到。
 
 ## Docker 部署
 

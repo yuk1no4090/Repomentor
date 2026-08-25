@@ -171,6 +171,21 @@ export OPENAI_API_KEY=sk-your-key
 npm run dev
 ```
 
+### 分角色模型选择（可选）
+
+Agent 工作流里的 Supervisor / ImpactAnalyst / QACritic 三个模型驱动角色可以分别指定模型和采样温度，不再必须共用一个全局 `OPENAI_MODEL`：
+
+```bash
+export OPENAI_MODEL=gpt-4o-mini            # 未设置角色专属覆盖时的共享默认值
+export OPENAI_MODEL_SUPERVISOR=gpt-4o-mini
+export OPENAI_MODEL_IMPACT_ANALYST=gpt-4o  # 重度推理角色可以用更强的模型
+export OPENAI_MODEL_QA_CRITIC=gpt-4o-mini
+# 温度同理：OPENAI_TEMPERATURE / OPENAI_TEMPERATURE_SUPERVISOR /
+# OPENAI_TEMPERATURE_IMPACT_ANALYST / OPENAI_TEMPERATURE_QA_CRITIC
+```
+
+未设置角色专属变量的角色会回退到 `OPENAI_MODEL`/`OPENAI_TEMPERATURE`，再回退到内置默认值。每次 Agent 调用实际使用的模型可以在 Agent Tab 的 harness 详情（`model_calls[]`）里逐条查看；`harness.model_config` 展示每个角色当前生效的模型/温度及是否使用了角色专属覆盖。本项目不测量任何配置下的成本或延迟（测试全部离线运行），因此这里只是让该权衡变得可配置、可观测，而非给出效果承诺。
+
 ### 无 API Key
 
 不设置任何环境变量即可。系统使用确定性检索式回答，功能完整但回答质量较低。UI 会显示"离线检索模式"。
