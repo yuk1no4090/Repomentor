@@ -247,6 +247,20 @@ function sendJson(res, status, payload) {
   res.end(body);
 }
 
+// Hand-rolled SSE frame writer for POST /api/agent-impact/stream (Task L2) —
+// no dependency added, per this codebase's zero-framework stance. Silently a
+// no-op once the response has ended or the underlying socket is gone (a
+// client that disconnected mid-stream, or a "final" event that already ended
+// the response), so callers never need to guard every single write site.
+function writeSseEvent(res, event, data) {
+  if (res.writableEnded || res.destroyed) return;
+  try {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  } catch {
+    // Client gone mid-write; nothing to recover, nothing to rethrow.
+  }
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -303,9 +317,20 @@ function findHarnessRunAudit(store, projectId, runId, userId = null) {
 // blocking every other POST (and every GET once AUTH_REQUIRED) behind it,
 // which is what a single global write lock around the entire request used to
 // do.
+// POST /api/agent-impact/stream (Task L2): SSE progress-streaming twin of
+// POST /api/agent-impact, documented in README.md/docs/USER_GUIDE.md
+// alongside it. Kept as a named constant purely for readability/reuse across
+// the HEAVY_MUTATION_PATHS entry below — the route dispatch further down
+// still spells out the literal path directly (matching every other route's
+// own `req.method === "..." && pathname === "..."` shape) so
+// scripts/check-api-docs.js's route-documentation sync check detects it like
+// every other route.
+const AGENT_IMPACT_STREAM_PATH = "/api/agent-impact/stream";
+
 const HEAVY_MUTATION_PATHS = new Set([
   "/api/chat",
   "/api/agent-impact",
+  AGENT_IMPACT_STREAM_PATH,
   "/api/onboarding",
   "/api/langgraph-resume"
 ]);
@@ -1014,6 +1039,118 @@ async function handleApiUnlocked(req, res, pathname) {
         await saveStore(commitStore);
       });
       sendJson(res, 200, { answerId: answerRecord.id, kind: "agent_impact", payload });
+      return;
+    }
+
+    // Task L2: SSE progress-streaming twin of POST /api/agent-impact above.
+    // Same auth/validation preamble, same runAgenticImpactWorkflow() call,
+    // same gate/commit lock shape (this path is in HEAVY_MUTATION_PATHS via
+    // AGENT_IMPACT_STREAM_PATH) — the only difference is that the workflow
+    // call below passes `options.onEvent` so lib/agent-graph.js streams node
+    // progress instead of computing silently for up to 30s, and the final SSE
+    // event carries the exact same `{ answerId, kind, payload }` shape the
+    // plain JSON route above returns as its response body (see
+    // consumeGraphStreamForWorkflow() in lib/agent-graph.js for how that
+    // equivalence is achieved and verified).
+    //
+    // Everything from `res.writeHead()` onward commits to an SSE response:
+    // no error past that point may reach this function's own top-level catch
+    // (below) — it always calls sendJson(), which would throw
+    // ERR_HTTP_HEADERS_SENT once headers are already flushed. The nested
+    // try/catch/finally here is what keeps that boundary intact.
+    if (req.method === "POST" && pathname === "/api/agent-impact/stream") {
+      const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
+      const userId = resolveHeavyRouteUserId(req, body);
+      const project = findProject(store, body.projectId, userId);
+      const question = String(body.question || "").trim();
+      if (!question) throw apiError("Question is required.", "QUESTION_REQUIRED");
+      if (question.length > MAX_QUESTION_LENGTH) throw apiError(`Question exceeds maximum length of ${MAX_QUESTION_LENGTH} characters.`, "QUESTION_TOO_LONG", 413);
+
+      // Task L2 (E): a client that closes the tab/connection mid-stream must
+      // abort the workflow, not just stop being read from. res "close" fires
+      // both on a normal completion (after res.end()) and on a premature
+      // disconnect — res.writableEnded distinguishes the two: it is only
+      // false for a genuine mid-stream disconnect, which is the case this
+      // aborts. clientDisconnected additionally gates the commit phase below
+      // so an aborted run never writes a corrupt/partial record to the store.
+      let clientDisconnected = false;
+      const streamAbortController = new AbortController();
+      res.on("close", () => {
+        if (!res.writableEnded) {
+          clientDisconnected = true;
+          streamAbortController.abort(new Error("client disconnected"));
+        }
+      });
+
+      res.writeHead(200, {
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-cache, no-transform",
+        "connection": "keep-alive",
+        "x-accel-buffering": "no",
+        "access-control-allow-origin": CORS_ORIGIN,
+        "access-control-allow-methods": "GET, POST, OPTIONS",
+        "access-control-allow-headers": "Content-Type, Authorization, X-API-Key, X-AI-PM-Token, X-User-Id, X-AI-PM-User-Id"
+      });
+      // Keeps intermediate proxies from timing out an idle connection during
+      // a long-running node (e.g. a slow real LLM call); harmless noise the
+      // client's SSE frame parser already ignores (no "event:"/"data:" lines).
+      const heartbeat = setInterval(() => {
+        if (!res.writableEnded && !res.destroyed) res.write(": heartbeat\n\n");
+      }, 15_000);
+
+      try {
+        const started = Date.now();
+        const payload = await runAgenticImpactWorkflow(store, project, question, userId, null, {
+          onEvent: (type, data) => writeSseEvent(res, type, data),
+          signal: streamAbortController.signal
+        });
+
+        if (clientDisconnected) {
+          // Requirement E: the client is gone — do not push a partial/late
+          // record into the store, and do not attempt to write to a closed
+          // response.
+          return;
+        }
+
+        const questionRecord = {
+          id: crypto.randomUUID(),
+          projectId: project.id,
+          question,
+          kind: "agent_impact",
+          createdAt: new Date().toISOString()
+        };
+        const answerRecord = {
+          id: crypto.randomUUID(),
+          projectId: project.id,
+          questionId: questionRecord.id,
+          kind: "agent_impact",
+          payload,
+          responseTimeMs: Date.now() - started,
+          createdAt: new Date().toISOString()
+        };
+        // Commit phase — identical shape to the plain JSON route above.
+        await withWriteLock(async () => {
+          const commitStore = await ensureStore();
+          findProject(commitStore, project.id, userId);
+          if (payload.memory_suggestions?.length) {
+            appendMemorySuggestions(commitStore, payload.memory_suggestions);
+          }
+          commitStore.questions.push(questionRecord);
+          commitStore.answers.push(answerRecord);
+          recordHarnessRun(commitStore, answerRecord);
+          await saveStore(commitStore);
+        });
+        writeSseEvent(res, "final", { answerId: answerRecord.id, kind: "agent_impact", payload });
+      } catch (error) {
+        writeSseEvent(res, "error", { error: error.message || "Stream failed.", code: error.code || "STREAM_FAILED" });
+      } finally {
+        clearInterval(heartbeat);
+        try {
+          if (!res.writableEnded) res.end();
+        } catch {
+          // Client already gone; nothing left to flush.
+        }
+      }
       return;
     }
 

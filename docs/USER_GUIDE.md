@@ -103,6 +103,8 @@ npm run dev
 - **Agent Roster 面板**：页面展示所有 Agent 角色及其工具子集。
 - **Handoff 流转链**：可视化 Agent 间的交接路径（sender → recipient）。
 
+**新特性（节点级 SSE 进度流）**：点击 "Run Agent" 后不再只看到一句静态的 "Running agent workflow..."——前端改用 `POST /api/agent-impact/stream`，随着上面 9 个流程节点逐个完成实时点亮执行轨迹（节点名、Agent 角色、耗时），有界修订轮和 HITL 暂停也会作为独立事件即时显示。任何环节失败（网络错误、浏览器不支持等）都会自动回退到原有的一次性 JSON 接口，最终答案的呈现方式不变。详见 README「`/api/agent-impact/stream`」一节。
+
 **流程**：
 1. SafetyGuard — 检查 prompt injection、密钥请求和越权工具意图
 2. MemoryCurator — 加载已确认偏好，并生成待确认记忆建议
@@ -199,6 +201,7 @@ npm run dev
 | POST | `/api/import` | 导入仓库（sample / repoUrl / zipBase64） |
 | POST | `/api/chat` | 问答 / 影响分析（kind: "qa" / "impact"） |
 | POST | `/api/agent-impact` | LangGraph Agent 工作流影响分析，返回 memory / harness / safety 状态 |
+| POST | `/api/agent-impact/stream` | 与 `/api/agent-impact` 相同的工作流，以 SSE（Server-Sent Events）逐节点流式返回进度事件（`workflow_started`/`node_completed`/`revise_round_entered`/`hitl_paused`/`final`/`error`），而不是一次性等待最长 30 秒后返回；鉴权同样走 `Authorization` 请求头，不支持 `EventSource`、也不接受 query string 传 token |
 | POST | `/api/onboarding` | 生成入职学习计划 |
 | POST | `/api/feedback` | 提交回答反馈 |
 | GET | `/api/answers` | 按 projectId 返回最近的问答/影响分析/agent-impact/onboarding 历史（配对问题文本 + 反馈），用于刷新后重建对话历史；支持 limit（默认 50，上限 200） |

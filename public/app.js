@@ -1858,9 +1858,45 @@ function onboardingTab() {
   `;
 }
 
+// Task L2 (F): the "Running agent workflow..." placeholder's live replacement
+// -- a node-by-node trace that fills in as POST /api/agent-impact/stream's
+// SSE frames arrive (see runAgentImpact()'s onLiveEvent above), instead of
+// one static sentence sitting there for up to 30s. Reuses the SAME
+// .trace-list/.trace-step/.agent-role-badge classes renderAgentImpactMessage()
+// already uses for the final, historical trace, so a live run visually
+// matches its own eventual answer instead of introducing a second look. Only
+// ever rendered for the "pending" placeholder message (kind:"local",
+// tab:"agent", payload.liveNodes present); once the real answer replaces it,
+// renderAgentImpactMessage() takes over exactly as before, so this never
+// touches the typewriter effect or the HITL pause card.
+function renderLiveAgentProgress(message) {
+  const c = t();
+  const nodes = message.payload.liveNodes || [];
+  return html`
+    <article class="message agent-message live-agent-progress">
+      <div class="question">${escapeHtml(message.question)}</div>
+      <div class="answer">
+        <h3>${c.chat.agentTrace}</h3>
+        <div class="trace-list">
+          ${nodes.length ? nodes.map((node) => html`
+            <div class="trace-step">
+              <strong>${escapeHtml(node.label)}</strong>
+              ${node.agent_role ? html`<span class="agent-role-badge">${escapeHtml(node.agent_role)}</span>` : ""}
+              <small>${escapeHtml(`${node.elapsed_ms}ms`)}</small>
+            </div>
+          `).join("") : html`<div class="trace-step"><em>${escapeHtml(message.payload.answer)}</em></div>`}
+        </div>
+      </div>
+    </article>
+  `;
+}
+
 function renderMessage(message) {
   const c = t();
   const payload = message.payload;
+  if (message.kind === "local" && message.tab === "agent" && Array.isArray(message.payload?.liveNodes)) {
+    return renderLiveAgentProgress(message);
+  }
   if (message.kind === "impact") return renderImpactMessage(message);
   if (message.kind === "agent_impact") return renderAgentImpactMessage(message);
   if (message.kind === "onboarding") return renderOnboardingMessage(message);
@@ -3203,6 +3239,83 @@ async function ask(kind = "qa", questionOverride = "") {
   }
 }
 
+// Task L2 (F): consumes POST /api/agent-impact/stream's SSE frames by hand
+// (fetch() + response.body.getReader(), NOT EventSource -- EventSource cannot
+// carry the Authorization header this app already relies on, and a token in
+// the URL would leak into logs/history). onLiveEvent(type, data) is called
+// for every non-final, non-error frame so the caller can render live
+// progress; the function itself resolves with the same
+// { answerId, kind, payload } shape POST /api/agent-impact's JSON response
+// already has, whichever path produced it.
+//
+// Graceful degradation: ANY failure here -- the stream endpoint erroring
+// outright, a non-SSE content type, the browser lacking fetch/ReadableStream
+// support, a parse error, an explicit "error" SSE frame, or the stream ending
+// without ever delivering "final" -- falls back to the existing
+// POST /api/agent-impact JSON endpoint so the user still gets a correct
+// answer instead of a half-rendered dead state.
+async function streamAgentImpact(question, onLiveEvent) {
+  const fallbackToJson = () => api("/api/agent-impact", {
+    method: "POST",
+    body: JSON.stringify({ projectId: state.project.id, question })
+  });
+
+  if (typeof window.fetch !== "function" || typeof ReadableStream === "undefined") {
+    return fallbackToJson();
+  }
+
+  let reader = null;
+  try {
+    const headers = { "content-type": "application/json" };
+    if (state.authToken) headers.Authorization = `Bearer ${state.authToken}`;
+    const response = await fetch("/api/agent-impact/stream", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ projectId: state.project.id, question })
+    });
+    const contentType = response.headers.get("content-type") || "";
+    if (!response.ok || !contentType.includes("text/event-stream") || !response.body) {
+      throw new Error("Agent impact stream endpoint unavailable.");
+    }
+    reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let finalPayload = null;
+    let streamError = null;
+    while (!finalPayload && !streamError) {
+      const { done, value } = await reader.read();
+      if (value) buffer += decoder.decode(value, { stream: true });
+      let separatorIndex;
+      while ((separatorIndex = buffer.indexOf("\n\n")) !== -1) {
+        const rawEvent = buffer.slice(0, separatorIndex);
+        buffer = buffer.slice(separatorIndex + 2);
+        const eventMatch = rawEvent.match(/^event: (.+)$/m);
+        const dataMatch = rawEvent.match(/^data: (.+)$/m);
+        if (!eventMatch || !dataMatch) continue; // heartbeat comment line, etc.
+        let data;
+        try {
+          data = JSON.parse(dataMatch[1]);
+        } catch {
+          continue;
+        }
+        if (eventMatch[1] === "final") finalPayload = data;
+        else if (eventMatch[1] === "error") streamError = data;
+        else onLiveEvent(eventMatch[1], data);
+      }
+      if (done) break;
+    }
+    if (finalPayload) return finalPayload;
+    const error = new Error(streamError?.error || "Agent impact stream ended without a final answer.");
+    error.code = streamError?.code || "STREAM_INCOMPLETE";
+    throw error;
+  } catch {
+    if (reader) {
+      try { reader.cancel(); } catch { /* already closed */ }
+    }
+    return fallbackToJson();
+  }
+}
+
 async function runAgentImpact(questionOverride = "") {
   if (state.loading) return;
   const input = document.querySelector("#questionInput");
@@ -3215,14 +3328,40 @@ async function runAgentImpact(questionOverride = "") {
     tab: "agent",
     answerId: "pending",
     question,
-    payload: { answer: "Running agent workflow...", key_points: [], related_files: [], uncertainty: "", suggested_next_questions: [] }
+    payload: { answer: "Running agent workflow...", key_points: [], related_files: [], uncertainty: "", suggested_next_questions: [], liveNodes: [] }
   });
   render();
+  // Applied as SSE progress frames arrive; re-renders so the live trace list
+  // fills in node-by-node instead of the static placeholder text sitting
+  // there for up to 30s. Looked up by answerId==="pending" + tab==="agent"
+  // each time rather than captured once, since render() fully rebuilds
+  // state.messages' rendering (not the array itself) and state.loading
+  // already guarantees only one runAgentImpact() is in flight at a time.
+  const onLiveEvent = (type, data) => {
+    const message = state.messages.find((item) => item.answerId === "pending" && item.tab === "agent");
+    if (!message) return;
+    if (!Array.isArray(message.payload.liveNodes)) message.payload.liveNodes = [];
+    if (type === "workflow_started") {
+      message.payload.livePlannedNodes = Array.isArray(data.planned_nodes) ? data.planned_nodes : [];
+    } else if (type === "node_completed") {
+      message.payload.liveNodes.push({
+        node: data.node, agent_role: data.agent_role, label: data.label, elapsed_ms: data.elapsed_ms
+      });
+    } else if (type === "revise_round_entered") {
+      message.payload.liveNodes.push({
+        node: "retrieve", agent_role: "QACritic", elapsed_ms: data.elapsed_ms, revise: true,
+        label: `Revise round ${data.round} entered (${(data.additional_queries || []).length} additional quer${(data.additional_queries || []).length === 1 ? "y" : "ies"})`
+      });
+    } else if (type === "hitl_paused") {
+      message.payload.liveNodes.push({
+        node: "human_review", agent_role: "Synthesizer", elapsed_ms: data.elapsed_ms, hitl: true,
+        label: "Paused for human review"
+      });
+    }
+    render();
+  };
   try {
-    const payload = await api("/api/agent-impact", {
-      method: "POST",
-      body: JSON.stringify({ projectId: state.project.id, question })
-    });
+    const payload = await streamAgentImpact(question, onLiveEvent);
     state.messages = state.messages.filter((item) => item.answerId !== "pending");
     state.messages.push({
       kind: payload.kind,

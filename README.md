@@ -331,6 +331,7 @@ The `modelAdapter` boundary uses an OpenAI-compatible chat completions call when
 | `POST` | `/api/import` | Import sample, public GitHub repository, or ZIP upload. |
 | `POST` | `/api/chat` | Repository Q&A or standard impact analysis with lightweight harness and safety metadata. |
 | `POST` | `/api/agent-impact` | LangGraph multi-agent impact workflow. |
+| `POST` | `/api/agent-impact/stream` | Same LangGraph multi-agent impact workflow as `/api/agent-impact`, streamed as Server-Sent Events instead of one request/response. |
 | `POST` | `/api/onboarding` | Generate role-based onboarding plan. |
 | `POST` | `/api/feedback` | Record answer feedback. |
 | `GET` | `/api/answers` | Return the most recent persisted Q&A/impact/agent-impact/onboarding answers for one `projectId` (with paired question text and any recorded feedback), for reconstructing conversation history after a page refresh. Supports `limit` (default 50, capped at 200). |
@@ -394,6 +395,7 @@ Common API errors include:
 - `LANGGRAPH_RESUME_USER_MISMATCH`
 - `INVALID_FEEDBACK_TYPE`
 - `ROUTE_NOT_FOUND`
+- `STREAM_FAILED` (`/api/agent-impact/stream` only — an unexpected error after the SSE response has already started; delivered as an `error` SSE event, since the HTTP status is already committed by then)
 
 `/api/agent-impact` remains compatible with the existing frontend and adds these fields:
 
@@ -401,6 +403,21 @@ Common API errors include:
 - `memory_suggestions`: pending suggestions that require explicit user confirmation.
 - `harness`: LangGraph runtime, run id, model mode, model adapter, executed steps, duration, fallback status, fallback reason, schema status, budgets, budget status, read-only tool registry, model error codes, and errors.
 - `safety`: aggregate safety status, risk types, and guardrail checks.
+
+### `/api/agent-impact/stream`: node-level SSE progress
+
+`POST /api/agent-impact/stream` accepts the exact same request body as `POST /api/agent-impact` (`{ projectId, question, userId? }`) and requires the exact same auth (a request that fails validation or auth before the response starts gets a normal JSON error body, same shape and codes as the plain route). Instead of one response after up to 30s of silence, it streams `Content-Type: text/event-stream` frames as the LangGraph workflow progresses through its nodes:
+
+| SSE event | Payload | When |
+| --- | --- | --- |
+| `workflow_started` | `{ run_id, thread_id, graph_mode, planned_nodes }` | Once, immediately, before the graph starts running. `planned_nodes` is the nominal 9-phase walk (`input_safety` .. `synthesize`); the actual run may diverge (a bounded QACritic revise round re-enters 4 of them, a HITL pause stops short of `synthesize`). |
+| `node_completed` | `{ node, agent_role, label, tool, elapsed_ms }` | Once per real graph node as it finishes, in execution order. |
+| `revise_round_entered` | `{ round, additional_queries, reason, elapsed_ms }` | Once per bounded QACritic revise round, when `retrieve` re-enters carrying the critic's `additional_queries`. |
+| `hitl_paused` | `{ reason, risk_level, change_type, elapsed_ms }` | Once, if a high-risk change triggers LangGraph's native `interrupt()` inside `human_review`. |
+| `final` | `{ answerId, kind, payload }` | Once, last — the exact same shape `POST /api/agent-impact`'s JSON response body has. |
+| `error` | `{ error, code }` | Only if the run fails after the SSE response has already started (see `STREAM_FAILED` above). |
+
+Authentication uses the same `Authorization: Bearer ...` (or `X-API-Key`/`X-AI-PM-Token`) header as every other route — deliberately **not** the browser `EventSource` API (which cannot set custom request headers) and **not** a token passed as a query-string parameter (tokens in URLs leak into server logs and browser history). Clients consume the stream with `fetch()` and `response.body.getReader()`, parsing `event: <type>\ndata: <json>\n\n` frames by hand; `public/app.js`'s `streamAgentImpact()` is the reference implementation, including graceful fallback to the plain JSON route if the stream endpoint is unavailable, errors mid-flight, or the browser lacks `fetch`/`ReadableStream` support. Closing the client connection mid-stream aborts the underlying LangGraph run (via the same `AbortController` the request-timeout race already uses) and skips writing an answer record for that run.
 
 `GET /api/memory` returns `long_term_memories` plus `long_term_memory_query` so the UI and tests can verify which query, status filter, limit, `embedding_model`, and `vector_search` setting produced the memory list. `GET /api/memory/status` exposes operational database counts and migration health without returning memory content. `POST /api/memory/backup` checkpoints WAL state, writes a same-directory `.sqlite.bak` copy, and returns a SHA-256 checksum so operators can verify backup integrity. `GET /api/memory/backups` lists available backup basenames, and `POST /api/memory/restore-plan` validates a selected backup and returns a manual rollback plan without mutating the active database. `POST /api/memory/restore` requires the backup basename, matching SHA-256, and `confirm: "RESTORE_MEMORY_DATABASE"`; it creates a fresh pre-restore backup, replaces the active SQLite memory database, clears WAL/SHM files, and reopens the database.
 

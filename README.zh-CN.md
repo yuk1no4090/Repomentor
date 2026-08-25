@@ -331,6 +331,7 @@ input safety
 | `POST` | `/api/import` | 导入示例、公开 GitHub 仓库或 ZIP 上传。 |
 | `POST` | `/api/chat` | 仓库问答或标准影响分析，附带轻量 harness 和安全元数据。 |
 | `POST` | `/api/agent-impact` | LangGraph 多 Agent 影响分析工作流。 |
+| `POST` | `/api/agent-impact/stream` | 与 `/api/agent-impact` 相同的 LangGraph 多 Agent 影响分析工作流，以 Server-Sent Events 流式返回，而不是单次请求/响应。 |
 | `POST` | `/api/onboarding` | 生成按角色区分的 onboarding 计划。 |
 | `POST` | `/api/feedback` | 记录回答反馈。 |
 | `GET` | `/api/answers` | 按 `projectId` 返回该项目最近持久化的问答/影响分析/agent-impact/onboarding 回答（附带配对的问题文本和已记录的反馈），用于页面刷新后重建对话历史。支持 `limit`（默认 50，上限 200）。 |
@@ -394,6 +395,7 @@ input safety
 - `LANGGRAPH_RESUME_USER_MISMATCH`
 - `INVALID_FEEDBACK_TYPE`
 - `ROUTE_NOT_FOUND`
+- `STREAM_FAILED`（仅 `/api/agent-impact/stream`——SSE 响应已经开始之后发生的意外错误；由于此时 HTTP 状态码已经提交，会作为一个 `error` SSE 事件下发，而不是 HTTP 错误状态码）
 
 `/api/agent-impact` 与现有前端保持兼容，并新增以下字段：
 
@@ -401,6 +403,21 @@ input safety
 - `memory_suggestions`：需要用户显式确认的待处理建议。
 - `harness`：LangGraph runtime、run id、model mode、model adapter、已执行步数、耗时、fallback 状态、fallback 原因、schema 状态、预算、预算状态、只读工具注册表、模型错误码和错误信息。
 - `safety`：聚合的安全状态、风险类型和护栏检查结果。
+
+### `/api/agent-impact/stream`：节点级 SSE 进度流
+
+`POST /api/agent-impact/stream` 接受与 `POST /api/agent-impact` 完全相同的请求体（`{ projectId, question, userId? }`），认证要求也完全相同（响应开始之前发生的校验/认证失败，返回的是与普通路由相同形状、相同错误码的 JSON 错误）。它不再是等待长达 30 秒后返回一次性响应，而是随着 LangGraph 工作流逐节点推进，流式下发 `Content-Type: text/event-stream` 的事件帧：
+
+| SSE 事件 | 数据 | 触发时机 |
+| --- | --- | --- |
+| `workflow_started` | `{ run_id, thread_id, graph_mode, planned_nodes }` | 仅一次，在图开始运行之前立即发出。`planned_nodes` 是标称的 9 阶段走位（`input_safety` .. `synthesize`）；实际执行可能有出入（有界 QACritic 修订轮会重新进入其中 4 个节点，HITL 暂停会在到达 `synthesize` 之前停止）。 |
+| `node_completed` | `{ node, agent_role, label, tool, elapsed_ms }` | 每个真实图节点完成时发出一次，按执行顺序排列。 |
+| `revise_round_entered` | `{ round, additional_queries, reason, elapsed_ms }` | 每个有界 QACritic 修订轮发出一次，即 `retrieve` 携带 critic 的 `additional_queries` 重新进入时。 |
+| `hitl_paused` | `{ reason, risk_level, change_type, elapsed_ms }` | 仅一次，如果高风险变更在 `human_review` 内触发了 LangGraph 原生的 `interrupt()`。 |
+| `final` | `{ answerId, kind, payload }` | 仅一次，且是最后一个——与 `POST /api/agent-impact` 的 JSON 响应体形状完全相同。 |
+| `error` | `{ error, code }` | 仅当 SSE 响应已经开始之后运行失败时发出（参见上面的 `STREAM_FAILED`）。 |
+
+鉴权方式与其他所有路由相同，使用 `Authorization: Bearer ...`（或 `X-API-Key`/`X-AI-PM-Token`）请求头——刻意**不**使用浏览器的 `EventSource` API（它无法设置自定义请求头），也**不**把 token 放进 query string（URL 中的 token 会泄漏进服务器日志和浏览器历史记录）。客户端使用 `fetch()` 加 `response.body.getReader()` 消费该流，自行解析 `event: <type>\ndata: <json>\n\n` 格式的事件帧；`public/app.js` 的 `streamAgentImpact()` 是参考实现，包含在流式端点不可用、中途出错、或浏览器不支持 `fetch`/`ReadableStream` 时优雅回退到普通 JSON 路由的逻辑。客户端在流式传输过程中断开连接，会通过请求超时机制本就使用的同一个 `AbortController` 中止底层的 LangGraph 运行，并且不会为该次运行写入答案记录。
 
 `GET /api/memory` 返回 `long_term_memories` 以及 `long_term_memory_query`，便于 UI 和测试验证生成这份记忆列表所用的查询词、状态过滤、limit、`embedding_model` 和 `vector_search` 设置。`GET /api/memory/status` 暴露运营层面的数据库计数和迁移健康状态，不返回记忆内容。`POST /api/memory/backup` 会对 WAL 状态做 checkpoint，写入一份同目录的 `.sqlite.bak` 副本，并返回 SHA-256 校验值，方便运维人员核对备份完整性。`GET /api/memory/backups` 列出可用的备份文件名，`POST /api/memory/restore-plan` 校验所选备份并返回一份不修改当前数据库的手动回滚计划。`POST /api/memory/restore` 需要备份文件名、匹配的 SHA-256 和 `confirm: "RESTORE_MEMORY_DATABASE"`；它会先创建一份全新的恢复前备份，再替换当前的 SQLite 记忆数据库，清理 WAL/SHM 文件，并重新打开数据库。
 

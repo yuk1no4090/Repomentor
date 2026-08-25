@@ -198,19 +198,22 @@ const reintroducedLazyPreferenceWrite = serverSource.includes(forbiddenLazyPrefe
 
 // Exactly the 3 lightweight routes (memory/confirm, memory/forget, import)
 // should still call resolveAuthenticatedUserId(req, body, store) directly;
-// exactly the 4 heavy routes (chat, onboarding, agent-impact,
-// langgraph-resume) should call resolveHeavyRouteUserId(req, body) instead —
-// a count drifting from either exact number means a route was moved between
-// the two locking strategies without updating the userId-resolution call to
-// match, which would silently reintroduce (or hide) the lock-outside store
-// touch this was fixed for.
+// exactly the 5 heavy routes (chat, onboarding, agent-impact,
+// agent-impact/stream, langgraph-resume) should call
+// resolveHeavyRouteUserId(req, body) instead — a count drifting from either
+// exact number means a route was moved between the two locking strategies
+// without updating the userId-resolution call to match, which would silently
+// reintroduce (or hide) the lock-outside store touch this was fixed for.
+// (Task L2 added POST /api/agent-impact/stream as a 5th heavy route reusing
+// the same resolveHeavyRouteUserId() call as its four siblings, bumping this
+// from 4 to 5.)
 // Matched with a leading "= " so the function's own declaration line
 // (`function resolveHeavyRouteUserId(req, body) {`) and any prose mention of
 // the call shape in comments don't inflate the count — only real call sites
 // assign the return value to a local like `const userId = ...`.
 const heavyRouteUserIdCallCount = (serverSource.match(/= resolveHeavyRouteUserId\(req, body\)/g) || []).length;
 const legacyRouteUserIdCallCount = (serverSource.match(/= resolveAuthenticatedUserId\(req, body, store\)/g) || []).length;
-const userIdResolutionCallCountsMismatched = heavyRouteUserIdCallCount !== 4 || legacyRouteUserIdCallCount !== 3;
+const userIdResolutionCallCountsMismatched = heavyRouteUserIdCallCount !== 5 || legacyRouteUserIdCallCount !== 3;
 
 if (
   missingTopLevelFields.length
