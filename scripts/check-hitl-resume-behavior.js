@@ -48,6 +48,12 @@ import { DatabaseSync } from "node:sqlite";
 // persisted checkpoint payload no longer exists (e.g. pruned by
 // CHECKPOINT_MAX_RUNS) — exercised at the end of this file by deleting the run's
 // row from langgraph_checkpoint_payloads directly and resuming again.
+//
+// The server process that pauses the run is killed and a brand-new server
+// process (same DATA_DIR, fresh port) is spawned before the first decision
+// resume, so every resume/replay assertion below is proven across a real
+// process boundary — the persisted checkpoint payload has to survive in
+// SQLite, not merely in the original process's in-memory MemorySaver.
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -140,24 +146,50 @@ const HIGH_RISK_QUESTION = "I am a PM. Give a concise risk impact analysis for a
 
 async function main() {
   const dataDir = await mkdtemp(path.join(tmpdir(), "ai-pm-hitl-resume-behavior-"));
-  const port = await getFreePort();
-  const baseUrl = `http://127.0.0.1:${port}`;
-  const child = spawn(process.execPath, ["server.js"], {
-    cwd: process.cwd(),
-    env: {
-      ...process.env,
-      PORT: port,
-      HOST: "127.0.0.1",
-      DATA_DIR: dataDir,
-      OPENAI_API_KEY: "",
-      AGENT_HITL_ENABLED: "true"
-    },
-    stdio: ["ignore", "pipe", "pipe"]
-  });
+  // `port`/`baseUrl` are `let`, not `const`: restartServer() below spawns a brand-new
+  // server process on a freshly obtained free port (rather than reusing the old
+  // port, which would risk an EADDRINUSE/TIME_WAIT race right after the old
+  // process exits) and reassigns both, so every request made after the restart
+  // transparently talks to the new process.
+  let port = await getFreePort();
+  let baseUrl = `http://127.0.0.1:${port}`;
   let stdout = "";
   let stderr = "";
-  child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
-  child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+
+  function spawnServer() {
+    const proc = spawn(process.execPath, ["server.js"], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        PORT: port,
+        HOST: "127.0.0.1",
+        DATA_DIR: dataDir,
+        OPENAI_API_KEY: "",
+        AGENT_HITL_ENABLED: "true"
+      },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    proc.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
+    proc.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+    return proc;
+  }
+
+  // Kills the current server process and spawns a fresh one against the SAME
+  // DATA_DIR (so the SQLite-backed store/memory database and its
+  // langgraph_checkpoints/langgraph_checkpoint_payloads rows survive), on a
+  // newly obtained free port. Used once below, right after the run pauses and
+  // before any resume is attempted, so the resume path is exercised across a
+  // genuine process restart rather than within the single long-lived process
+  // that happened to pause it.
+  async function restartServer() {
+    await stopChild(child);
+    port = await getFreePort();
+    baseUrl = `http://127.0.0.1:${port}`;
+    child = spawnServer();
+    await waitForServer(baseUrl, child);
+  }
+
+  let child = spawnServer();
 
   try {
     await waitForServer(baseUrl, child);
@@ -188,6 +220,16 @@ async function main() {
     assert(pausedAnswerId, "paused agent-impact answer did not report an answerId");
     assert(Array.isArray(paused.payload.trace), "paused answer must report a trace array");
     const pausedTraceLength = paused.payload.trace.length;
+
+    // ── 1c. Restart the server process before resuming ──
+    // Everything from here on talks to a brand-new server process (same
+    // DATA_DIR, fresh port). If checkpoint persistence were actually scoped to
+    // the original process's in-memory MemorySaver instance rather than the
+    // SQLite-backed langgraph_checkpoints/langgraph_checkpoint_payloads
+    // tables, every resume assertion below would fail with
+    // LANGGRAPH_CHECKPOINT_NOT_FOUND / LANGGRAPH_RESUME_UNAVAILABLE instead of
+    // succeeding.
+    await restartServer();
 
     // ── 2. Decision resume (approve) must resume the SAME paused execution,
     // not replay the paused snapshot and not re-execute the whole graph ──
@@ -373,6 +415,7 @@ async function main() {
     console.log(JSON.stringify({
       ok: true,
       scenario: "hitl-decision-resume-no-longer-replays-paused-snapshot",
+      crossProcessRestart: true,
       pausedRunId: runId,
       pausedAnswerId,
       pausedTraceLength,

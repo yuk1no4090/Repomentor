@@ -72,3 +72,87 @@ export async function readFrontendSource() {
   const content = await readFile("public/app.js", "utf8");
   return normalizeLineEndings(content);
 }
+
+/**
+ * Strips `//` line comments and `/* *\/` block comments from a JS source string,
+ * leaving everything else — including string/template literal contents — intact.
+ *
+ * This exists because several check-*.js scripts assert a substring exists in
+ * the *executable* source via `serverSource.includes(...)`, but a substring
+ * that only appears inside a comment (e.g. a docstring that happens to mention
+ * the exact call shape being asserted) satisfies `.includes()` just as well as
+ * real code does — silently turning the assertion into a tautology that can
+ * never fail no matter how badly the real implementation regresses. Running
+ * a check's target snippets against `stripComments(source)` instead closes
+ * that gap: a comment-only occurrence of the snippet disappears, so the
+ * assertion can only pass if the snippet is present in real code.
+ *
+ * Implemented as a small single-pass character scanner with three states —
+ * normal code, "inside a comment" (started by `//` or `/*`), and "inside a
+ * string/template literal" (started by `'`, `"`, or `` ` ``) — specifically so
+ * that:
+ *   - a `//` inside a string (e.g. `"https://example.com"`) is NOT treated as
+ *     the start of a line comment, because once inside a string/template
+ *     literal this scanner does not look for comment starters at all until
+ *     the matching (non-escaped) closing quote is seen;
+ *   - a `/*` inside a string is NOT treated as the start of a block comment,
+ *     for the same reason;
+ *   - an escaped quote (`\'`, `\"`, `` \` ``) inside a string does not
+ *     prematurely end that string.
+ *
+ * Deliberately does NOT do full JS parsing: template-literal `${...}`
+ * interpolations are treated as opaque string content rather than re-entering
+ * "code" mode, and regex literals are not specially recognized (a literal
+ * regex containing `//` or `/*` could in principle be misread as a comment
+ * start). Neither limitation matters for this repo's check-*.js use: the
+ * snippets being asserted live in plain statements/object literals, not
+ * inside template interpolations or regex literals. Only used by check
+ * scripts that opt into it — readServerSource()/readFrontendSource() above
+ * are unchanged, so the ~20 other check-*.js scripts that rely on their
+ * existing (comments-included) behavior are unaffected.
+ */
+export function stripComments(source) {
+  const text = String(source ?? "");
+  const length = text.length;
+  let out = "";
+  let i = 0;
+  while (i < length) {
+    const ch = text[i];
+    const nextCh = i + 1 < length ? text[i + 1] : "";
+    if (ch === "/" && nextCh === "/") {
+      i += 2;
+      while (i < length && text[i] !== "\n") i++;
+      continue;
+    }
+    if (ch === "/" && nextCh === "*") {
+      i += 2;
+      while (i < length && !(text[i] === "*" && text[i + 1] === "/")) i++;
+      i = Math.min(i + 2, length);
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === "`") {
+      const quote = ch;
+      out += ch;
+      i++;
+      while (i < length) {
+        const c = text[i];
+        if (c === "\\") {
+          out += c;
+          i++;
+          if (i < length) {
+            out += text[i];
+            i++;
+          }
+          continue;
+        }
+        out += c;
+        i++;
+        if (c === quote) break;
+      }
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
