@@ -18,22 +18,22 @@ _一个帮助新工程师、技术 PM 和 QA 快速理解代码仓库的 MVP Web
 
 **亮点**
 
-- **LangGraph 三模型 Agent 编排** —— Supervisor、ImpactAnalyst、QACritic 使用独立 prompt、schema 和模型调用，并与确定性检索/安全节点协作；高风险变更触发人工审批（HITL），MemorySaver checkpoint 支持续跑。离线运行时每个角色独立降级为确定性逻辑。
+- **LangGraph 三模型 Agent 编排** —— Supervisor、ImpactAnalyst、QACritic 使用独立 prompt、schema 和模型调用，并与确定性检索/安全节点协作；含有界的 QACritic revise 环（图上唯一的真实环路，由 `AGENT_MAX_REVISION_ROUNDS` 限界）、基于 LangGraph 原生 interrupt 的人工审批（HITL）、MemorySaver checkpoint 续跑，以及节点级 SSE 进度流。离线运行时每个角色独立降级为确定性逻辑，且每个角色的模型/温度均可独立配置。
 - **面向 PM/QA 的改动影响简报** —— 输入一句自然语言需求描述，输出受影响模块、业务链路、风险级别、测试重点，非工程师可直接读懂。这一差异化切入有调研背书（见 [docs/POSITIONING.md](docs/POSITIONING.md)）。
 - **产品内置的 AI 质量看板，而非外挂工具** —— 引用覆盖率、答案 schema 合规率、guardrail 命中率是产品 UI 的一部分，而不是需要工程介入才能打开的外部 LLMOps 工具。
 - **MCP Server** 暴露 4 个工具（仓库问答、影响分析、onboarding 计划生成、项目列表），让 Claude Code、Cursor 等 AI coding agent 可以直接消费本项目的分析能力。
 
-**质量证据**：100 条 `node:test` 单元测试、27 项静态检查门禁、9 套运行时黑盒测试套件——全部无需 API key 即可端到端运行（`npm test`）。
+**质量证据**：159 条 `node:test` 单元测试、31 项静态检查门禁、9 套运行时黑盒测试套件——全部无需 API key 即可端到端运行（`npm test`）。
 
 延伸阅读：[docs/POSITIONING.md](docs/POSITIONING.md)（定位与市场验证）· [docs/AGENT_RUNTIME_ARCHITECTURE.md](docs/AGENT_RUNTIME_ARCHITECTURE.md)（实现边界）· [docs/PRD.md](docs/PRD.md)（需求与取舍决策）· [docs/CHANGELOG.md](docs/CHANGELOG.md)（开发日志）
 
 ## 架构
 
-**模块分层。** `server.js` 是一个约 1200 行的瘦 HTTP 路由层；全部业务逻辑位于 `lib/` 下 13 个单一职责模块中，下图按 config / 存储 / 领域三组呈现。`lib/` 模块间依赖单向无环——完整依赖清单见 [docs/AGENT_RUNTIME_ARCHITECTURE.md 的 Code Organization 小节](docs/AGENT_RUNTIME_ARCHITECTURE.md#code-organization)。
+**模块分层。** `server.js` 是一个约 1550 行的瘦 HTTP 路由层；全部业务逻辑位于 `lib/` 下 13 个单一职责模块中，下图按 config / 存储 / 领域三组呈现。`lib/` 模块间依赖单向无环——完整依赖清单见 [docs/AGENT_RUNTIME_ARCHITECTURE.md 的 Code Organization 小节](docs/AGENT_RUNTIME_ARCHITECTURE.md#code-organization)。
 
 ```mermaid
 flowchart TD
-    HTTP["server.js<br/>HTTP 路由层（约 1200 行）<br/>handleApi / handleApiUnlocked / serveStatic<br/>bootstrap: setStoreRecordNormalizers(), setCheckpointCollaborators()"]
+    HTTP["server.js<br/>HTTP 路由层（约 1550 行）<br/>handleApi / handleApiUnlocked / serveStatic<br/>bootstrap: setStoreRecordNormalizers(), setCheckpointCollaborators()"]
 
     subgraph LIB["lib/ —— 13 个单一职责模块"]
         direction LR
@@ -70,23 +70,24 @@ flowchart TD
     S3 --> DATA2
 ```
 
-**Agent 工作流。** 默认的 `AGENT_GRAPH_MODE=supervisor` 图实际路由步骤更多（完整节点见 [docs/AGENT_RUNTIME_ARCHITECTURE.md 的 Graph Nodes 小节](docs/AGENT_RUNTIME_ARCHITECTURE.md#graph-nodes)）；下图是核心路径，标出了 HITL 与 checkpoint 的位置：
+**Agent 工作流。** 默认的 `AGENT_GRAPH_MODE=supervisor` 图实际路由步骤更多（完整节点见 [docs/AGENT_RUNTIME_ARCHITECTURE.md 的 Graph Nodes 小节](docs/AGENT_RUNTIME_ARCHITECTURE.md#graph-nodes)）；下图是核心路径，标出了有界 QACritic revise 环、HITL 与 checkpoint 的位置：
 
 ```mermaid
 flowchart LR
-    Supervisor["Supervisor Agent<br/>计划 + 检索查询"] --> Retrieve["Retriever 工具节点"]
+    Supervisor["Supervisor Agent<br/>计划 + 检索查询"] --> Retrieve["Retriever 工具节点<br/>（逐查询检索）"]
     Retrieve --> Impact["ImpactAnalyst Agent"]
     Impact --> Critic["QACritic Agent"]
-    Critic --> Guardrails["安全护栏"]
+    Critic -->|"verdict: revise<br/>（由 AGENT_MAX_REVISION_ROUNDS 限界）"| Retrieve
+    Critic -->|"verdict: approve，<br/>或修订预算已用尽"| Guardrails["安全护栏"]
     Guardrails -->|"高风险 + AGENT_HITL_ENABLED"| HITL{{"human_review<br/>（暂停，经 POST /api/langgraph-resume 续跑）"}}
     Guardrails -->|"其他情况"| Synthesize["合成"]
-    HITL -->|"decision: approve"| Guardrails
-    HITL -->|"decision: reject"| Stop["运行终止（被拒绝）"]
+    HITL -->|"decision: approve 或 reject"| Synthesize
 
     CP[("Checkpoint<br/>MemorySaver → SQLite<br/>langgraph_checkpoints")]
     Supervisor -.-> CP
     Retrieve -.-> CP
     Impact -.-> CP
+    Critic -.-> CP
     Guardrails -.-> CP
     Synthesize -.-> CP
 ```
@@ -117,7 +118,7 @@ export OPENAI_MODEL=gpt-4o-mini
 - 导入时的安全审查会在项目概览中给出 prompt 风险和敏感内容文件的计数。
 - 仓库问答提供相关文件、不确定性说明、建议的后续问题、反馈按钮、轻量 harness 元数据、安全状态、护栏详情，以及待处理的记忆建议。
 - 影响分析提供受影响模块、风险级别、测试建议和待澄清问题。
-- Agent Workflow 标签页由 LangGraph StateGraph 驱动，编排 Supervisor、ImpactAnalyst、QACritic 三个模型 Agent，并配合确定性的分类、检索、记忆、安全、综合节点和 MemorySaver checkpoint。
+- Agent Workflow 标签页由 LangGraph StateGraph 驱动，编排 Supervisor、ImpactAnalyst、QACritic 三个模型 Agent（各自可通过 `OPENAI_MODEL_*`/`OPENAI_TEMPERATURE_*` 独立配置），并配合确定性的分类、检索、记忆、安全和综合节点；包含一个回到检索节点的有界 QACritic revise 环、面向高风险变更的可选人工审批（HITL）、MemorySaver checkpoint，以及通过 `/api/agent-impact/stream` 提供的节点级 SSE 进度流。
 - Onboarding 计划通过一个轻量的确定性 harness 生成，带有 trace、安全、护栏、引用和待处理记忆建议。
 - 可选的、绑定 token 的认证支持用户、角色、scope、本地 store 存储的 token 以及审计元数据。`/api/auth/me` 返回当前解析出的身份，`/api/auth/users` 列出配置和本地用户，`POST /api/auth/users` 创建本地用户并返回一次性可见的 token，`POST /api/auth/users/disable` 禁用一个本地用户及其 token，`/api/auth/events` 列出最近的认证决策而不暴露 token 值。这不是一套密码登录或 session 管理系统。
 - 用户偏好记忆建议需要显式确认才会保存。已确认的偏好按 `userId` 隔离，未提供时默认使用 `local-user`，以保持本地/向后兼容的使用方式。API 客户端可以在 JSON body 或 `X-User-Id` 请求头中传入 `userId`。已确认的偏好可以同时影响影响分析和普通问答的侧重点；已确认的记忆也会写入 SQLite 长期记忆，供后续的 Agent Workflow 和 Direct Chat 运行复用检索。记忆建议携带用户和项目归属信息，便于确认/忽略操作校验当前生效的边界。被忽略的建议会抑制该用户下相同 key/value 建议的重复出现。Copilot inspector 内置一个轻量的偏好和长期记忆管理器，可查看、移除单个偏好值，或清空全部偏好。
@@ -196,10 +197,11 @@ npm run test:user-memory
 npm run test:auth
 npm run test:embedding
 npm run test:benchmark
+npm run test:mcp
 npm test
 ```
 
-`npm run test:static` 运行 `scripts/static-checks.js`，在不启动服务器的情况下执行语法检查、locale 文案一致性检查、前端 agent UI 检查、文案质量检查、运行时依赖检查、API 文档同步检查、store schema 检查、smoke 可靠性检查、UI 验收接线检查、安全护栏契约检查、安全红队接线检查、记忆压缩检查、用户记忆隔离检查、认证边界检查、embedding provider 检查、agent benchmark 契约检查，以及 agent 响应契约检查。`npm test` 依次运行静态检查、smoke test、UI 验收测试、安全红队测试、记忆压缩测试、用户记忆隔离测试、认证边界测试、embedding provider 测试和 agent benchmark。
+`npm run test:static` 运行 `scripts/static-checks.js`，在不启动服务器的情况下执行语法检查、locale 文案一致性检查、前端 agent UI 检查、文案质量检查、运行时依赖检查、API 文档同步检查、store schema 检查、smoke 可靠性检查、UI 验收接线检查、安全护栏契约检查、安全红队接线检查、记忆压缩检查、用户记忆隔离检查、认证边界检查、embedding provider 检查、agent benchmark 契约检查，以及 agent 响应契约检查（`test/` 下的 `node:test` 单测套件也在这一步通过 `scripts/check-unit-tests.js` 运行）。`npm test` 依次运行静态检查、smoke test、UI 验收测试、安全红队测试、记忆压缩测试、用户记忆隔离测试、认证边界测试、embedding provider 测试、agent benchmark，以及 MCP server 测试。
 
 静态检查脚本采用 `scripts/check-*.js` 命名约定。`scripts/static-checks.js` 会对全部 `scripts/*.js` 文件做语法检查，并自动发现、执行所有 `check-*.js`。
 
@@ -232,6 +234,9 @@ GitHub Actions 会在 push 到 `main` 和创建 pull request 时运行 `npm ci` 
 | `DATA_DIR` | `data` | 运行时 JSON 存储的目录。 |
 | `STORE_PATH` | `DATA_DIR/store.json` | 运行时 store 文件的确切路径。 |
 | `MEMORY_DB_PATH` | `DATA_DIR/memory.sqlite` | 已确认长期记忆条目的 SQLite 数据库路径。 |
+| `STORE_MAX_QUESTIONS` / `STORE_MAX_ANSWERS` | `500` | `store.json` 中保留的最大问题/回答记录数；更早的记录按时间序被裁剪。 |
+| `STORE_MAX_HARNESS_RUNS` / `STORE_MAX_MEMORY_EVENTS` | `200` | `store.json` 中保留的最大 harness run 摘要数/记忆审计事件数。 |
+| `CHECKPOINT_MAX_RUNS` | `50` | SQLite 中保留其 checkpoint 快照的 LangGraph run 的最大数量；更早的 run 会被裁剪。 |
 | `AI_PM_AUTH_REQUIRED` | 未设置 | 设为 `true` 时，除 `/api/health` 外的 API 路由都需要 token 认证。 |
 | `AI_PM_USER_TOKENS` | 未设置 | token 到用户的映射，可以是 JSON（如 `{"token-a":"user-a"}` / `{"token-a":{"userId":"user-a","role":"viewer","scopes":["project:read"]}}`），也可以是逗号分隔的 `token:userId` 对。 |
 | `MEMORY_EMBEDDING_PROVIDER` | 未设置 | 设为 `openai` 时，长期记忆向量改用 OpenAI-compatible embeddings 接口。 |
@@ -253,8 +258,10 @@ GitHub Actions 会在 push 到 `main` 和创建 pull request 时运行 `npm ci` 
 | `OPENAI_TEMPERATURE_IMPACT_ANALYST` | 未设置（回退到 `OPENAI_TEMPERATURE`） | 仅用于 ImpactAnalyst agent 的采样温度。 |
 | `OPENAI_TEMPERATURE_QA_CRITIC` | 未设置（回退到 `OPENAI_TEMPERATURE`） | 仅用于 QACritic agent 的采样温度。 |
 | `LLM_CONTEXT_TOKEN_BUDGET` | `8000` | 使用确定性回退之前，估算的 prompt 上下文 token 预算上限。 |
+| `LLM_REQUEST_TIMEOUT_MS` | 运行时默认值 | LangGraph 工作流和 direct chat harness 共用的单次模型调用超时时间。非法或非正数值会回退到一个有限的默认值。 |
 | `AGENT_GRAPH_MODE` | `supervisor` | 图路由模式：`supervisor` 为动态多 Agent 路由，`linear` 为原始的 9 节点线性管线。 |
 | `AGENT_MAX_STEPS` | `14` | LangGraph 最大执行步数（从 9 上调，以覆盖 supervisor 路由的额外开销）。 |
+| `AGENT_MAX_REVISION_ROUNDS` | `1` | 有界 QACritic revise 轮次的最大数量（`qa_plan` 返回 `"revise"` 时会回到 `retrieve`）。设为 `0` 可完全关闭 revise 环。 |
 | `AGENT_HITL_ENABLED` | `false` | 设为 `true` 时，对高风险变更启用人工审核（human-in-the-loop）。 |
 | `RATE_LIMIT_MAX` | `120` | 每个 IP 每个时间窗口内的最大 API 请求数。设为 `0` 可禁用限流。 |
 | `RATE_LIMIT_WINDOW_MS` | `60000` | 限流时间窗口长度（毫秒）。 |
@@ -327,10 +334,13 @@ input safety
   -> retriever
   -> context expander
   -> ImpactAnalyst agent
-  -> QACritic agent
+  -> QACritic agent          -- verdict 为 "revise" 时（受 AGENT_MAX_REVISION_ROUNDS 限界）回到 retriever
   -> safety guardrails
+  -> [human_review]          -- 仅当风险为 high 且 AGENT_HITL_ENABLED=true 时；通过 LangGraph 原生 interrupt() 暂停
   -> structured synthesizer
 ```
+
+这是标称的 9 阶段走位，加上它的两个可选分支（revise 环和 HITL 暂停）——完整路由规则见上方的 Agent 工作流图与 [docs/AGENT_RUNTIME_ARCHITECTURE.md 的 Graph Nodes 小节](docs/AGENT_RUNTIME_ARCHITECTURE.md#graph-nodes)。
 
 配置 API key 后，Supervisor、ImpactAnalyst、QACritic 通过 `runAgentModelAdapter()` 使用独立 prompt、schema 和模型调用。`harness.model_calls` 展示每个角色的结果，兼容字段 `harness.model_adapter` 汇总 ImpactAnalyst；没有 key 时每个角色独立回退到确定性逻辑。
 
@@ -446,7 +456,7 @@ input safety
 
 记忆确认、忽略的建议、选择性遗忘和清空全部偏好都会记录在 `memoryEvents` 下，使偏好变更可审计，同时避免把未确认的建议写入长期记忆。
 
-`GET /api/harness-run` 返回某个 `projectId` 和 `runId` 对应的一条已持久化 harness run 审计记录，包含存储的 run 快照，以及答案 trace、harness、安全、护栏元数据和已持久化的 LangGraph checkpoint 摘要。`GET /api/langgraph-checkpoint` 返回一条 checkpoint 摘要，附带一条只读的 `time_travel` 说明，以及是否有可执行的续跑 payload 可用。`GET /api/langgraph-replay` 返回该 run 按顺序排列的 checkpoint 摘要回放。`POST /api/langgraph-resume` 会从一个已持久化的 checkpoint payload 继续执行，作为一次新的 harness run，其 `harness.resume.mode=checkpoint_continuation`；没有 payload 的旧 run 会回退为 `harness.resume.mode=input_snapshot_reexecution`。checkpoint 审计和回放相关接口始终保持只读。
+`GET /api/harness-run` 返回某个 `projectId` 和 `runId` 对应的一条已持久化 harness run 审计记录，包含存储的 run 快照，以及答案 trace、harness、安全、护栏元数据和已持久化的 LangGraph checkpoint 摘要。`GET /api/langgraph-checkpoint` 返回一条 checkpoint 摘要，附带一条只读的 `time_travel` 说明，以及是否有可执行的续跑 payload 可用。`GET /api/langgraph-replay` 返回该 run 按顺序排列的 checkpoint 摘要回放。`POST /api/langgraph-resume` 会在 `harness.resume.mode` 中报告实际使用的三种模式之一：`native_interrupt_resume`（常见情况——已持久化的 checkpoint payload 存在且提供了 HITL `decision`，LangGraph 通过 `Command({ resume: decision })` 恢复同一次暂停的执行，而不会重跑更早的阶段）、`checkpoint_continuation`（已持久化的 checkpoint payload 存在但未提供 `decision`，暂停的运行会被原样重放），或 `input_snapshot_reexecution`（没有已持久化的 checkpoint payload 留存——一种回退方案，基于持久化的输入快照重新执行并直接注入 decision）。checkpoint 审计和回放相关接口始终保持只读；完整的 resume 模式表见 [docs/AGENT_RUNTIME_ARCHITECTURE.md 的 agentHarness 小节](docs/AGENT_RUNTIME_ARCHITECTURE.md#agentharness)。
 
 安全 payload 包含 `risk_details`，为每种风险类型提供规范化的说明列表，便于审核界面展示护栏为何被触发。输出护栏会先扫描原始生成的 payload，然后在存储或返回之前脱敏掉类似凭据的字符串。发生脱敏时，`safety.output_redaction` 会记录是否执行了脱敏，以及替换了多少条类似凭据的匹配，而不会存储原始值。
 

@@ -18,22 +18,22 @@ New hires typically take days to weeks to build working context on an unfamiliar
 
 **Highlights**
 
-- **Three model-agent LangGraph orchestration** — independently prompted Supervisor, ImpactAnalyst, and QACritic calls are coordinated with deterministic retrieval/safety nodes, human-in-the-loop approval for high-risk changes, and resumable MemorySaver checkpoints. Offline runs degrade each role separately to deterministic logic.
+- **Three model-agent LangGraph orchestration** — independently prompted Supervisor, ImpactAnalyst, and QACritic calls are coordinated with deterministic retrieval/safety nodes, a bounded QACritic revise cycle (the graph's one real loop, capped by `AGENT_MAX_REVISION_ROUNDS`), native-interrupt human-in-the-loop approval for high-risk changes, resumable MemorySaver checkpoints, and node-level SSE progress streaming. Offline runs degrade each role separately to deterministic logic, and each role's model/temperature is independently configurable.
 - **Change-impact briefings for PMs and QA** — one plain-language requirement in, impacted modules / business paths / risk level / testing focus out, in language a non-engineer can act on. Backed by market research on where this gap actually exists (see [docs/POSITIONING.md](docs/POSITIONING.md)).
 - **An AI quality dashboard built into the product, not bolted on** — citation coverage, answer-schema compliance, and guardrail hit rates are first-class product UI instead of an external LLMOps tool a PM has to ask an engineer to open.
 - **An MCP Server** exposing 4 tools (repository Q&A, impact analysis, onboarding plans, project listing) so AI coding agents such as Claude Code or Cursor can consume this project's analysis directly.
 
-**Quality bar:** 100 `node:test` unit tests, 27 static-check gates, and 9 runtime black-box test suites — all running end-to-end with zero API key required (`npm test`).
+**Quality bar:** 159 `node:test` unit tests, 31 static-check gates, and 9 runtime black-box test suites — all running end-to-end with zero API key required (`npm test`).
 
 More: [docs/POSITIONING.md](docs/POSITIONING.md) (positioning + market validation) · [docs/AGENT_RUNTIME_ARCHITECTURE.md](docs/AGENT_RUNTIME_ARCHITECTURE.md) (implementation boundary) · [docs/PRD.md](docs/PRD.md) (requirements + scope decisions) · [docs/CHANGELOG.md](docs/CHANGELOG.md) (development log)
 
 ## Architecture
 
-**Module layering.** `server.js` is a thin ~1,200-line HTTP routing layer; all application logic lives in 13 single-purpose modules under `lib/`, grouped below by config / storage / domain. Dependencies between `lib/` modules are unidirectional and acyclic — see [docs/AGENT_RUNTIME_ARCHITECTURE.md § Code Organization](docs/AGENT_RUNTIME_ARCHITECTURE.md#code-organization) for the full dependency list.
+**Module layering.** `server.js` is a thin ~1,550-line HTTP routing layer; all application logic lives in 13 single-purpose modules under `lib/`, grouped below by config / storage / domain. Dependencies between `lib/` modules are unidirectional and acyclic — see [docs/AGENT_RUNTIME_ARCHITECTURE.md § Code Organization](docs/AGENT_RUNTIME_ARCHITECTURE.md#code-organization) for the full dependency list.
 
 ```mermaid
 flowchart TD
-    HTTP["server.js<br/>HTTP routing layer (~1,200 lines)<br/>handleApi / handleApiUnlocked / serveStatic<br/>bootstrap: setStoreRecordNormalizers(), setCheckpointCollaborators()"]
+    HTTP["server.js<br/>HTTP routing layer (~1,550 lines)<br/>handleApi / handleApiUnlocked / serveStatic<br/>bootstrap: setStoreRecordNormalizers(), setCheckpointCollaborators()"]
 
     subgraph LIB["lib/ — 13 single-purpose modules"]
         direction LR
@@ -70,23 +70,24 @@ flowchart TD
     S3 --> DATA2
 ```
 
-**Agent workflow.** The default `AGENT_GRAPH_MODE=supervisor` graph routes dynamically through more steps than shown here (see [docs/AGENT_RUNTIME_ARCHITECTURE.md § Graph Nodes](docs/AGENT_RUNTIME_ARCHITECTURE.md#graph-nodes)); this is the core path with HITL and checkpoint positions marked:
+**Agent workflow.** The default `AGENT_GRAPH_MODE=supervisor` graph routes dynamically through more steps than shown here (see [docs/AGENT_RUNTIME_ARCHITECTURE.md § Graph Nodes](docs/AGENT_RUNTIME_ARCHITECTURE.md#graph-nodes)); this is the core path with the bounded QACritic revise cycle, HITL, and checkpoint positions marked:
 
 ```mermaid
 flowchart LR
-    Supervisor["Supervisor Agent<br/>plan + retrieval queries"] --> Retrieve["Retriever tool nodes"]
+    Supervisor["Supervisor Agent<br/>plan + retrieval queries"] --> Retrieve["Retriever tool nodes<br/>(per-query retrieval)"]
     Retrieve --> Impact["ImpactAnalyst Agent"]
     Impact --> Critic["QACritic Agent"]
-    Critic --> Guardrails["Safety Guardrails"]
+    Critic -->|"verdict: revise<br/>(bounded by AGENT_MAX_REVISION_ROUNDS)"| Retrieve
+    Critic -->|"verdict: approve,<br/>or revise budget exhausted"| Guardrails["Safety Guardrails"]
     Guardrails -->|"high risk + AGENT_HITL_ENABLED"| HITL{{"human_review<br/>(paused — resume via POST /api/langgraph-resume)"}}
     Guardrails -->|"else"| Synthesize["Synthesize"]
-    HITL -->|"decision: approve"| Guardrails
-    HITL -->|"decision: reject"| Stop["Run ends (rejected)"]
+    HITL -->|"decision: approve or reject"| Synthesize
 
     CP[("Checkpoint<br/>MemorySaver → SQLite<br/>langgraph_checkpoints")]
     Supervisor -.-> CP
     Retrieve -.-> CP
     Impact -.-> CP
+    Critic -.-> CP
     Guardrails -.-> CP
     Synthesize -.-> CP
 ```
@@ -117,7 +118,7 @@ export OPENAI_MODEL=gpt-4o-mini
 - Import-time safety review with prompt-risk and sensitive-content file counts in the project overview.
 - Repository Q&A with related files, uncertainty, suggested next questions, feedback buttons, lightweight harness metadata, safety status, guardrail details, and pending memory suggestions.
 - Impact analysis with impacted modules, risk level, testing suggestions, and open questions.
-- Agent Workflow tab backed by a LangGraph StateGraph that coordinates the Supervisor, ImpactAnalyst, and QACritic model agents with deterministic classification, retrieval, memory, safety, synthesis, and MemorySaver checkpointing.
+- Agent Workflow tab backed by a LangGraph StateGraph that coordinates the Supervisor, ImpactAnalyst, and QACritic model agents (each independently configurable via per-role `OPENAI_MODEL_*`/`OPENAI_TEMPERATURE_*`) with deterministic classification, retrieval, memory, safety, and synthesis; includes a bounded QACritic revise cycle back to retrieval, optional human-in-the-loop approval for high-risk changes, MemorySaver checkpointing, and node-level SSE progress streaming via `/api/agent-impact/stream`.
 - Onboarding plans run through a lightweight deterministic harness with trace, safety, guardrails, citations, and pending memory suggestions.
 - Optional token-bound auth with user, role, scope, local store-backed tokens, and audit metadata. `/api/auth/me` returns the current resolved identity, `/api/auth/users` lists configured and local users, `POST /api/auth/users` creates a local user and returns a one-time visible token, `POST /api/auth/users/disable` disables a local user and its tokens, and `/api/auth/events` lists recent auth decisions without exposing token values. This is not a password-login or session-management system.
 - User preference memory suggestions that require explicit confirmation before being saved. Confirmed preferences are scoped by `userId`, defaulting to `local-user` for local/backward-compatible use. API clients can pass `userId` in JSON bodies or the `X-User-Id` header. Confirmed preferences can shape both impact analysis and ordinary Q&A emphasis; confirmed memory is also written to SQLite long-term memory for searchable reuse across later Agent Workflow and Direct Chat runs. Memory suggestions carry user and project ownership so confirmation/ignore actions can verify the active boundary. Ignored suggestions suppress the same key/value suggestion from being repeated for that user. The Copilot inspector includes a lightweight preference and long-term memory manager for viewing, removing one preference value, or clearing all preferences.
@@ -196,10 +197,11 @@ npm run test:user-memory
 npm run test:auth
 npm run test:embedding
 npm run test:benchmark
+npm run test:mcp
 npm test
 ```
 
-`npm run test:static` runs `scripts/static-checks.js`, which performs syntax checks, locale-copy consistency checks, frontend agent UI checks, text-quality checks, runtime dependency checks, API documentation sync checks, store-schema checks, smoke reliability checks, UI acceptance wiring checks, safety guardrail contract checks, safety red-team wiring checks, memory compaction checks, user memory isolation checks, auth boundary checks, embedding provider checks, agent benchmark contract checks, and agent response contract checks without starting a server. `npm test` runs the static checks, smoke test, UI acceptance test, safety red-team test, memory compaction test, user memory isolation test, auth boundary test, embedding provider test, and agent benchmark.
+`npm run test:static` runs `scripts/static-checks.js`, which performs syntax checks, locale-copy consistency checks, frontend agent UI checks, text-quality checks, runtime dependency checks, API documentation sync checks, store-schema checks, smoke reliability checks, UI acceptance wiring checks, safety guardrail contract checks, safety red-team wiring checks, memory compaction checks, user memory isolation checks, auth boundary checks, embedding provider checks, agent benchmark contract checks, and agent response contract checks without starting a server (this is also where the `node:test` unit suite under `test/` runs, via `scripts/check-unit-tests.js`). `npm test` runs the static checks, smoke test, UI acceptance test, safety red-team test, memory compaction test, user memory isolation test, auth boundary test, embedding provider test, agent benchmark, and the MCP server test.
 
 Static check scripts use the `scripts/check-*.js` naming convention. `scripts/static-checks.js` syntax-checks all `scripts/*.js` files and discovers/runs `check-*.js` automatically.
 
@@ -232,6 +234,9 @@ The project targets Node.js 24 because the long-term memory store uses the built
 | `DATA_DIR` | `data` | Directory for runtime JSON storage. |
 | `STORE_PATH` | `DATA_DIR/store.json` | Exact runtime store file path. |
 | `MEMORY_DB_PATH` | `DATA_DIR/memory.sqlite` | SQLite database path for confirmed long-term memory items. |
+| `STORE_MAX_QUESTIONS` / `STORE_MAX_ANSWERS` | `500` | Maximum retained `store.json` question/answer records; older records are trimmed by time order. |
+| `STORE_MAX_HARNESS_RUNS` / `STORE_MAX_MEMORY_EVENTS` | `200` | Maximum retained harness run summaries / memory audit events in `store.json`. |
+| `CHECKPOINT_MAX_RUNS` | `50` | Maximum number of LangGraph runs whose checkpoint snapshots are retained in SQLite; older runs are pruned. |
 | `AI_PM_AUTH_REQUIRED` | unset | Set to `true` to require token authentication for API routes except `/api/health`. |
 | `AI_PM_USER_TOKENS` | unset | Token-to-user mapping, either JSON such as `{"token-a":"user-a"}` / `{"token-a":{"userId":"user-a","role":"viewer","scopes":["project:read"]}}` or comma-separated `token:userId` pairs. |
 | `MEMORY_EMBEDDING_PROVIDER` | unset | Set to `openai` to use an OpenAI-compatible embeddings endpoint for long-term memory vectors. |
@@ -253,8 +258,10 @@ The project targets Node.js 24 because the long-term memory store uses the built
 | `OPENAI_TEMPERATURE_IMPACT_ANALYST` | unset (falls back to `OPENAI_TEMPERATURE`) | Sampling temperature for the ImpactAnalyst agent only. |
 | `OPENAI_TEMPERATURE_QA_CRITIC` | unset (falls back to `OPENAI_TEMPERATURE`) | Sampling temperature for the QACritic agent only. |
 | `LLM_CONTEXT_TOKEN_BUDGET` | `8000` | Estimated prompt context token budget before using deterministic fallback. |
+| `LLM_REQUEST_TIMEOUT_MS` | runtime default | Per-model-call timeout for both the LangGraph workflow and the direct chat harness. Invalid or non-positive values fall back to a finite default. |
 | `AGENT_GRAPH_MODE` | `supervisor` | Graph routing mode: `supervisor` for dynamic multi-agent routing or `linear` for the original 9-node pipeline. |
 | `AGENT_MAX_STEPS` | `14` | Maximum LangGraph execution steps (increased from 9 to support supervisor routing overhead). |
+| `AGENT_MAX_REVISION_ROUNDS` | `1` | Maximum number of bounded QACritic revise rounds (`qa_plan` verdict `"revise"` loops back to `retrieve`). `0` disables the revise cycle entirely. |
 | `AGENT_HITL_ENABLED` | `false` | Set to `true` to enable human-in-the-loop review for high-risk changes. |
 | `RATE_LIMIT_MAX` | `120` | Maximum API requests per window per IP. Set to `0` to disable rate limiting. |
 | `RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window duration in milliseconds. |
@@ -327,10 +334,13 @@ input safety
   -> retriever
   -> context expander
   -> ImpactAnalyst agent
-  -> QACritic agent
+  -> QACritic agent          -- verdict "revise" (bounded by AGENT_MAX_REVISION_ROUNDS) loops back to retriever
   -> safety guardrails
+  -> [human_review]          -- only when risk is high and AGENT_HITL_ENABLED=true; pauses via LangGraph's native interrupt()
   -> structured synthesizer
 ```
+
+This is the nominal 9-phase walk plus its two optional deviations (the revise loop and the HITL pause) — see the Agent workflow diagram above and [docs/AGENT_RUNTIME_ARCHITECTURE.md § Graph Nodes](docs/AGENT_RUNTIME_ARCHITECTURE.md#graph-nodes) for the full routing rules.
 
 With an API key, Supervisor, ImpactAnalyst, and QACritic have separate prompts, schemas, and model calls through `runAgentModelAdapter()`. `harness.model_calls` exposes each result; the backward-compatible `harness.model_adapter` field summarizes ImpactAnalyst. Without a key, each role falls back independently to deterministic logic.
 
@@ -446,7 +456,7 @@ Evaluation metrics are scoped to the requested `projectId`, so safety status, ou
 
 Memory confirmations, ignored suggestions, selective forgets, and full preference clears are recorded under `memoryEvents` so preference changes remain auditable without writing unconfirmed suggestions into long-lived memory.
 
-`GET /api/harness-run` returns a persisted harness run audit for one `projectId` and `runId`, including the stored run snapshot plus answer trace, harness, safety, guardrail metadata, and persisted LangGraph checkpoint summaries. `GET /api/langgraph-checkpoint` returns one checkpoint summary plus a read-only `time_travel` note and whether executable resume payloads are available. `GET /api/langgraph-replay` returns the ordered checkpoint summary replay for the run. `POST /api/langgraph-resume` continues from a persisted checkpoint payload as a new harness run with `harness.resume.mode=checkpoint_continuation`; checkpoints from older runs without payloads fall back to `harness.resume.mode=input_snapshot_reexecution`. Checkpoint audit and replay endpoints remain read-only.
+`GET /api/harness-run` returns a persisted harness run audit for one `projectId` and `runId`, including the stored run snapshot plus answer trace, harness, safety, guardrail metadata, and persisted LangGraph checkpoint summaries. `GET /api/langgraph-checkpoint` returns one checkpoint summary plus a read-only `time_travel` note and whether executable resume payloads are available. `GET /api/langgraph-replay` returns the ordered checkpoint summary replay for the run. `POST /api/langgraph-resume` reports which of three modes it used as `harness.resume.mode`: `native_interrupt_resume` (the common case — a persisted checkpoint payload exists and a HITL `decision` was supplied, so LangGraph resumes the SAME paused execution via `Command({ resume: decision })` instead of re-running earlier phases), `checkpoint_continuation` (a persisted checkpoint payload exists but no `decision` was supplied, so the paused run is replayed verbatim), or `input_snapshot_reexecution` (no persisted checkpoint payload survives — a legacy fallback that re-executes from the persisted input snapshot with the decision injected directly). Checkpoint audit and replay endpoints remain read-only; see [docs/AGENT_RUNTIME_ARCHITECTURE.md § agentHarness](docs/AGENT_RUNTIME_ARCHITECTURE.md#agentharness) for the full resume-mode table.
 
 Safety payloads include `risk_details`, a normalized explanation list for each risk type so review screens can show why guardrails were triggered. Output guardrails scan the raw generated payload first, then redact credential-like strings before the payload is stored or returned. When redaction occurs, `safety.output_redaction` records whether redaction was applied and how many credential-like matches were replaced, without storing the raw values.
 

@@ -12,7 +12,7 @@ This document records the first production-shaped implementation boundary for th
 
 ## Code Organization
 
-`server.js` is now a thin HTTP layer only: `handleApi`/`handleApiUnlocked` route dispatch, `serveStatic`, a small number of helpers that stay coupled to routing (`sendJson`, `readBody`, `findHarnessRunAudit`), and process bootstrap (wiring `setStoreRecordNormalizers()` / `setCheckpointCollaborators()`, `http.createServer`, graceful shutdown). It shrank from 6,029 lines to roughly 1,200 lines across three decomposition passes — a storage-layer pass, then two domain-layer passes — that moved logic into `lib/` with no behavior changes.
+`server.js` is now a thin HTTP layer only: `handleApi`/`handleApiUnlocked` route dispatch, `serveStatic`, a small number of helpers that stay coupled to routing (`sendJson`, `readBody`, `findHarnessRunAudit`), and process bootstrap (wiring `setStoreRecordNormalizers()` / `setCheckpointCollaborators()`, `http.createServer`, graceful shutdown). It shrank from 6,029 lines to roughly 1,550 lines across three decomposition passes — a storage-layer pass, then two domain-layer passes — that moved logic into `lib/` with no behavior changes.
 
 All application logic lives in 13 single-purpose modules under `lib/`:
 
@@ -34,7 +34,7 @@ Dependencies between `lib/` modules are unidirectional and acyclic: `lib/agent-g
 
 Two injection points keep `lib/store.js` and `lib/checkpoints.js` decoupled from the domain modules that own the record shapes they normalize or the handlers they call, avoiding circular imports: `server.js` imports the actual normalizer functions from `lib/auth.js`, `lib/answers.js`, `lib/agent-graph.js`, and `lib/memory-db.js`, then calls `setStoreRecordNormalizers()` once at bootstrap; `setCheckpointCollaborators()` similarly injects `findProject`, `findHarnessRunAudit`, and `runAgenticImpactWorkflow` (from `lib/agent-graph.js`) into `lib/checkpoints.js` before the HTTP server starts.
 
-A `test/` directory holds 134 pure-function/unit cases on Node's built-in `node:test` runner, including routing (including the bounded QACritic revise loop), safety, retrieval, Agent contracts, checkpoint retention, preference purity, briefing, frontend import helpers, and workflow timeout behavior. Tests import and exercise the real exported functions instead of re-implementing logic mirrors. `scripts/check-unit-tests.js` runs `node --test test/**/*.js` and is picked up automatically by `static-checks.js`'s `scripts/check-*.js` auto-discovery, so it participates in `npm test` with no separate wiring.
+A `test/` directory holds 159 pure-function/unit cases across 11 files on Node's built-in `node:test` runner, including routing (including the bounded QACritic revise loop), safety, retrieval, Agent contracts, per-role model/temperature configuration, checkpoint retention, preference purity, briefing, frontend import helpers, server/lib source-comment stripping, and workflow timeout behavior. Tests import and exercise the real exported functions instead of re-implementing logic mirrors. `scripts/check-unit-tests.js` runs `node --test test/**/*.js` and is picked up automatically by `static-checks.js`'s `scripts/check-*.js` auto-discovery, so it participates in `npm test` with no separate wiring.
 
 ## Graph Nodes
 
@@ -285,11 +285,13 @@ The current version intentionally does not include:
 - automatic external browsing tools
 - compliance certification claims
 
-## What's New (2026-08-07)
+## What's New (2026-08-07 – 2026-08-25, updated in place per card)
 
-- **Supervisor routing**: `AGENT_GRAPH_MODE=supervisor` (default) uses a deterministic `decideNextRoute()` function with `addConditionalEdges` for dynamic agent orchestration. Set `AGENT_GRAPH_MODE=linear` to fall back to the original 9-node linear pipeline.
-- **Human-in-the-loop (HITL)**: Enable with `AGENT_HITL_ENABLED=true`. High-risk (`riskLevel="high"`) changes call LangGraph's native `interrupt()` inside the `human_review` node, which genuinely pauses graph execution mid-run (the pregel loop persists the checkpoint and `graph.invoke()` returns with `__interrupt__` set instead of a `finalPayload`) — not a soft "paused" flag that a still-running graph continues past. Resume via `POST /api/langgraph-resume` with `{ decision: "approve"|"reject" }`; see the `harness.resume.mode` table above for the three resume paths (`native_interrupt_resume` is the common case — it resumes the same paused execution via `Command({ resume: decision })` instead of re-running the graph from phase 0).
-- **Agent boundaries**: Supervisor, ImpactAnalyst, and QACritic have independent prompts, schemas, model calls, and fallbacks. SafetyGuard, MemoryCurator, Classifier, Retriever, OnboardingPlanner, Synthesizer, and Harness remain deterministic roles or infrastructure. Trace steps, model calls, handoffs, and an agent roster are returned in API payloads.
+This section was introduced on 2026-08-07 and its bullets have since been edited in place as the underlying capability evolved, rather than left as a dated snapshot; see `docs/CHANGELOG.md` for exactly which commit changed which bullet.
+
+- **Supervisor routing** (2026-08-07): `AGENT_GRAPH_MODE=supervisor` (default) uses a deterministic `decideNextRoute()` function with `addConditionalEdges` for dynamic agent orchestration. Set `AGENT_GRAPH_MODE=linear` to fall back to the original 9-node linear pipeline.
+- **Human-in-the-loop (HITL)** (soft-pause 2026-08-07, upgraded to native interrupt 2026-08-25): Enable with `AGENT_HITL_ENABLED=true`. High-risk (`riskLevel="high"`) changes call LangGraph's native `interrupt()` inside the `human_review` node, which genuinely pauses graph execution mid-run (the pregel loop persists the checkpoint and `graph.invoke()` returns with `__interrupt__` set instead of a `finalPayload`) — not a soft "paused" flag that a still-running graph continues past. Resume via `POST /api/langgraph-resume` with `{ decision: "approve"|"reject" }`; see the `harness.resume.mode` table above for the three resume paths (`native_interrupt_resume` is the common case — it resumes the same paused execution via `Command({ resume: decision })` instead of re-running the graph from phase 0).
+- **Agent boundaries** (single role-labeled agent 2026-08-07, upgraded to three independent model agents 2026-08-23): Supervisor, ImpactAnalyst, and QACritic have independent prompts, schemas, model calls, and fallbacks. SafetyGuard, MemoryCurator, Classifier, Retriever, OnboardingPlanner, Synthesizer, and Harness remain deterministic roles or infrastructure. Trace steps, model calls, handoffs, and an agent roster are returned in API payloads.
 
 ## What's New (2026-08-25)
 
@@ -312,7 +314,7 @@ Static checks cover:
 - locale key sync
 - text quality
 - agent benchmark contract
-- unit tests under `test/` (`node --test test/**/*.js`, 134 cases across nine test files)
+- unit tests under `test/` (`node --test test/**/*.js`, 159 cases across 11 test files)
 - bounded QACritic revise-loop mechanism (`scripts/check-revise-loop.js`): offline, no-API-key proof that a revise verdict loops back to `retrieve`, folds `additional_queries` into the next retrieval pass, resolves in a constructed fixture (or exhausts its round budget and still terminates in another) — see "What it does and does not prove" above
 - revise loop × HITL cross-feature regression (`scripts/check-revise-hitl-cross.js`): a fake-LLM-backed fixture (the deterministic critic cannot produce "revise" and a cited high-risk area at the same time) proving a revise round can resolve, then a high-risk pause via native `interrupt()`, then a decision resume, still compose correctly through the SAME `decideNextRoute` and persisted graph state
 - `AGENT_MAX_REVISION_ROUNDS` scaling for LangGraph's `recursionLimit` and the effective step budget (`scripts/check-recursion-limit-scaling.js`): runs the same offline, perpetually-revising fixture at `AGENT_MAX_REVISION_ROUNDS` = 0, 1, 2, 3, asserting no recursion-limit error and no false `step_budget_exceeded` at any setting

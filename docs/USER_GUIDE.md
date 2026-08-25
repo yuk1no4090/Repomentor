@@ -103,17 +103,19 @@ npm run dev
 - **Agent Roster 面板**：页面展示所有 Agent 角色及其工具子集。
 - **Handoff 流转链**：可视化 Agent 间的交接路径（sender → recipient）。
 
+**新特性（有界 QACritic revise 环）**：QACritic 复核后如果判定证据不足（`verdict="revise"`），图会回到 Retriever 再做一轮检索（带上 QACritic 自己提出的补充查询），而不是直接进入下一步；轮数由 `AGENT_MAX_REVISION_ROUNDS`（默认 1，设为 `0` 可关闭）限界，用尽预算后无论是否解决都会照常继续输出。这是当前图里唯一的真实环路。
+
 **新特性（节点级 SSE 进度流）**：点击 "Run Agent" 后不再只看到一句静态的 "Running agent workflow..."——前端改用 `POST /api/agent-impact/stream`，随着上面 9 个流程节点逐个完成实时点亮执行轨迹（节点名、Agent 角色、耗时），有界修订轮和 HITL 暂停也会作为独立事件即时显示。任何环节失败（网络错误、浏览器不支持等）都会自动回退到原有的一次性 JSON 接口，最终答案的呈现方式不变。详见 README「`/api/agent-impact/stream`」一节。
 
-**流程**：
+**流程**（9 个标称阶段，另有两个可选分支：有界 revise 环与 HITL 暂停）：
 1. SafetyGuard — 检查 prompt injection、密钥请求和越权工具意图
 2. MemoryCurator — 加载已确认偏好，并生成待确认记忆建议
 3. Classifier — 识别改动类型
-4. Retriever — 检索相关 chunks 并扩展依赖上下文
+4. Retriever — 逐查询检索相关 chunks 并扩展依赖上下文
 5. ImpactAnalyst — 独立调用 LLM，按仓库证据聚合影响和风险
-6. [human_review] — HITL 启用时，高风险变更暂停等待审批
-7. QACritic — 独立调用 LLM，复核引用、遗漏范围和回归测试建议
-8. SafetyGuard — 校验引用、敏感输出、过度自信
+6. QACritic — 独立调用 LLM，复核引用、遗漏范围和回归测试建议；返回 verdict="revise" 且未超出 `AGENT_MAX_REVISION_ROUNDS`（默认 1）时会回到步骤 4 再走一轮，携带 QACritic 自己提出的补充检索词
+7. SafetyGuard — 校验引用、敏感输出、过度自信
+8. [human_review] — 仅当风险为 high 且 `AGENT_HITL_ENABLED=true` 时才会出现，通过 LangGraph 原生 `interrupt()` 真正暂停，approve/reject 均从此处继续到步骤 9
 9. Synthesizer — 生成结构化输出
 
 **状态卡**：Agent header 展示 Memory、Harness、Safety 三类状态。Memory 显示已使用偏好和待确认数量；Harness 显示模型模式、步骤数、耗时、fallback、budget、handoff_count；Safety 显示护栏通过或需要复核。技术详情里的 **Model Agent Calls** 分别展示三个模型 Agent 是否使用 LLM、是否 fallback、模型、耗时和 token 估算。未配置 API key 时三个角色都会走确定性 fallback，该次执行不应描述成真实的多模型 Agent 协作。
@@ -224,7 +226,7 @@ export OPENAI_MODEL_QA_CRITIC=gpt-4o-mini
 | GET | `/api/harness-run` | 按 projectId 和 runId 查看单次 harness 执行快照 |
 | GET | `/api/langgraph-checkpoint` | 按 projectId、runId 和 checkpointId 查看单个 LangGraph checkpoint 摘要 |
 | GET | `/api/langgraph-replay` | 按 projectId 和 runId 查看 LangGraph checkpoint summary replay |
-| POST | `/api/langgraph-resume` | 有 checkpoint payload 时从历史 checkpoint 继续执行，否则基于输入快照重新执行 Agent Workflow |
+| POST | `/api/langgraph-resume` | 提交 HITL 审批决策（`decision: "approve"`/`"reject"`）；有 checkpoint payload 时通过 LangGraph 原生 `Command({ resume })` 恢复同一次暂停的执行（`native_interrupt_resume`），否则基于输入快照重新执行 Agent Workflow（`input_snapshot_reexecution`） |
 | GET | `/api/memory` | 获取已确认偏好和最近记忆建议 |
 | GET | `/api/memory/status` | 查看长期记忆 SQLite 数据库健康状态 |
 | GET | `/api/memory/backups` | 查看长期记忆 SQLite 备份列表 |
@@ -250,10 +252,11 @@ export OPENAI_MODEL_QA_CRITIC=gpt-4o-mini
 
 ### 7.1 自动化验收
 
-- `npm run test:static`：静态契约、文案、依赖、架构文档和前端 UI 结构检查。
+- `npm run test:static`：静态契约、文案、依赖、架构文档和前端 UI 结构检查（`scripts/check-*.js`，31 项；其中也包含 `test/` 下 159 条 `node:test` 单元测试的运行）。
 - `npm run test:smoke`：后端 API、LangGraph、记忆、harness、安全、评价指标的临时服务回归测试。
 - `npm run test:ui`：启动临时服务，拉取真实前端资源，导入 sample workspace，运行 Agent Workflow，并确认 Memory / Harness / Safety / long-term memory / Dashboard / harness audit panel 都有可渲染数据。
-- `npm test`：串联以上三类检查。
+- `npm run test:safety` / `test:memory` / `test:user-memory` / `test:auth` / `test:embedding` / `test:benchmark` / `test:mcp`：分别对应安全红队、记忆压缩、用户记忆隔离、认证边界、embedding provider、agent benchmark 和 MCP server 的独立回归测试。
+- `npm test`：依次串联以上全部（`test:static` + 9 套运行时黑盒测试套件）。
 
 **关键面试话术**：
 - "顶部绿色标识说明当前是 AI 增强模式，我接入了 DeepSeek API"
