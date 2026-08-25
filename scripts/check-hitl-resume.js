@@ -1,7 +1,21 @@
 import { ok as assert } from "node:assert/strict";
-import { readServerSource } from "./shared/source-reader.js";
+import { readServerSource, readServerSourceStripped } from "./shared/source-reader.js";
 
 const serverSource = await readServerSource();
+// Comment-free view of the same source, used by section 7 below. A snippet
+// asserted only against `serverSource` can be satisfied by a comment/docstring
+// that merely *mentions* the snippet — see stripComments()'s doc comment in
+// scripts/shared/source-reader.js for why that turns an assertion into a
+// tautology that can never fail regardless of what the real implementation
+// does. `codeOnlySource` closes that gap for the assertions where it matters.
+//
+// Uses readServerSourceStripped() (strips each file independently, THEN
+// joins) rather than stripComments(serverSource) (which would strip the
+// already-concatenated 14-file blob in one pass): stripComments() is a
+// heuristic scanner, not a full parser, and if it ever misjudges some
+// construct in one file badly enough to desync, that desync must not bleed
+// into whichever file happens to be concatenated right after it.
+const codeOnlySource = await readServerSourceStripped();
 
 // ── 1. HITL env var ──
 assert(serverSource.includes("AGENT_HITL_ENABLED"), "AGENT_HITL_ENABLED env var not referenced");
@@ -35,10 +49,34 @@ assert(serverSource.includes("baseInput.hitlRequest"), "resume must inject hitlR
 // ── 6. State fields ──
 assert(serverSource.includes("hitlRequest: Annotation"), "State annotation must include hitlRequest");
 
+// ── 7. Native LangGraph interrupt()/Command resume (P4 upgrade) ──
+// human_review must genuinely pause the graph via interrupt() instead of just
+// flagging a "paused" state and letting the graph continue to synthesize in the
+// same invoke() call. Resuming a decision must use LangGraph's own Command(resume)
+// contract against the persisted checkpoint, not only a fresh re-executed baseInput.
+//
+// These assert against `codeOnlySource` (comments stripped) and pin the exact
+// *call shape* used by lib/agent-graph.js, not just a bare identifier or a
+// loosely-matched fragment — both `serverSource` and a bare-symbol match would
+// stay green even if the real call were deleted, as long as some comment
+// (including this file's own docstrings, or a dead `import { isInterrupted }`
+// with no call site) still mentioned the name. Matching the full call shape on
+// comment-free source means the assertion can only pass if that exact call is
+// still present in executable code.
+assert(codeOnlySource.includes("interrupt(reviewRequest)"),
+  "human_review must call interrupt(reviewRequest) in real code to genuinely pause graph execution");
+assert(codeOnlySource.includes("new Command({ resume: pausedDecision })"),
+  "decision resume must invoke the graph with new Command({ resume: pausedDecision }) in real code to continue the paused execution via LangGraph's Command/resume contract");
+assert(codeOnlySource.includes("isInterrupted(state)"),
+  "workflow must call isInterrupted(state) in real code to detect the graph's __interrupt__ signal (a bare import or a comment mentioning the helper is not enough)");
+assert(codeOnlySource.includes('"native_interrupt_resume"'),
+  "decision resume with a persisted checkpoint payload must report harness.resume.mode=native_interrupt_resume in real code");
+
 console.log("[OK] AGENT_HITL_ENABLED env var properly initialized.");
 console.log("[OK] human_review node sets hitlRequest and reports hitl_paused.");
 console.log("[OK] Routing: QACritic + guardrails → high-risk human_review → synthesize.");
 console.log("[OK] synthesize produces hitl field (paused/approved/rejected).");
 console.log("[OK] /api/langgraph-resume accepts decision parameter.");
 console.log("[OK] Resume handler injects hitlRequest into workflow state.");
+console.log("[OK] human_review uses native interrupt()/Command resume (native_interrupt_resume mode present).");
 console.log("[PASS] All HITL checks passed.");

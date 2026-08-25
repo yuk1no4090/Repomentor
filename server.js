@@ -1215,7 +1215,7 @@ async function handleApiUnlocked(req, res, pathname) {
         resumed_from: {
           run_id: body.runId || body.run_id,
           checkpoint_id: resumed.checkpoint.checkpoint_id,
-          mode: "input_snapshot_reexecution"
+          mode: resumed.payload?.harness?.resume?.mode || null
         },
         payload: resumed.payload
       });
