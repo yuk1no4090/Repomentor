@@ -99,7 +99,7 @@ npm run dev
 
 **新特性（2026-08-07）**：
 - **Supervisor 路由**：确定性规则表 `ROUTE_RULES` 驱动动态编排，支持 `AGENT_GRAPH_MODE=linear` 一键回退。
-- **HITL 审核**：启用 `AGENT_HITL_ENABLED=true` 后，高风险变更、Supervisor 自身请求复核（`supervisorPlan.require_human_review`），或输入问题/检索到的仓库内容被安全扫描标记（`inputSafety`/`retrievedSafety` 状态为 `needs_review`）都会暂停到人工审核节点，通过 `/api/langgraph-resume` 提交 approve/reject 决策；暂停卡片会标明具体是哪个信号触发的（`hitl.reason`/`hitl.triggers`），安全类信号的 `hitl.reason` 还会点名具体的风险类型（如 `"input flagged: prompt_injection"`）。approve 只是放行本次执行，不会清除 `safety.status`（仍保持 `needs_review`）；reject 则直接阻断，不返回完整答案。确定性/离线回退路径下，`require_human_review`/`risk_hypothesis`/`riskLevel` 都只是基于问题关键词或文件路径的启发式判断，并非对变更本身的证据化推理。
+- **HITL 审核**：启用 `AGENT_HITL_ENABLED=true` 后，四类信号中任意一个都会暂停到人工审核节点：高风险变更（`riskLevel === "high"`）、Supervisor 自身请求复核（`supervisorPlan.require_human_review`）、输入问题/检索到的仓库内容被安全扫描标记（`inputSafety`/`retrievedSafety` 状态为 `needs_review`），或 QACritic 在有界 revise 环预算用尽后仍返回 `verdict="revise"`（`critic_flag`——流水线即将交付一个 critic 自己仍在拒绝的答案，此时才需要人工介入；若预算未用尽，环路会照常再跑一轮而不会暂停）。通过 `/api/langgraph-resume` 提交 approve/reject 决策；暂停卡片会标明具体是哪个信号触发的（`hitl.reason`/`hitl.triggers`），安全类信号的 `hitl.reason` 还会点名具体的风险类型（如 `"input flagged: prompt_injection"`），`critic_flag` 的 `hitl.reason` 会点名具体轮数（如 `"critic still requested revision after 1 round(s)"`）。approve 只是放行本次执行，不会清除 `safety.status`（仍保持 `needs_review`）；reject 则直接阻断，不返回完整答案。确定性/离线回退路径下，`require_human_review`/`risk_hypothesis`/`riskLevel` 都只是基于问题关键词或文件路径的启发式判断，并非对变更本身的证据化推理。
 - **Agent Roster 面板**：页面展示所有 Agent 角色及其工具子集。
 - **Handoff 流转链**：可视化 Agent 间的交接路径（sender → recipient）。
 
@@ -115,7 +115,7 @@ npm run dev
 5. ImpactAnalyst — 独立调用 LLM，按仓库证据聚合影响和风险
 6. QACritic — 独立调用 LLM，复核引用、遗漏范围和回归测试建议；返回 verdict="revise" 且未超出 `AGENT_MAX_REVISION_ROUNDS`（默认 1）时会回到步骤 4 再走一轮，携带 QACritic 自己提出的补充检索词
 7. SafetyGuard — 校验引用、敏感输出、过度自信
-8. [human_review] — 仅当风险为 high、Supervisor 的计划请求复核，或输入/检索内容被安全标记，且 `AGENT_HITL_ENABLED=true` 时才会出现，通过 LangGraph 原生 `interrupt()` 真正暂停，approve/reject 均从此处继续到步骤 9
+8. [human_review] — 仅当风险为 high、Supervisor 的计划请求复核、输入/检索内容被安全标记，或 QACritic 在 revise 预算用尽后仍要求修订，且 `AGENT_HITL_ENABLED=true` 时才会出现，通过 LangGraph 原生 `interrupt()` 真正暂停，approve/reject 均从此处继续到步骤 9
 9. Synthesizer — 生成结构化输出
 
 **状态卡**：Agent header 展示 Memory、Harness、Safety 三类状态。Memory 显示已使用偏好和待确认数量；Harness 显示模型模式、步骤数、耗时、fallback、budget、handoff_count；Safety 显示护栏通过或需要复核。技术详情里的 **Model Agent Calls** 分别展示三个模型 Agent 是否使用 LLM、是否 fallback、模型、耗时和 token 估算。未配置 API key 时三个角色都会走确定性 fallback，该次执行不应描述成真实的多模型 Agent 协作。

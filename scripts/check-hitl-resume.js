@@ -150,6 +150,26 @@ assert(codeOnlySource.includes('return `input flagged: ${riskTypes.join(", ")}`;
 assert(codeOnlySource.includes('return `retrieved content flagged: ${riskTypes.join(", ")}`;'),
   "describeHitlReason must build the retrieved_safety_flag reason text from state.retrievedSafety.risk_types, not a static string");
 
+// ── 10. Task N4, Item 1: the QACritic's own unresolved "revise" verdict
+// becomes a FOURTH, independently OR'd HITL trigger. Asserted against
+// `codeOnlySource` (comments stripped) with the exact literal condition from
+// hitlReviewTriggers() so a mutation to either half of the AND (loosening the
+// verdict check, or the budget-exhausted bound) fails these assertions -- see
+// the report for this card's out-of-repo mutation-verification evidence.
+// The condition deliberately mirrors (mutation-checked against) the
+// pre-existing revise-branch guard's own `< AGENT_MAX_REVISION_ROUNDS` loop
+// condition a few lines earlier in the same file: this trigger only fires
+// where that guard would NOT loop again, so the two can never both apply to
+// the same state.
+assert(codeOnlySource.includes('if (state.qaReview?.verdict === "revise" && (state.revisionRound || 0) >= AGENT_MAX_REVISION_ROUNDS) triggers.push("critic_flag");'),
+  "hitlReviewTriggers must treat an unresolved QACritic revise verdict (verdict===\"revise\" AND the revision budget exhausted, revisionRound >= AGENT_MAX_REVISION_ROUNDS) as the critic_flag trigger -- not findings severity, and not any revise verdict regardless of budget");
+// describeHitlReason must build the critic_flag reason text from the actual
+// round count (state.revisionRound), not a static string -- pinned as the
+// exact template-literal line so a mutation back to a hardcoded string
+// (losing the round-count detail) fails.
+assert(codeOnlySource.includes('return `critic still requested revision after ${round} round(s)`;'),
+  "describeHitlReason must build the critic_flag reason text from state.revisionRound, not a static string");
+
 console.log("[OK] AGENT_HITL_ENABLED env var properly initialized.");
 console.log("[OK] human_review node sets hitlRequest and reports hitl_paused.");
 console.log("[OK] Routing: QACritic + guardrails → hitlReviewRequired (high risk, supervisor flag, or safety flag) → human_review → synthesize.");
@@ -160,4 +180,5 @@ console.log("[OK] Resume handler injects hitlRequest into workflow state.");
 console.log("[OK] human_review uses native interrupt()/Command resume (native_interrupt_resume mode present).");
 console.log("[OK] Paused payload names which HITL trigger(s) fired (hitl.reason text + additive hitl.triggers).");
 console.log("[OK] Task N3: input/retrieved safety flags are wired into hitlReviewTriggers with risk-type-specific reason text; outputSafety is not.");
+console.log("[OK] Task N4: an unresolved QACritic revise verdict (budget exhausted) is wired into hitlReviewTriggers as critic_flag, with round-count-specific reason text.");
 console.log("[PASS] All HITL checks passed.");

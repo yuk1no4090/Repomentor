@@ -79,7 +79,7 @@ flowchart LR
     Impact --> Critic["QACritic Agent"]
     Critic -->|"verdict: revise<br/>（由 AGENT_MAX_REVISION_ROUNDS 限界）"| Retrieve
     Critic -->|"verdict: approve，<br/>或修订预算已用尽"| Guardrails["安全护栏"]
-    Guardrails -->|"高风险 或 Supervisor 请求复核 或 安全标记 + AGENT_HITL_ENABLED"| HITL{{"human_review<br/>（暂停，经 POST /api/langgraph-resume 续跑）"}}
+    Guardrails -->|"高风险 或 Supervisor 请求复核 或 安全标记 或 critic 仍未解决的 revise 结论 + AGENT_HITL_ENABLED"| HITL{{"human_review<br/>（暂停，经 POST /api/langgraph-resume 续跑）"}}
     Guardrails -->|"其他情况"| Synthesize["合成"]
     HITL -->|"decision: approve 或 reject"| Synthesize
 
@@ -262,7 +262,7 @@ GitHub Actions 会在 push 到 `main` 和创建 pull request 时运行 `npm ci` 
 | `AGENT_GRAPH_MODE` | `supervisor` | 图路由模式：`supervisor` 为动态多 Agent 路由，`linear` 为原始的 9 节点线性管线。 |
 | `AGENT_MAX_STEPS` | `14` | LangGraph 最大执行步数（从 9 上调，以覆盖 supervisor 路由的额外开销）。 |
 | `AGENT_MAX_REVISION_ROUNDS` | `1` | 有界 QACritic revise 轮次的最大数量（`qa_plan` 返回 `"revise"` 时会回到 `retrieve`）。设为 `0` 可完全关闭 revise 环。 |
-| `AGENT_HITL_ENABLED` | `false` | 设为 `true` 时，对高风险变更、Supervisor 自身请求复核（`supervisorPlan.require_human_review`），或输入问题/检索到的仓库内容被安全扫描标记的情形，启用人工审核（human-in-the-loop）。在确定性/离线回退路径下（未配置 `OPENAI_API_KEY`），`require_human_review`/`risk_hypothesis`/`riskLevel` 都只是基于问题关键词或文件路径的启发式判断，并非对变更本身的证据化推理。 |
+| `AGENT_HITL_ENABLED` | `false` | 设为 `true` 时，对高风险变更、Supervisor 自身请求复核（`supervisorPlan.require_human_review`）、输入问题/检索到的仓库内容被安全扫描标记，或 QACritic 在有界 revise 环预算用尽后仍返回 `"revise"`（`critic_flag`——否则流水线会交付一个 critic 自己仍在拒绝的答案）的情形，启用人工审核（human-in-the-loop）。在确定性/离线回退路径下（未配置 `OPENAI_API_KEY`），`require_human_review`/`risk_hypothesis`/`riskLevel` 都只是基于问题关键词或文件路径的启发式判断，并非对变更本身的证据化推理。 |
 | `RATE_LIMIT_MAX` | `120` | 每个 IP 每个时间窗口内的最大 API 请求数。设为 `0` 可禁用限流。 |
 | `RATE_LIMIT_WINDOW_MS` | `60000` | 限流时间窗口长度（毫秒）。 |
 | `LOG_LEVEL` | `info` | 结构化日志级别：`debug`、`info`、`warn` 或 `error`。 |
@@ -336,7 +336,7 @@ input safety
   -> ImpactAnalyst agent
   -> QACritic agent          -- verdict 为 "revise" 时（受 AGENT_MAX_REVISION_ROUNDS 限界）回到 retriever
   -> safety guardrails
-  -> [human_review]          -- 仅当风险为 high，或 Supervisor 的计划请求复核，或输入/检索内容被安全标记，且 AGENT_HITL_ENABLED=true 时；通过 LangGraph 原生 interrupt() 暂停
+  -> [human_review]          -- 仅当风险为 high，或 Supervisor 的计划请求复核，或输入/检索内容被安全标记，或 QACritic 在 revise 预算用尽后仍要求修订，且 AGENT_HITL_ENABLED=true 时；通过 LangGraph 原生 interrupt() 暂停
   -> structured synthesizer
 ```
 
@@ -444,7 +444,7 @@ input safety
 | `workflow_started` | `{ run_id, thread_id, graph_mode, planned_nodes }` | 仅一次，在图开始运行之前立即发出。`planned_nodes` 是标称的 9 阶段走位（`input_safety` .. `synthesize`）；实际执行可能有出入（有界 QACritic 修订轮会重新进入其中 4 个节点，HITL 暂停会在到达 `synthesize` 之前停止）。 |
 | `node_completed` | `{ node, agent_role, label, tool, elapsed_ms }` | 每个真实图节点完成时发出一次，按执行顺序排列。 |
 | `revise_round_entered` | `{ round, additional_queries, reason, elapsed_ms }` | 每个有界 QACritic 修订轮发出一次，即 `retrieve` 携带 critic 的 `additional_queries` 重新进入时。 |
-| `hitl_paused` | `{ reason, risk_level, change_type, triggers, elapsed_ms }` | 仅一次，如果高风险变更或 Supervisor 请求复核在 `human_review` 内触发了 LangGraph 原生的 `interrupt()`。`triggers` 标明具体命中了哪个信号（`["high_risk"]`、`["supervisor_flag"]` 或两者都有）。 |
+| `hitl_paused` | `{ reason, risk_level, change_type, triggers, elapsed_ms }` | 仅一次，如果任一 HITL 触发信号在 `human_review` 内触发了 LangGraph 原生的 `interrupt()`。`triggers` 标明具体命中了哪个信号：`high_risk`（ImpactAnalyst 风险判断）、`supervisor_flag`（Supervisor 自身计划）、`input_safety_flag`/`retrieved_safety_flag`（对问题/检索到的仓库内容的确定性安全扫描），或 `critic_flag`（有界 revise 环预算用尽后 QACritic 仍返回 `"revise"`）——可以是其中任意组合，顺序固定如上。 |
 | `final` | `{ answerId, kind, payload }` | 仅一次，且是最后一个——与 `POST /api/agent-impact` 的 JSON 响应体形状完全相同。 |
 | `error` | `{ error, code }` | 仅当 SSE 响应已经开始之后运行失败时发出（参见上面的 `STREAM_FAILED`）。 |
 
