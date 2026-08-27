@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { bytesToBase64, base64ToBytes } from "../lib/checkpoints.js";
 
 // Behavioral regression coverage for the HITL decision-resume replay bug.
 //
@@ -132,6 +133,57 @@ async function stopChild(child) {
     });
     child.kill();
   });
+}
+
+// Post-review blocker fix regression coverage: rewrites every persisted
+// checkpoint's serialized `channel_values` for one run, deleting the
+// `phaseCursor` key wherever present -- simulates a checkpoint saved by
+// pre-Task-N1 code, which never had this channel in its schema at all (so
+// `channel_values` for every checkpoint that code ever wrote genuinely lacks
+// the key, not just has it set to some stale value).
+//
+// Mirrors lib/checkpoints.js's own serializeMemorySaverSnapshot/
+// deserializeMemorySaverSnapshot wire format exactly -- same nested
+// storage[threadId][namespace][checkpointId] = [checkpointB64, metadataB64,
+// parentCheckpointId] shape, same bytesToBase64/base64ToBytes encoding
+// (reused directly from lib/checkpoints.js, not reimplemented, so this stays
+// byte-faithful to production if that format ever changes) -- and the
+// checkpoint blob itself is UTF-8-encoded JSON text (LangGraph's
+// JsonPlusSerializer "json" type; see
+// node_modules/@langchain/langgraph-checkpoint/dist/serde/jsonplus.js), so a
+// plain JSON.parse/JSON.stringify round-trip on the decoded bytes is exact
+// apart from the one deliberately deleted key. Only channel_values is
+// touched -- channel_versions/versions_seen do not participate in restoring
+// a channel's VALUE (see node_modules/@langchain/langgraph/dist/channels/base.js's
+// emptyChannels(), which looks up `checkpoint.channel_values[k]` only), so
+// leaving them untouched does not undermine the simulation.
+function stripPhaseCursorFromPersistedRun(dbPath, runId) {
+  const db = new DatabaseSync(dbPath);
+  let strippedCount = 0;
+  try {
+    db.exec("PRAGMA journal_mode = WAL;");
+    const row = db.prepare("SELECT payload_json FROM langgraph_checkpoint_payloads WHERE run_id = ?").get(runId);
+    if (!row) throw new Error(`no langgraph_checkpoint_payloads row for run ${runId}`);
+    const payload = JSON.parse(row.payload_json);
+    for (const namespaces of Object.values(payload.storage || {})) {
+      for (const checkpoints of Object.values(namespaces || {})) {
+        for (const checkpointId of Object.keys(checkpoints || {})) {
+          const [checkpointB64, metadataB64, parentCheckpointId] = checkpoints[checkpointId];
+          const checkpointObj = JSON.parse(new TextDecoder().decode(base64ToBytes(checkpointB64)));
+          if (checkpointObj.channel_values && Object.prototype.hasOwnProperty.call(checkpointObj.channel_values, "phaseCursor")) {
+            delete checkpointObj.channel_values.phaseCursor;
+            strippedCount += 1;
+          }
+          const reEncoded = bytesToBase64(new TextEncoder().encode(JSON.stringify(checkpointObj)));
+          checkpoints[checkpointId] = [reEncoded, metadataB64, parentCheckpointId];
+        }
+      }
+    }
+    db.prepare("UPDATE langgraph_checkpoint_payloads SET payload_json = ? WHERE run_id = ?").run(JSON.stringify(payload), runId);
+  } finally {
+    db.close();
+  }
+  return strippedCount;
 }
 
 // The bundled sample project (server.js's SAMPLE_FILES) includes
@@ -376,6 +428,109 @@ async function main() {
     const originalAfterPlainResume = historyAfterPlainResume.answers.find((item) => item.answerId === pausedAnswerId);
     assert(originalAfterPlainResume.payload.hitl?.decision === "reject",
       "a plain resume (no decision) must not alter the original paused answer's already-persisted decision");
+
+    // ── 4b. Phase-cursor checkpoint migration regression (post-review blocker
+    // fix). A TRUE "time travel" resume (Task N1's checkpoint_continuation
+    // mode: an explicit, non-latest checkpointId, no decision) from a
+    // MID-GRAPH checkpoint whose phaseCursor channel predates Task N1 must
+    // continue from the correct next phase, not silently restart at
+    // "input_safety". Reproduces the exact reviewer-found regression: a
+    // checkpoint persisted before the phaseCursor channel existed restores it
+    // as LangGraph's own Annotation default (0) on resume -- a LEGITIMATE
+    // integer indistinguishable from a fresh state by a naive
+    // Number.isInteger(state.phaseCursor) check alone (see
+    // lib/agent-graph.js's decideNextRoute for the fix: derive phase from
+    // trace length whenever cursor reads exactly 0 with a non-empty trace).
+    //
+    // Uses the SAME paused run (runId) from step 1 above. Its persisted
+    // checkpoint history is untouched by the decision-resume calls in steps
+    // 2/3/4 (those only ever clone the source payload into a NEW thread/run
+    // id when resuming; they never mutate the original run's own persisted
+    // row), so its full checkpoint chain -- including the mid-graph
+    // "retrieve" checkpoint -- is still exactly as step 1 left it.
+    //
+    // Checkpoint selection: this LangGraph version's persisted checkpoint
+    // metadata does not carry a reliable per-node name (`checkpoint.node`
+    // resolves to the generic pregel superstep source, "input"/"loop", not
+    // "retrieve" -- confirmed empirically), so the mid-graph checkpoint is
+    // located by `state_summary.trace_steps` instead: every real phase node's
+    // own write is immediately followed by the supervisor's own routing
+    // checkpoint at the SAME trace_steps count (supervisor's own write only
+    // touches routeDecisions/handoffs, never trace), so trace_steps values
+    // appear in adjacent pairs in the replay. The FIRST checkpoint whose
+    // trace_steps is 4 is therefore exactly the one immediately after
+    // "retrieve" wrote its own state -- pending task "supervisor" -- not yet
+    // routed onward. This is precisely the checkpoint the reviewer's repro
+    // targeted ("真实 phaseCursor 本应是 4 的中途 checkpoint").
+    const replay = await requestTo(baseUrl, `/api/langgraph-replay?projectId=${projectId}&runId=${runId}`);
+    const midGraphStep = replay.steps.find((step) => step.state_summary?.trace_steps === 4);
+    assert(midGraphStep,
+      `expected a persisted checkpoint with trace_steps === 4 (right after "retrieve") in run ${runId}'s replay, got trace_steps sequence: ${JSON.stringify(replay.steps.map((step) => step.state_summary?.trace_steps))}`);
+    const midGraphCheckpointId = midGraphStep.checkpoint_id;
+
+    // Control: resume from this SAME mid-graph checkpoint with the persisted
+    // payload's phaseCursor channel fully intact (cursor 4, "retrieve"'s own
+    // successor). The run should continue normally from "expand_context"
+    // through guardrails, then pause again at human_review — 5 more real
+    // steps plus the synthetic paused step on top of the 4 already in the
+    // checkpoint's trace = 9 total, byte-identical in shape to the original
+    // step-1 pause.
+    const controlResume = await requestTo(baseUrl, "/api/langgraph-resume", {
+      method: "POST",
+      body: JSON.stringify({ projectId, runId, checkpointId: midGraphCheckpointId })
+    });
+    assert(controlResume.payload?.harness?.resume?.mode === "checkpoint_continuation",
+      `mid-graph resume with an intact payload must report mode=checkpoint_continuation, got ${controlResume.payload?.harness?.resume?.mode}`);
+    assert(controlResume.payload.hitl?.paused === true, "mid-graph checkpoint_continuation resume should still pause at human_review");
+    const controlTraceLength = controlResume.payload.trace.length;
+    const controlTraceTools = controlResume.payload.trace.map((step) => step.tool);
+    const controlDuplicateTools = controlTraceTools.filter((tool, index) => controlTraceTools.indexOf(tool) !== index);
+    assert(controlDuplicateTools.length === 0,
+      `control resume (intact phaseCursor) must not repeat any trace tool, got duplicates: ${JSON.stringify(controlDuplicateTools)}`);
+
+    // Simulate a genuinely pre-Task-N1 checkpoint: strip the phaseCursor
+    // channel from EVERY checkpoint persisted for this run (not just the
+    // mid-graph one — an old snapshot never had this channel anywhere in its
+    // history).
+    const dbPathForMigration = path.join(dataDir, "memory.sqlite");
+    const strippedCount = stripPhaseCursorFromPersistedRun(dbPathForMigration, runId);
+    assert(strippedCount >= 1, `expected to strip phaseCursor from at least 1 persisted checkpoint for run ${runId}, stripped ${strippedCount}`);
+
+    // Treatment: resume from the EXACT SAME mid-graph checkpoint id, now with
+    // phaseCursor missing from every checkpoint's channel_values. Before the
+    // fix: LangGraph seeds the restored phaseCursor with the Annotation's own
+    // default (0) — decideNextRoute's old fallback could not tell this apart
+    // from a fresh state, routed to "input_safety", and re-ran
+    // input_safety/memory/classify/retrieve a SECOND time before "retrieve"'s
+    // own nextPhaseCursor("retrieve") call self-healed the cursor back to 4.
+    // After the fix: decideNextRoute detects cursor===0 with a non-empty
+    // trace and derives phase from trace.length instead, so this resume must
+    // behave identically to the control group above.
+    const treatmentResume = await requestTo(baseUrl, "/api/langgraph-resume", {
+      method: "POST",
+      body: JSON.stringify({ projectId, runId, checkpointId: midGraphCheckpointId })
+    });
+    assert(treatmentResume.payload?.harness?.resume?.mode === "checkpoint_continuation",
+      `mid-graph resume with a stripped payload must still report mode=checkpoint_continuation, got ${treatmentResume.payload?.harness?.resume?.mode}`);
+    const treatmentTraceLength = treatmentResume.payload.trace.length;
+    const treatmentTraceTools = treatmentResume.payload.trace.map((step) => step.tool);
+    const treatmentDuplicateTools = treatmentTraceTools.filter((tool, index) => treatmentTraceTools.indexOf(tool) !== index);
+
+    console.log(JSON.stringify({
+      probe: "phase-cursor-migration-regression",
+      midGraphCheckpointId,
+      controlTraceLength,
+      treatmentTraceLength,
+      controlDuplicateTools,
+      treatmentDuplicateTools
+    }));
+
+    assert(treatmentResume.payload.hitl?.paused === true,
+      "REGRESSION: stripped-phaseCursor resume did not pause at human_review as expected");
+    assert(treatmentDuplicateTools.length === 0,
+      `REGRESSION: stripped-phaseCursor resume silently re-ran phases (duplicate trace tools): ${JSON.stringify(treatmentDuplicateTools)}`);
+    assert(treatmentTraceLength === controlTraceLength,
+      `REGRESSION: stripped-phaseCursor resume produced a different trace length (${treatmentTraceLength}) than the intact-payload control (${controlTraceLength}) -- a pre-phaseCursor checkpoint must derive phase from trace length, not silently restart at phase 0`);
 
     // ── 5. Legacy fallback proof: pruned checkpoint payload still resumes ──
     // native_interrupt_resume (steps 2/3 above) depends on the persisted MemorySaver

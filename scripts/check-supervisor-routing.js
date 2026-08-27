@@ -17,7 +17,14 @@ assert(serverSource.includes('"impact_analysis"'), "ROUTE_RULES phaseMap missing
 
 // ── 2. decideNextRoute function existence ──
 assert(serverSource.includes("function decideNextRoute(state)"), "decideNextRoute function not found");
-assert(serverSource.includes("state.trace.length"), "decideNextRoute must use trace length for phase");
+// NIT fixed in post-review pass: this literal's home moved. It no longer
+// drives decideNextRoute's PRIMARY phase read (that's phaseCursor, see
+// section 13) -- it now lives in decideNextRoute's own legacy checkpoint
+// migration branch (Array.isArray(state.trace) ? state.trace.length : 0,
+// asserted in section 13 below) AND in the supervisor node's own diagnostics
+// (first-visit detection, routing signal text). Either usage alone keeps
+// this assertion legitimately satisfied.
+assert(serverSource.includes("state.trace.length"), "state.trace.length must still appear in real (non-comment) source -- e.g. the supervisor node's diagnostics or decideNextRoute's legacy checkpoint migration branch");
 assert(serverSource.includes("ROUTE_RULES.phaseMap[phase]"), "decideNextRoute must reference phaseMap");
 
 // ── 3. HITL override rules (for P3 readiness) ──
@@ -71,9 +78,36 @@ assert(serverSource.includes('state.qaReview?.verdict === "revise"'), "decideNex
 assert(serverSource.includes("(state.revisionRound || 0) < AGENT_MAX_REVISION_ROUNDS"), "the revise loop must be bounded by AGENT_MAX_REVISION_ROUNDS");
 assert(serverSource.includes('return "retrieve";'), "a bounded revise verdict must route back to the \"retrieve\" node");
 
-// ── 13. Phase-cursor-vs-cycle fix: phase must be offset by completed revise rounds ──
+// ── 13. Phase-cursor-vs-cycle fix (Task N1): phase is an explicit, node-set
+// cursor channel, not a value derived from trace-length/revisionRound
+// bookkeeping. REVISION_ROUND_NODE_COUNT = 4 is still asserted below because
+// computeGraphRecursionLimit and buildAgentHarnessReport's effective_max_steps
+// still genuinely need it (superstep/step-budget scaling, unrelated to phase
+// derivation) -- see scripts/check-recursion-limit-scaling.js. The former
+// offset-subtraction assertion here (`state.trace.length - (state.revisionRound
+// || 0) * REVISION_ROUND_NODE_COUNT`) legitimately died with this refactor and
+// is replaced by the assertions below, each tied to actual routing/state
+// MECHANISM (not just a name mention), mutation-verified per the task report.
 assert(serverSource.includes("REVISION_ROUND_NODE_COUNT = 4"), "the revise round's node count (retrieve, expand_context, impact_analysis, qa_plan) must be defined as 4");
-assert(serverSource.includes("state.trace.length - (state.revisionRound || 0) * REVISION_ROUND_NODE_COUNT"), "decideNextRoute's phase must subtract the revise-round offset from trace.length so the phaseMap cursor stays meaningful after a loop");
+assert(serverSource.includes("phaseCursor: Annotation({ reducer: replace, default: () => 0 })"), "the graph state must declare an explicit phaseCursor channel (replace reducer, default 0)");
+assert(serverSource.includes("const cursorValue = Number.isInteger(state.phaseCursor) ? state.phaseCursor : 0;"), "decideNextRoute must read its phase directly off state.phaseCursor (defaulting to 0 for a non-integer/absent value), not derive it from trace length");
+assert(serverSource.includes("const PHASE_CURSOR_AFTER = new Map(ROUTE_RULES.phaseMap.map((name, index) => [name, index + 1]));"), "the node-successor-cursor lookup must be derived from ROUTE_RULES.phaseMap itself, so phaseMap stays the single authority on phase ordering");
+assert(serverSource.includes('phaseCursor: nextPhaseCursor("retrieve"),'), "the retrieve node must set its own successor cursor via nextPhaseCursor(\"retrieve\") -- the mechanism that lets a revise-round re-entry rewind the cursor with no arithmetic");
+assert(serverSource.includes('phaseCursor: nextPhaseCursor("qa_plan"),'), "the qa_plan node must set its own successor cursor via nextPhaseCursor(\"qa_plan\") -- the value the revise-branch guard's phaseMap[phase] === \"guardrails\" check keys off of");
+
+// ── 13b. Legacy checkpoint migration fix (post-review blocker): a checkpoint
+// persisted before the phaseCursor channel existed restores it as the
+// Annotation's own default (0) via LangGraph's LastValue.fromCheckpoint(undefined)
+// -- a LEGITIMATE integer indistinguishable from a fresh state by
+// cursorValue alone. decideNextRoute must additionally derive phase from
+// trace length whenever cursor reads exactly 0 with a non-empty trace (the
+// only way current code can produce that combination is a pre-N1
+// checkpoint), reusing the pre-N1 arithmetic for that one case. Each
+// assertion below is tied to the actual discriminator/derivation, not just a
+// name mention, mutation-verified per the task report.
+assert(serverSource.includes("const traceLength = Array.isArray(state.trace) ? state.trace.length : 0;"), "decideNextRoute must compute a defensive trace length (Array.isArray guarded) to detect a legacy checkpoint's restored phaseCursor");
+assert(serverSource.includes("(cursorValue === 0 && traceLength > 0)"), "decideNextRoute must gate its legacy-checkpoint phase derivation on cursorValue === 0 together with a non-empty trace -- the only combination a pre-phaseCursor checkpoint can produce");
+assert(serverSource.includes("traceLength - (state.revisionRound || 0) * REVISION_ROUND_NODE_COUNT"), "the legacy-checkpoint branch must derive phase with the pre-N1 formula (trace length minus the revise-round offset), not silently restart at phase 0");
 
 // ── 14. retrieve node: bumps revisionRound on re-entry and feeds the critic's additional_queries back into retrieval ──
 assert(serverSource.includes("const nextRevisionRound = isRevisionRound ? (state.revisionRound || 0) + 1 : (state.revisionRound || 0);"), "the retrieve node must bump revisionRound exactly when it is re-entered for a revise round");
@@ -107,7 +141,7 @@ assert(serverSource.includes("const effectiveMaxSteps = AGENT_BUDGETS.max_steps 
 assert(serverSource.includes("step_budget_exceeded: trace.length > effectiveMaxSteps"), "step_budget_exceeded must compare against the revision-aware effective ceiling, not the raw single-pass AGENT_BUDGETS.max_steps");
 
 console.log("[OK] ROUTE_RULES structure verified (9 phase nodes).");
-console.log("[OK] decideNextRoute uses trace length for phase routing.");
+console.log("[OK] decideNextRoute function and phaseMap wiring present (state.trace.length still used elsewhere, e.g. the supervisor node's own diagnostics).");
 console.log("[OK] HITL gate (AGENT_HITL_ENABLED) present for P3 readiness.");
 console.log("[OK] AGENT_GRAPH_MODE env var with 'supervisor' default.");
 console.log("[OK] AGENT_MAX_STEPS env var with default 14.");
@@ -118,7 +152,8 @@ console.log("[OK] Conditional edges wired in supervisor mode.");
 console.log("[OK] Linear fallback preserves all 9 original edges.");
 console.log("[OK] AGENT_MAX_REVISION_ROUNDS config defaults to 1 and is surfaced in AGENT_BUDGETS.");
 console.log("[OK] Revise-branch guard (verdict check + round budget bound + retrieve loop target) present.");
-console.log("[OK] Phase-cursor offset (trace.length - revisionRound*REVISION_ROUND_NODE_COUNT) present.");
+console.log("[OK] Explicit phaseCursor channel + nextPhaseCursor()-derived node cursors (retrieve, qa_plan) present -- phase primarily read off phaseCursor, not derived from trace.length/revisionRound.");
+console.log("[OK] Legacy checkpoint migration branch present -- phaseCursor===0 with a non-empty trace derives phase from trace length (pre-N1 formula), so a checkpoint predating this channel does not silently restart at phase 0.");
 console.log("[OK] retrieve node bumps revisionRound and feeds additional_queries back into retrieval.");
 console.log("[OK] Per-query retrieval merge (retrieveChunks per query + interleaveChunks) present.");
 console.log("[OK] Harness report exposes revision_rounds and revision_budget_exhausted.");
