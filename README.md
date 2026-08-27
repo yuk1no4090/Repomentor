@@ -18,12 +18,12 @@ New hires typically take days to weeks to build working context on an unfamiliar
 
 **Highlights**
 
-- **Three model-agent LangGraph orchestration** — independently prompted Supervisor, ImpactAnalyst, and QACritic calls are coordinated with deterministic retrieval/safety nodes, a bounded QACritic revise cycle (the graph's one real loop, capped by `AGENT_MAX_REVISION_ROUNDS`), native-interrupt human-in-the-loop approval for high-risk changes, resumable MemorySaver checkpoints, and node-level SSE progress streaming. Offline runs degrade each role separately to deterministic logic, and each role's model/temperature is independently configurable.
+- **Three model-agent LangGraph orchestration** — independently prompted Supervisor, ImpactAnalyst, and QACritic calls are coordinated with deterministic retrieval/safety nodes, a bounded QACritic revise cycle (the graph's one real loop, capped by `AGENT_MAX_REVISION_ROUNDS`), native-interrupt human-in-the-loop approval for high-risk changes or whenever the Supervisor itself flags a change for review, resumable MemorySaver checkpoints, and node-level SSE progress streaming. Offline runs degrade each role separately to deterministic logic, and each role's model/temperature is independently configurable.
 - **Change-impact briefings for PMs and QA** — one plain-language requirement in, impacted modules / business paths / risk level / testing focus out, in language a non-engineer can act on. Backed by market research on where this gap actually exists (see [docs/POSITIONING.md](docs/POSITIONING.md)).
 - **An AI quality dashboard built into the product, not bolted on** — citation coverage, answer-schema compliance, and guardrail hit rates are first-class product UI instead of an external LLMOps tool a PM has to ask an engineer to open.
 - **An MCP Server** exposing 4 tools (repository Q&A, impact analysis, onboarding plans, project listing) so AI coding agents such as Claude Code or Cursor can consume this project's analysis directly.
 
-**Quality bar:** 159 `node:test` unit tests, 31 static-check gates, and 9 runtime black-box test suites — all running end-to-end with zero API key required (`npm test`).
+**Quality bar:** 184 `node:test` unit tests, 32 static-check gates, and 9 runtime black-box test suites — all running end-to-end with zero API key required (`npm test`).
 
 More: [docs/POSITIONING.md](docs/POSITIONING.md) (positioning + market validation) · [docs/AGENT_RUNTIME_ARCHITECTURE.md](docs/AGENT_RUNTIME_ARCHITECTURE.md) (implementation boundary) · [docs/PRD.md](docs/PRD.md) (requirements + scope decisions) · [docs/CHANGELOG.md](docs/CHANGELOG.md) (development log)
 
@@ -79,7 +79,7 @@ flowchart LR
     Impact --> Critic["QACritic Agent"]
     Critic -->|"verdict: revise<br/>(bounded by AGENT_MAX_REVISION_ROUNDS)"| Retrieve
     Critic -->|"verdict: approve,<br/>or revise budget exhausted"| Guardrails["Safety Guardrails"]
-    Guardrails -->|"high risk + AGENT_HITL_ENABLED"| HITL{{"human_review<br/>(paused — resume via POST /api/langgraph-resume)"}}
+    Guardrails -->|"high risk OR supervisor flag + AGENT_HITL_ENABLED"| HITL{{"human_review<br/>(paused — resume via POST /api/langgraph-resume)"}}
     Guardrails -->|"else"| Synthesize["Synthesize"]
     HITL -->|"decision: approve or reject"| Synthesize
 
@@ -118,7 +118,7 @@ export OPENAI_MODEL=gpt-4o-mini
 - Import-time safety review with prompt-risk and sensitive-content file counts in the project overview.
 - Repository Q&A with related files, uncertainty, suggested next questions, feedback buttons, lightweight harness metadata, safety status, guardrail details, and pending memory suggestions.
 - Impact analysis with impacted modules, risk level, testing suggestions, and open questions.
-- Agent Workflow tab backed by a LangGraph StateGraph that coordinates the Supervisor, ImpactAnalyst, and QACritic model agents (each independently configurable via per-role `OPENAI_MODEL_*`/`OPENAI_TEMPERATURE_*`) with deterministic classification, retrieval, memory, safety, and synthesis; includes a bounded QACritic revise cycle back to retrieval, optional human-in-the-loop approval for high-risk changes, MemorySaver checkpointing, and node-level SSE progress streaming via `/api/agent-impact/stream`.
+- Agent Workflow tab backed by a LangGraph StateGraph that coordinates the Supervisor, ImpactAnalyst, and QACritic model agents (each independently configurable via per-role `OPENAI_MODEL_*`/`OPENAI_TEMPERATURE_*`) with deterministic classification, retrieval, memory, safety, and synthesis; includes a bounded QACritic revise cycle back to retrieval, optional human-in-the-loop approval for high-risk changes or a Supervisor-requested review, MemorySaver checkpointing, and node-level SSE progress streaming via `/api/agent-impact/stream`.
 - Onboarding plans run through a lightweight deterministic harness with trace, safety, guardrails, citations, and pending memory suggestions.
 - Optional token-bound auth with user, role, scope, local store-backed tokens, and audit metadata. `/api/auth/me` returns the current resolved identity, `/api/auth/users` lists configured and local users, `POST /api/auth/users` creates a local user and returns a one-time visible token, `POST /api/auth/users/disable` disables a local user and its tokens, and `/api/auth/events` lists recent auth decisions without exposing token values. This is not a password-login or session-management system.
 - User preference memory suggestions that require explicit confirmation before being saved. Confirmed preferences are scoped by `userId`, defaulting to `local-user` for local/backward-compatible use. API clients can pass `userId` in JSON bodies or the `X-User-Id` header. Confirmed preferences can shape both impact analysis and ordinary Q&A emphasis; confirmed memory is also written to SQLite long-term memory for searchable reuse across later Agent Workflow and Direct Chat runs. Memory suggestions carry user and project ownership so confirmation/ignore actions can verify the active boundary. Ignored suggestions suppress the same key/value suggestion from being repeated for that user. The Copilot inspector includes a lightweight preference and long-term memory manager for viewing, removing one preference value, or clearing all preferences.
@@ -262,7 +262,7 @@ The project targets Node.js 24 because the long-term memory store uses the built
 | `AGENT_GRAPH_MODE` | `supervisor` | Graph routing mode: `supervisor` for dynamic multi-agent routing or `linear` for the original 9-node pipeline. |
 | `AGENT_MAX_STEPS` | `14` | Maximum LangGraph execution steps (increased from 9 to support supervisor routing overhead). |
 | `AGENT_MAX_REVISION_ROUNDS` | `1` | Maximum number of bounded QACritic revise rounds (`qa_plan` verdict `"revise"` loops back to `retrieve`). `0` disables the revise cycle entirely. |
-| `AGENT_HITL_ENABLED` | `false` | Set to `true` to enable human-in-the-loop review for high-risk changes. |
+| `AGENT_HITL_ENABLED` | `false` | Set to `true` to enable human-in-the-loop review for high-risk changes or whenever the Supervisor's own plan requests review (`supervisorPlan.require_human_review`). |
 | `RATE_LIMIT_MAX` | `120` | Maximum API requests per window per IP. Set to `0` to disable rate limiting. |
 | `RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window duration in milliseconds. |
 | `LOG_LEVEL` | `info` | Structured log level: `debug`, `info`, `warn`, or `error`. |
@@ -336,7 +336,7 @@ input safety
   -> ImpactAnalyst agent
   -> QACritic agent          -- verdict "revise" (bounded by AGENT_MAX_REVISION_ROUNDS) loops back to retriever
   -> safety guardrails
-  -> [human_review]          -- only when risk is high and AGENT_HITL_ENABLED=true; pauses via LangGraph's native interrupt()
+  -> [human_review]          -- only when risk is high OR the Supervisor's plan requests review, and AGENT_HITL_ENABLED=true; pauses via LangGraph's native interrupt()
   -> structured synthesizer
 ```
 
@@ -444,7 +444,7 @@ Common API errors include:
 | `workflow_started` | `{ run_id, thread_id, graph_mode, planned_nodes }` | Once, immediately, before the graph starts running. `planned_nodes` is the nominal 9-phase walk (`input_safety` .. `synthesize`); the actual run may diverge (a bounded QACritic revise round re-enters 4 of them, a HITL pause stops short of `synthesize`). |
 | `node_completed` | `{ node, agent_role, label, tool, elapsed_ms }` | Once per real graph node as it finishes, in execution order. |
 | `revise_round_entered` | `{ round, additional_queries, reason, elapsed_ms }` | Once per bounded QACritic revise round, when `retrieve` re-enters carrying the critic's `additional_queries`. |
-| `hitl_paused` | `{ reason, risk_level, change_type, elapsed_ms }` | Once, if a high-risk change triggers LangGraph's native `interrupt()` inside `human_review`. |
+| `hitl_paused` | `{ reason, risk_level, change_type, triggers, elapsed_ms }` | Once, if a high-risk change OR a Supervisor-requested review triggers LangGraph's native `interrupt()` inside `human_review`. `triggers` names which signal(s) fired (`["high_risk"]`, `["supervisor_flag"]`, or both). |
 | `final` | `{ answerId, kind, payload }` | Once, last — the exact same shape `POST /api/agent-impact`'s JSON response body has. |
 | `error` | `{ error, code }` | Only if the run fails after the SSE response has already started (see `STREAM_FAILED` above). |
 

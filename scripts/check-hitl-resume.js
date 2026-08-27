@@ -27,9 +27,32 @@ assert(serverSource.includes('hitlRequest: { node: "human_review"'), "human_revi
 assert(serverSource.includes('status: "hitl_paused"'), "human_review trace must report hitl_paused");
 
 // ── 3. Routing: all model agents + guardrails → human_review → synthesize ──
-assert(serverSource.includes('nextNode === "synthesize" && state.riskLevel === "high" && AGENT_HITL_ENABLED'), "HITL routing gate must run after QACritic and guardrails");
+// Task N2: the gate now runs on hitlReviewRequired(state) (riskLevel="high"
+// OR the Supervisor's own require_human_review flag), not riskLevel alone --
+// see section 3b below for assertions pinning that predicate's own two
+// signals against comment-stripped source.
+assert(serverSource.includes('nextNode === "synthesize" && hitlReviewRequired(state) && AGENT_HITL_ENABLED'), "HITL routing gate must run after QACritic and guardrails, gated on hitlReviewRequired(state)");
 assert(serverSource.includes("state.qaReview") || serverSource.includes("qaReview"), "QACritic review state must exist before HITL routing");
 assert(serverSource.includes('state.hitlRequest?.node === "human_review"'), "Post-human_review routing check must exist");
+
+// ── 3b. Task N2: hitlReviewRequired(state) must be a real two-signal OR
+// predicate (riskLevel="high" OR supervisorPlan.require_human_review===true,
+// strict boolean check), not riskLevel alone renamed, and not silently
+// reduced back to one signal. Asserted against `codeOnlySource` (comments
+// stripped) with the exact literal lines from lib/agent-graph.js's
+// hitlReviewTriggers()/hitlReviewRequired() so a mutation to either signal's
+// condition, or to the strict `=== true` boolean check, or to
+// hitlReviewRequired's own "OR" (`.length > 0`) fails these assertions --
+// see the report for this card's out-of-repo mutation-verification evidence
+// for each one.
+assert(codeOnlySource.includes("function hitlReviewTriggers(state)"),
+  "hitlReviewTriggers(state) must exist as the single source of truth for which HITL signal(s) fired");
+assert(codeOnlySource.includes('if (state.riskLevel === "high") triggers.push("high_risk");'),
+  "hitlReviewTriggers must still treat riskLevel===\"high\" as the (still primary) high_risk trigger");
+assert(codeOnlySource.includes('if (state.supervisorPlan?.require_human_review === true) triggers.push("supervisor_flag");'),
+  "hitlReviewTriggers must treat supervisorPlan.require_human_review===true (strict boolean, not truthiness) as a second, independent supervisor_flag trigger");
+assert(codeOnlySource.includes("function hitlReviewRequired(state)") && codeOnlySource.includes("return hitlReviewTriggers(state).length > 0;"),
+  "hitlReviewRequired must be defined as hitlReviewTriggers(state).length > 0 -- one OR'd source of truth, not a second independently-maintained condition");
 
 // ── 4. synthesize HITL logic ──
 assert(serverSource.includes("hitl:"), "synthesize must include hitl field in finalPayload");
@@ -72,11 +95,30 @@ assert(codeOnlySource.includes("isInterrupted(state)"),
 assert(codeOnlySource.includes('"native_interrupt_resume"'),
   "decision resume with a persisted checkpoint payload must report harness.resume.mode=native_interrupt_resume in real code");
 
+// ── 8. Task N2 observability: the paused payload must name WHICH signal(s)
+// triggered the pause, not just that a pause happened. `describeHitlReason`
+// builds `hitl.reason` from `hitlReviewTriggers()`'s own trigger list, and
+// `hitl.triggers`/the interrupt() reviewRequest's own `triggers` field carry
+// that list itself (additive-only -- see lib/agent-graph.js's own comments on
+// each site for why this cannot regress hitl's existing paused/approved/
+// rejected/reason/decision fields, which are still asserted unchanged in
+// section 4 above).
+assert(codeOnlySource.includes("function describeHitlReason(triggers)"),
+  "describeHitlReason(triggers) must exist to build the operator-facing hitl.reason text from whichever HITL signal(s) fired");
+assert(codeOnlySource.includes('high_risk: "high risk change requires human review"') && codeOnlySource.includes('supervisor_flag: "supervisor requested human review"'),
+  "the HITL trigger reason text must name both signals distinctly (high-risk change vs supervisor-requested review)");
+assert(codeOnlySource.includes("const triggers = hitlReviewTriggers(state);") && codeOnlySource.includes("reason: describeHitlReason(triggers),"),
+  "human_review's interrupt() reviewRequest must compute its reason from hitlReviewTriggers(state)/describeHitlReason(), not a hardcoded string");
+assert(serverSource.includes("triggers: Array.isArray(state.hitlRequest.triggers) ? state.hitlRequest.triggers : []"),
+  "the finalPayload's hitl object must additively expose which trigger(s) fired as hitl.triggers");
+
 console.log("[OK] AGENT_HITL_ENABLED env var properly initialized.");
 console.log("[OK] human_review node sets hitlRequest and reports hitl_paused.");
-console.log("[OK] Routing: QACritic + guardrails → high-risk human_review → synthesize.");
+console.log("[OK] Routing: QACritic + guardrails → hitlReviewRequired (high risk OR supervisor flag) → human_review → synthesize.");
+console.log("[OK] hitlReviewRequired(state) is a real two-signal OR predicate (riskLevel==\"high\" OR supervisorPlan.require_human_review===true, strict boolean).");
 console.log("[OK] synthesize produces hitl field (paused/approved/rejected).");
 console.log("[OK] /api/langgraph-resume accepts decision parameter.");
 console.log("[OK] Resume handler injects hitlRequest into workflow state.");
 console.log("[OK] human_review uses native interrupt()/Command resume (native_interrupt_resume mode present).");
+console.log("[OK] Paused payload names which HITL trigger(s) fired (hitl.reason text + additive hitl.triggers).");
 console.log("[PASS] All HITL checks passed.");

@@ -18,12 +18,12 @@ _一个帮助新工程师、技术 PM 和 QA 快速理解代码仓库的 MVP Web
 
 **亮点**
 
-- **LangGraph 三模型 Agent 编排** —— Supervisor、ImpactAnalyst、QACritic 使用独立 prompt、schema 和模型调用，并与确定性检索/安全节点协作；含有界的 QACritic revise 环（图上唯一的真实环路，由 `AGENT_MAX_REVISION_ROUNDS` 限界）、基于 LangGraph 原生 interrupt 的人工审批（HITL）、MemorySaver checkpoint 续跑，以及节点级 SSE 进度流。离线运行时每个角色独立降级为确定性逻辑，且每个角色的模型/温度均可独立配置。
+- **LangGraph 三模型 Agent 编排** —— Supervisor、ImpactAnalyst、QACritic 使用独立 prompt、schema 和模型调用，并与确定性检索/安全节点协作；含有界的 QACritic revise 环（图上唯一的真实环路，由 `AGENT_MAX_REVISION_ROUNDS` 限界）、基于 LangGraph 原生 interrupt 的人工审批（HITL，高风险变更或 Supervisor 自身请求复核均可触发）、MemorySaver checkpoint 续跑，以及节点级 SSE 进度流。离线运行时每个角色独立降级为确定性逻辑，且每个角色的模型/温度均可独立配置。
 - **面向 PM/QA 的改动影响简报** —— 输入一句自然语言需求描述，输出受影响模块、业务链路、风险级别、测试重点，非工程师可直接读懂。这一差异化切入有调研背书（见 [docs/POSITIONING.md](docs/POSITIONING.md)）。
 - **产品内置的 AI 质量看板，而非外挂工具** —— 引用覆盖率、答案 schema 合规率、guardrail 命中率是产品 UI 的一部分，而不是需要工程介入才能打开的外部 LLMOps 工具。
 - **MCP Server** 暴露 4 个工具（仓库问答、影响分析、onboarding 计划生成、项目列表），让 Claude Code、Cursor 等 AI coding agent 可以直接消费本项目的分析能力。
 
-**质量证据**：159 条 `node:test` 单元测试、31 项静态检查门禁、9 套运行时黑盒测试套件——全部无需 API key 即可端到端运行（`npm test`）。
+**质量证据**：184 条 `node:test` 单元测试、32 项静态检查门禁、9 套运行时黑盒测试套件——全部无需 API key 即可端到端运行（`npm test`）。
 
 延伸阅读：[docs/POSITIONING.md](docs/POSITIONING.md)（定位与市场验证）· [docs/AGENT_RUNTIME_ARCHITECTURE.md](docs/AGENT_RUNTIME_ARCHITECTURE.md)（实现边界）· [docs/PRD.md](docs/PRD.md)（需求与取舍决策）· [docs/CHANGELOG.md](docs/CHANGELOG.md)（开发日志）
 
@@ -79,7 +79,7 @@ flowchart LR
     Impact --> Critic["QACritic Agent"]
     Critic -->|"verdict: revise<br/>（由 AGENT_MAX_REVISION_ROUNDS 限界）"| Retrieve
     Critic -->|"verdict: approve，<br/>或修订预算已用尽"| Guardrails["安全护栏"]
-    Guardrails -->|"高风险 + AGENT_HITL_ENABLED"| HITL{{"human_review<br/>（暂停，经 POST /api/langgraph-resume 续跑）"}}
+    Guardrails -->|"高风险 或 Supervisor 请求复核 + AGENT_HITL_ENABLED"| HITL{{"human_review<br/>（暂停，经 POST /api/langgraph-resume 续跑）"}}
     Guardrails -->|"其他情况"| Synthesize["合成"]
     HITL -->|"decision: approve 或 reject"| Synthesize
 
@@ -118,7 +118,7 @@ export OPENAI_MODEL=gpt-4o-mini
 - 导入时的安全审查会在项目概览中给出 prompt 风险和敏感内容文件的计数。
 - 仓库问答提供相关文件、不确定性说明、建议的后续问题、反馈按钮、轻量 harness 元数据、安全状态、护栏详情，以及待处理的记忆建议。
 - 影响分析提供受影响模块、风险级别、测试建议和待澄清问题。
-- Agent Workflow 标签页由 LangGraph StateGraph 驱动，编排 Supervisor、ImpactAnalyst、QACritic 三个模型 Agent（各自可通过 `OPENAI_MODEL_*`/`OPENAI_TEMPERATURE_*` 独立配置），并配合确定性的分类、检索、记忆、安全和综合节点；包含一个回到检索节点的有界 QACritic revise 环、面向高风险变更的可选人工审批（HITL）、MemorySaver checkpoint，以及通过 `/api/agent-impact/stream` 提供的节点级 SSE 进度流。
+- Agent Workflow 标签页由 LangGraph StateGraph 驱动，编排 Supervisor、ImpactAnalyst、QACritic 三个模型 Agent（各自可通过 `OPENAI_MODEL_*`/`OPENAI_TEMPERATURE_*` 独立配置），并配合确定性的分类、检索、记忆、安全和综合节点；包含一个回到检索节点的有界 QACritic revise 环、面向高风险变更或 Supervisor 请求复核的可选人工审批（HITL）、MemorySaver checkpoint，以及通过 `/api/agent-impact/stream` 提供的节点级 SSE 进度流。
 - Onboarding 计划通过一个轻量的确定性 harness 生成，带有 trace、安全、护栏、引用和待处理记忆建议。
 - 可选的、绑定 token 的认证支持用户、角色、scope、本地 store 存储的 token 以及审计元数据。`/api/auth/me` 返回当前解析出的身份，`/api/auth/users` 列出配置和本地用户，`POST /api/auth/users` 创建本地用户并返回一次性可见的 token，`POST /api/auth/users/disable` 禁用一个本地用户及其 token，`/api/auth/events` 列出最近的认证决策而不暴露 token 值。这不是一套密码登录或 session 管理系统。
 - 用户偏好记忆建议需要显式确认才会保存。已确认的偏好按 `userId` 隔离，未提供时默认使用 `local-user`，以保持本地/向后兼容的使用方式。API 客户端可以在 JSON body 或 `X-User-Id` 请求头中传入 `userId`。已确认的偏好可以同时影响影响分析和普通问答的侧重点；已确认的记忆也会写入 SQLite 长期记忆，供后续的 Agent Workflow 和 Direct Chat 运行复用检索。记忆建议携带用户和项目归属信息，便于确认/忽略操作校验当前生效的边界。被忽略的建议会抑制该用户下相同 key/value 建议的重复出现。Copilot inspector 内置一个轻量的偏好和长期记忆管理器，可查看、移除单个偏好值，或清空全部偏好。
@@ -262,7 +262,7 @@ GitHub Actions 会在 push 到 `main` 和创建 pull request 时运行 `npm ci` 
 | `AGENT_GRAPH_MODE` | `supervisor` | 图路由模式：`supervisor` 为动态多 Agent 路由，`linear` 为原始的 9 节点线性管线。 |
 | `AGENT_MAX_STEPS` | `14` | LangGraph 最大执行步数（从 9 上调，以覆盖 supervisor 路由的额外开销）。 |
 | `AGENT_MAX_REVISION_ROUNDS` | `1` | 有界 QACritic revise 轮次的最大数量（`qa_plan` 返回 `"revise"` 时会回到 `retrieve`）。设为 `0` 可完全关闭 revise 环。 |
-| `AGENT_HITL_ENABLED` | `false` | 设为 `true` 时，对高风险变更启用人工审核（human-in-the-loop）。 |
+| `AGENT_HITL_ENABLED` | `false` | 设为 `true` 时，对高风险变更或 Supervisor 自身请求复核（`supervisorPlan.require_human_review`）启用人工审核（human-in-the-loop）。 |
 | `RATE_LIMIT_MAX` | `120` | 每个 IP 每个时间窗口内的最大 API 请求数。设为 `0` 可禁用限流。 |
 | `RATE_LIMIT_WINDOW_MS` | `60000` | 限流时间窗口长度（毫秒）。 |
 | `LOG_LEVEL` | `info` | 结构化日志级别：`debug`、`info`、`warn` 或 `error`。 |
@@ -336,7 +336,7 @@ input safety
   -> ImpactAnalyst agent
   -> QACritic agent          -- verdict 为 "revise" 时（受 AGENT_MAX_REVISION_ROUNDS 限界）回到 retriever
   -> safety guardrails
-  -> [human_review]          -- 仅当风险为 high 且 AGENT_HITL_ENABLED=true 时；通过 LangGraph 原生 interrupt() 暂停
+  -> [human_review]          -- 仅当风险为 high 或 Supervisor 的计划请求复核，且 AGENT_HITL_ENABLED=true 时；通过 LangGraph 原生 interrupt() 暂停
   -> structured synthesizer
 ```
 
@@ -444,7 +444,7 @@ input safety
 | `workflow_started` | `{ run_id, thread_id, graph_mode, planned_nodes }` | 仅一次，在图开始运行之前立即发出。`planned_nodes` 是标称的 9 阶段走位（`input_safety` .. `synthesize`）；实际执行可能有出入（有界 QACritic 修订轮会重新进入其中 4 个节点，HITL 暂停会在到达 `synthesize` 之前停止）。 |
 | `node_completed` | `{ node, agent_role, label, tool, elapsed_ms }` | 每个真实图节点完成时发出一次，按执行顺序排列。 |
 | `revise_round_entered` | `{ round, additional_queries, reason, elapsed_ms }` | 每个有界 QACritic 修订轮发出一次，即 `retrieve` 携带 critic 的 `additional_queries` 重新进入时。 |
-| `hitl_paused` | `{ reason, risk_level, change_type, elapsed_ms }` | 仅一次，如果高风险变更在 `human_review` 内触发了 LangGraph 原生的 `interrupt()`。 |
+| `hitl_paused` | `{ reason, risk_level, change_type, triggers, elapsed_ms }` | 仅一次，如果高风险变更或 Supervisor 请求复核在 `human_review` 内触发了 LangGraph 原生的 `interrupt()`。`triggers` 标明具体命中了哪个信号（`["high_risk"]`、`["supervisor_flag"]` 或两者都有）。 |
 | `final` | `{ answerId, kind, payload }` | 仅一次，且是最后一个——与 `POST /api/agent-impact` 的 JSON 响应体形状完全相同。 |
 | `error` | `{ error, code }` | 仅当 SSE 响应已经开始之后运行失败时发出（参见上面的 `STREAM_FAILED`）。 |
 

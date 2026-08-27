@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { decideNextRoute, ROUTE_RULES, nextPhaseCursor } from "../lib/agent-graph.js";
+import { decideNextRoute, ROUTE_RULES, nextPhaseCursor, hitlReviewRequired, hitlReviewTriggers } from "../lib/agent-graph.js";
 
 // Unit tests for the *real* decideNextRoute() exported by lib/agent-graph.js.
 // These replace scripts/check-routing-unit-test.js's old simulateRoute(), a
@@ -416,6 +416,164 @@ describe("decideNextRoute legacy checkpoint migration (phaseCursor missing from 
 
   test("a non-zero phaseCursor is never overridden by the migration branch, even with a long trace (re-affirms the decoupling proof above)", () => {
     const state = { phaseCursor: 3, trace: new Array(20).fill({}), riskLevel: "low" };
+    assert.equal(decideNextRoute(state), "retrieve");
+  });
+});
+
+// ── Task N2: the Supervisor's require_human_review becomes a second, OR'd
+// HITL trigger alongside riskLevel="high" -- see hitlReviewTriggers()/
+// hitlReviewRequired() in lib/agent-graph.js for the policy these tests pin.
+// hitlReviewRequired()/hitlReviewTriggers() are pure functions of `state`
+// (no AGENT_HITL_ENABLED dependency), so they can be exercised directly,
+// in-process, unlike decideNextRoute's own HITL-enabled routing branch
+// (which still needs decideNextRouteWithHitlEnabled()'s child-process trick
+// -- see its own comment above for why).
+describe("hitlReviewTriggers / hitlReviewRequired (Task N2 two-signal predicate)", () => {
+  test("riskLevel high alone -> triggers ['high_risk'], required", () => {
+    const state = { riskLevel: "high" };
+    assert.deepEqual(hitlReviewTriggers(state), ["high_risk"]);
+    assert.equal(hitlReviewRequired(state), true);
+  });
+
+  test("supervisorPlan.require_human_review === true alone (riskLevel medium) -> triggers ['supervisor_flag'], required", () => {
+    const state = { riskLevel: "medium", supervisorPlan: { require_human_review: true } };
+    assert.deepEqual(hitlReviewTriggers(state), ["supervisor_flag"]);
+    assert.equal(hitlReviewRequired(state), true);
+  });
+
+  test("both signals -> triggers ['high_risk', 'supervisor_flag'] in that order, required", () => {
+    const state = { riskLevel: "high", supervisorPlan: { require_human_review: true } };
+    assert.deepEqual(hitlReviewTriggers(state), ["high_risk", "supervisor_flag"]);
+    assert.equal(hitlReviewRequired(state), true);
+  });
+
+  test("neither signal (low risk, no supervisorPlan) -> no triggers, not required", () => {
+    const state = { riskLevel: "low" };
+    assert.deepEqual(hitlReviewTriggers(state), []);
+    assert.equal(hitlReviewRequired(state), false);
+  });
+
+  test("supervisorPlan.require_human_review === 'true' (string, not boolean) does not trigger -- strict === true, not truthiness", () => {
+    const state = { riskLevel: "medium", supervisorPlan: { require_human_review: "true" } };
+    assert.deepEqual(hitlReviewTriggers(state), []);
+    assert.equal(hitlReviewRequired(state), false);
+  });
+
+  test("supervisorPlan.require_human_review === 'false' (string, truthy in JS) does not trigger -- guards the exact foreign-value risk the strict check exists for", () => {
+    const state = { riskLevel: "medium", supervisorPlan: { require_human_review: "false" } };
+    assert.deepEqual(hitlReviewTriggers(state), []);
+    assert.equal(hitlReviewRequired(state), false);
+  });
+
+  test("missing supervisorPlan entirely does not throw and does not trigger", () => {
+    const state = { riskLevel: "medium" };
+    assert.doesNotThrow(() => hitlReviewRequired(state));
+    assert.equal(hitlReviewRequired(state), false);
+  });
+});
+
+// ── Task N2: decideNextRoute's phase-lookup reroute, extended to
+// hitlReviewRequired(state) (riskLevel="high" OR supervisorPlan
+// .require_human_review === true). Every scenario below sits at
+// phaseCursor 8 (guardrails' own successor cursor -- the phase-lookup
+// resolves nextNode="synthesize" there), the same phase the pre-existing
+// "phase 8 + high risk + HITL enabled -> human_review..." case above uses.
+describe("decideNextRoute HITL: supervisor require_human_review as a second trigger (Task N2)", () => {
+  test("flag true + riskLevel medium + HITL enabled -> reroute to human_review at cursor 8 (the case riskLevel alone could never trigger)", () => {
+    const result = decideNextRouteWithHitlEnabled({
+      phaseCursor: 8,
+      riskLevel: "medium",
+      supervisorPlan: { require_human_review: true }
+    });
+    assert.equal(result, "human_review");
+  });
+
+  test("flag true + riskLevel medium + HITL disabled (default) -> synthesize (AGENT_HITL_ENABLED still gates the reroute)", () => {
+    const state = { phaseCursor: 8, riskLevel: "medium", supervisorPlan: { require_human_review: true } };
+    assert.equal(decideNextRoute(state), "synthesize");
+  });
+
+  test("flag true + riskLevel medium + a decision already recorded -> no re-pause, straight to synthesize", () => {
+    // Exercises the real HITL-enabled branch to prove `!state.hitlRequest?.decision`
+    // (not just AGENT_HITL_ENABLED) is what suppresses the reroute once resumed --
+    // if this were still `false` for decision-bearing state, this would loop back
+    // to human_review a second time instead of finishing the run.
+    const result = decideNextRouteWithHitlEnabled({
+      phaseCursor: 8,
+      riskLevel: "medium",
+      supervisorPlan: { require_human_review: true },
+      hitlRequest: { node: "human_review", decision: "approve" }
+    });
+    assert.equal(result, "synthesize");
+  });
+
+  test("flag false + riskLevel medium + HITL enabled -> no pause, synthesize", () => {
+    const result = decideNextRouteWithHitlEnabled({
+      phaseCursor: 8,
+      riskLevel: "medium",
+      supervisorPlan: { require_human_review: false }
+    });
+    assert.equal(result, "synthesize");
+  });
+
+  test("supervisorPlan absent + riskLevel medium + HITL enabled -> no pause, synthesize", () => {
+    const result = decideNextRouteWithHitlEnabled({ phaseCursor: 8, riskLevel: "medium" });
+    assert.equal(result, "synthesize");
+  });
+
+  test("flag as string 'true' (not boolean) + riskLevel medium + HITL enabled -> no pause (strict === true, not truthiness) -- proves the routing gate itself, not just the helper in isolation", () => {
+    const result = decideNextRouteWithHitlEnabled({
+      phaseCursor: 8,
+      riskLevel: "medium",
+      supervisorPlan: { require_human_review: "true" }
+    });
+    assert.equal(result, "synthesize");
+  });
+
+  // ── Post-resume routing for a supervisor-triggered (non-high-risk) pause ──
+  // Proves the analysis behind the decision to leave decideNextRoute's
+  // post-human_review short-circuit (`hitlRequest.node === "human_review" &&
+  // riskLevel === "high"`) UNEXTENDED (see its own comment in
+  // lib/agent-graph.js for the full reasoning): a supervisor-triggered pause
+  // with riskLevel="medium" does NOT satisfy that short-circuit's own
+  // condition (riskLevel is not "high"), so this state falls through past it
+  // to the revise-branch check (skipped: phaseMap[8] is "synthesize", not
+  // "guardrails") and then the ordinary phase-lookup. There, nextNode is
+  // "synthesize" and `!state.hitlRequest?.decision` is false (a decision IS
+  // present), so the HITL-reroute condition is false regardless of
+  // hitlReviewRequired(state) -- the lookup just falls through to
+  // `return nextNode`, landing on "synthesize" via the phase map alone, not
+  // the short-circuit. This does not require AGENT_HITL_ENABLED at all
+  // (the reroute condition it is disproving needs an active decision to even
+  // be relevant), so it runs in-process like the rest of this describe block.
+  test("post-resume routing for a supervisor-triggered (medium-risk) pause reaches synthesize via the phase lookup, not the (riskLevel-only) post-review short-circuit", () => {
+    const state = {
+      phaseCursor: 8,
+      riskLevel: "medium",
+      supervisorPlan: { require_human_review: true },
+      hitlRequest: { node: "human_review", reason: "resumed with decision", decision: "approve", triggers: ["supervisor_flag"] }
+    };
+    assert.equal(decideNextRoute(state), "synthesize");
+  });
+
+  // ── Precedence: the revise branch is checked (and, when it matches, taken)
+  // strictly BEFORE the phase-lookup's HITL reroute is ever consulted. At
+  // phaseCursor 7 (qa_plan's own successor), phaseMap[7] is "guardrails", not
+  // "synthesize" -- the HITL-reroute condition requires nextNode ===
+  // "synthesize", so it is structurally unreachable at this phase regardless
+  // of hitlReviewRequired(state). This state sets the supervisor flag AND
+  // riskLevel="high" (both signals) specifically to prove neither one can
+  // preempt an in-flight revise round -- the revise loop always completes
+  // before the HITL gate is even reachable, since the gate only ever fires
+  // at the "-> synthesize" transition (phase 8), one phase past where the
+  // revise loop re-enters at "retrieve".
+  test("flag true (plus riskLevel high) does not preempt the revise branch at cursor 7 -- revise loop resolves before the HITL gate is even reachable", () => {
+    const state = {
+      phaseCursor: nextPhaseCursor("qa_plan"), // 7 -> would normally be "guardrails"
+      riskLevel: "high",
+      supervisorPlan: { require_human_review: true },
+      qaReview: { verdict: "revise", additional_queries: ["dependency callers tests"] }
+    };
     assert.equal(decideNextRoute(state), "retrieve");
   });
 });
