@@ -23,7 +23,7 @@ _一个帮助新工程师、技术 PM 和 QA 快速理解代码仓库的 MVP Web
 - **产品内置的 AI 质量看板，而非外挂工具** —— 引用覆盖率、答案 schema 合规率、guardrail 命中率是产品 UI 的一部分，而不是需要工程介入才能打开的外部 LLMOps 工具。
 - **MCP Server** 暴露 4 个工具（仓库问答、影响分析、onboarding 计划生成、项目列表），让 Claude Code、Cursor 等 AI coding agent 可以直接消费本项目的分析能力。
 
-**质量证据**：184 条 `node:test` 单元测试、32 项静态检查门禁、9 套运行时黑盒测试套件——全部无需 API key 即可端到端运行（`npm test`）。
+**质量证据**：198 条 `node:test` 单元测试、33 项静态检查门禁、9 套运行时黑盒测试套件——全部无需 API key 即可端到端运行（`npm test`）。
 
 延伸阅读：[docs/POSITIONING.md](docs/POSITIONING.md)（定位与市场验证）· [docs/AGENT_RUNTIME_ARCHITECTURE.md](docs/AGENT_RUNTIME_ARCHITECTURE.md)（实现边界）· [docs/PRD.md](docs/PRD.md)（需求与取舍决策）· [docs/CHANGELOG.md](docs/CHANGELOG.md)（开发日志）
 
@@ -79,7 +79,7 @@ flowchart LR
     Impact --> Critic["QACritic Agent"]
     Critic -->|"verdict: revise<br/>（由 AGENT_MAX_REVISION_ROUNDS 限界）"| Retrieve
     Critic -->|"verdict: approve，<br/>或修订预算已用尽"| Guardrails["安全护栏"]
-    Guardrails -->|"高风险 或 Supervisor 请求复核 + AGENT_HITL_ENABLED"| HITL{{"human_review<br/>（暂停，经 POST /api/langgraph-resume 续跑）"}}
+    Guardrails -->|"高风险 或 Supervisor 请求复核 或 安全标记 + AGENT_HITL_ENABLED"| HITL{{"human_review<br/>（暂停，经 POST /api/langgraph-resume 续跑）"}}
     Guardrails -->|"其他情况"| Synthesize["合成"]
     HITL -->|"decision: approve 或 reject"| Synthesize
 
@@ -262,7 +262,7 @@ GitHub Actions 会在 push 到 `main` 和创建 pull request 时运行 `npm ci` 
 | `AGENT_GRAPH_MODE` | `supervisor` | 图路由模式：`supervisor` 为动态多 Agent 路由，`linear` 为原始的 9 节点线性管线。 |
 | `AGENT_MAX_STEPS` | `14` | LangGraph 最大执行步数（从 9 上调，以覆盖 supervisor 路由的额外开销）。 |
 | `AGENT_MAX_REVISION_ROUNDS` | `1` | 有界 QACritic revise 轮次的最大数量（`qa_plan` 返回 `"revise"` 时会回到 `retrieve`）。设为 `0` 可完全关闭 revise 环。 |
-| `AGENT_HITL_ENABLED` | `false` | 设为 `true` 时，对高风险变更或 Supervisor 自身请求复核（`supervisorPlan.require_human_review`）启用人工审核（human-in-the-loop）。 |
+| `AGENT_HITL_ENABLED` | `false` | 设为 `true` 时，对高风险变更、Supervisor 自身请求复核（`supervisorPlan.require_human_review`），或输入问题/检索到的仓库内容被安全扫描标记的情形，启用人工审核（human-in-the-loop）。在确定性/离线回退路径下（未配置 `OPENAI_API_KEY`），`require_human_review`/`risk_hypothesis`/`riskLevel` 都只是基于问题关键词或文件路径的启发式判断，并非对变更本身的证据化推理。 |
 | `RATE_LIMIT_MAX` | `120` | 每个 IP 每个时间窗口内的最大 API 请求数。设为 `0` 可禁用限流。 |
 | `RATE_LIMIT_WINDOW_MS` | `60000` | 限流时间窗口长度（毫秒）。 |
 | `LOG_LEVEL` | `info` | 结构化日志级别：`debug`、`info`、`warn` 或 `error`。 |
@@ -336,7 +336,7 @@ input safety
   -> ImpactAnalyst agent
   -> QACritic agent          -- verdict 为 "revise" 时（受 AGENT_MAX_REVISION_ROUNDS 限界）回到 retriever
   -> safety guardrails
-  -> [human_review]          -- 仅当风险为 high 或 Supervisor 的计划请求复核，且 AGENT_HITL_ENABLED=true 时；通过 LangGraph 原生 interrupt() 暂停
+  -> [human_review]          -- 仅当风险为 high，或 Supervisor 的计划请求复核，或输入/检索内容被安全标记，且 AGENT_HITL_ENABLED=true 时；通过 LangGraph 原生 interrupt() 暂停
   -> structured synthesizer
 ```
 

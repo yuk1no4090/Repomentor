@@ -23,7 +23,7 @@ New hires typically take days to weeks to build working context on an unfamiliar
 - **An AI quality dashboard built into the product, not bolted on** — citation coverage, answer-schema compliance, and guardrail hit rates are first-class product UI instead of an external LLMOps tool a PM has to ask an engineer to open.
 - **An MCP Server** exposing 4 tools (repository Q&A, impact analysis, onboarding plans, project listing) so AI coding agents such as Claude Code or Cursor can consume this project's analysis directly.
 
-**Quality bar:** 184 `node:test` unit tests, 32 static-check gates, and 9 runtime black-box test suites — all running end-to-end with zero API key required (`npm test`).
+**Quality bar:** 198 `node:test` unit tests, 33 static-check gates, and 9 runtime black-box test suites — all running end-to-end with zero API key required (`npm test`).
 
 More: [docs/POSITIONING.md](docs/POSITIONING.md) (positioning + market validation) · [docs/AGENT_RUNTIME_ARCHITECTURE.md](docs/AGENT_RUNTIME_ARCHITECTURE.md) (implementation boundary) · [docs/PRD.md](docs/PRD.md) (requirements + scope decisions) · [docs/CHANGELOG.md](docs/CHANGELOG.md) (development log)
 
@@ -79,7 +79,7 @@ flowchart LR
     Impact --> Critic["QACritic Agent"]
     Critic -->|"verdict: revise<br/>(bounded by AGENT_MAX_REVISION_ROUNDS)"| Retrieve
     Critic -->|"verdict: approve,<br/>or revise budget exhausted"| Guardrails["Safety Guardrails"]
-    Guardrails -->|"high risk OR supervisor flag + AGENT_HITL_ENABLED"| HITL{{"human_review<br/>(paused — resume via POST /api/langgraph-resume)"}}
+    Guardrails -->|"high risk OR supervisor flag OR safety flag + AGENT_HITL_ENABLED"| HITL{{"human_review<br/>(paused — resume via POST /api/langgraph-resume)"}}
     Guardrails -->|"else"| Synthesize["Synthesize"]
     HITL -->|"decision: approve or reject"| Synthesize
 
@@ -262,7 +262,7 @@ The project targets Node.js 24 because the long-term memory store uses the built
 | `AGENT_GRAPH_MODE` | `supervisor` | Graph routing mode: `supervisor` for dynamic multi-agent routing or `linear` for the original 9-node pipeline. |
 | `AGENT_MAX_STEPS` | `14` | Maximum LangGraph execution steps (increased from 9 to support supervisor routing overhead). |
 | `AGENT_MAX_REVISION_ROUNDS` | `1` | Maximum number of bounded QACritic revise rounds (`qa_plan` verdict `"revise"` loops back to `retrieve`). `0` disables the revise cycle entirely. |
-| `AGENT_HITL_ENABLED` | `false` | Set to `true` to enable human-in-the-loop review for high-risk changes or whenever the Supervisor's own plan requests review (`supervisorPlan.require_human_review`). |
+| `AGENT_HITL_ENABLED` | `false` | Set to `true` to enable human-in-the-loop review for high-risk changes, whenever the Supervisor's own plan requests review (`supervisorPlan.require_human_review`), or whenever the input question or retrieved repository content is flagged by the safety scan. In the deterministic/offline fallback (no `OPENAI_API_KEY`), `require_human_review`/`risk_hypothesis`/`riskLevel` are question-keyword or file-path heuristics, not evidence-grounded reasoning about the actual change. |
 | `RATE_LIMIT_MAX` | `120` | Maximum API requests per window per IP. Set to `0` to disable rate limiting. |
 | `RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window duration in milliseconds. |
 | `LOG_LEVEL` | `info` | Structured log level: `debug`, `info`, `warn`, or `error`. |
@@ -336,7 +336,7 @@ input safety
   -> ImpactAnalyst agent
   -> QACritic agent          -- verdict "revise" (bounded by AGENT_MAX_REVISION_ROUNDS) loops back to retriever
   -> safety guardrails
-  -> [human_review]          -- only when risk is high OR the Supervisor's plan requests review, and AGENT_HITL_ENABLED=true; pauses via LangGraph's native interrupt()
+  -> [human_review]          -- only when risk is high, OR the Supervisor's plan requests review, OR the input/retrieved content is safety-flagged, and AGENT_HITL_ENABLED=true; pauses via LangGraph's native interrupt()
   -> structured synthesizer
 ```
 

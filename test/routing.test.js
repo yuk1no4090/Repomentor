@@ -577,3 +577,141 @@ describe("decideNextRoute HITL: supervisor require_human_review as a second trig
     assert.equal(decideNextRoute(state), "retrieve");
   });
 });
+
+// ── Task N3: the deterministic safety layer (lib/safety.js) becomes a
+// third, independently OR'd HITL trigger source -- see hitlReviewTriggers()'s
+// own comment in lib/agent-graph.js for the full policy these tests pin.
+// Like Task N2's hitlReviewTriggers()/hitlReviewRequired() tests above, these
+// are pure functions of `state` (no AGENT_HITL_ENABLED dependency), so they
+// run directly, in-process.
+describe("hitlReviewTriggers / hitlReviewRequired (Task N3 safety triggers)", () => {
+  test("inputSafety flagged alone (riskLevel low) -> triggers ['input_safety_flag'], required", () => {
+    const state = { riskLevel: "low", inputSafety: { status: "needs_review", risk_types: ["prompt_injection"] } };
+    assert.deepEqual(hitlReviewTriggers(state), ["input_safety_flag"]);
+    assert.equal(hitlReviewRequired(state), true);
+  });
+
+  test("retrievedSafety flagged alone (riskLevel low) -> triggers ['retrieved_safety_flag'], required", () => {
+    const state = { riskLevel: "low", retrievedSafety: { status: "needs_review", risk_types: ["retrieved_sensitive_content"] } };
+    assert.deepEqual(hitlReviewTriggers(state), ["retrieved_safety_flag"]);
+    assert.equal(hitlReviewRequired(state), true);
+  });
+
+  test("all four signals together -> triggers in the fixed order ['high_risk', 'supervisor_flag', 'input_safety_flag', 'retrieved_safety_flag']", () => {
+    const state = {
+      riskLevel: "high",
+      supervisorPlan: { require_human_review: true },
+      inputSafety: { status: "needs_review", risk_types: ["prompt_injection"] },
+      retrievedSafety: { status: "needs_review", risk_types: ["retrieved_prompt_injection"] }
+    };
+    assert.deepEqual(hitlReviewTriggers(state), ["high_risk", "supervisor_flag", "input_safety_flag", "retrieved_safety_flag"]);
+    assert.equal(hitlReviewRequired(state), true);
+  });
+
+  test("inputSafety/retrievedSafety status 'passed' does not trigger", () => {
+    const state = { riskLevel: "low", inputSafety: { status: "passed", risk_types: [] }, retrievedSafety: { status: "passed", risk_types: [] } };
+    assert.deepEqual(hitlReviewTriggers(state), []);
+    assert.equal(hitlReviewRequired(state), false);
+  });
+
+  test("inputSafety.status a near-miss value (uppercase 'NEEDS_REVIEW') does not trigger -- strict === \"needs_review\" string compare, not a case-insensitive or truthy check", () => {
+    const state = { riskLevel: "low", inputSafety: { status: "NEEDS_REVIEW", risk_types: ["prompt_injection"] } };
+    assert.deepEqual(hitlReviewTriggers(state), []);
+    assert.equal(hitlReviewRequired(state), false);
+  });
+
+  test("missing inputSafety/retrievedSafety entirely does not throw and does not trigger", () => {
+    const state = { riskLevel: "low" };
+    assert.doesNotThrow(() => hitlReviewRequired(state));
+    assert.equal(hitlReviewRequired(state), false);
+  });
+
+  test("outputSafety flagged alone does NOT trigger -- computed inside synthesize itself, too late to gate a pause before it", () => {
+    const state = { riskLevel: "low", outputSafety: { status: "needs_review", risk_types: ["sensitive_output"] } };
+    assert.deepEqual(hitlReviewTriggers(state), []);
+    assert.equal(hitlReviewRequired(state), false);
+  });
+});
+
+// ── Task N3: decideNextRoute's phase-lookup reroute, extended to a flagged
+// input/retrieved-content safety scan alongside riskLevel="high" and the
+// Supervisor's require_human_review flag. Every scenario below sits at
+// phaseCursor 8 (guardrails' own successor cursor), the same phase the N1/N2
+// HITL cases above use.
+describe("decideNextRoute HITL: safety flags as a third trigger (Task N3)", () => {
+  test("input flagged + riskLevel medium + HITL enabled -> reroute to human_review at cursor 8", () => {
+    const result = decideNextRouteWithHitlEnabled({
+      phaseCursor: 8,
+      riskLevel: "medium",
+      inputSafety: { status: "needs_review", risk_types: ["secret_request"] }
+    });
+    assert.equal(result, "human_review");
+  });
+
+  test("retrieved content flagged alone (riskLevel low) + HITL enabled -> reroute to human_review at cursor 8", () => {
+    const result = decideNextRouteWithHitlEnabled({
+      phaseCursor: 8,
+      riskLevel: "low",
+      retrievedSafety: { status: "needs_review", risk_types: ["retrieved_prompt_injection"] }
+    });
+    assert.equal(result, "human_review");
+  });
+
+  test("input flagged + HITL disabled (default) -> synthesize (AGENT_HITL_ENABLED still gates the reroute)", () => {
+    const state = { phaseCursor: 8, riskLevel: "medium", inputSafety: { status: "needs_review", risk_types: ["prompt_injection"] } };
+    assert.equal(decideNextRoute(state), "synthesize");
+  });
+
+  test("input flagged + a decision already recorded -> no re-pause, straight to synthesize", () => {
+    const result = decideNextRouteWithHitlEnabled({
+      phaseCursor: 8,
+      riskLevel: "low",
+      inputSafety: { status: "needs_review", risk_types: ["prompt_injection"] },
+      hitlRequest: { node: "human_review", decision: "approve" }
+    });
+    assert.equal(result, "synthesize");
+  });
+
+  test("inputSafety/retrievedSafety status 'passed' + HITL enabled -> no pause, synthesize", () => {
+    const result = decideNextRouteWithHitlEnabled({
+      phaseCursor: 8,
+      riskLevel: "low",
+      inputSafety: { status: "passed", risk_types: [] },
+      retrievedSafety: { status: "passed", risk_types: [] }
+    });
+    assert.equal(result, "synthesize");
+  });
+
+  // ── Post-resume routing for a safety-triggered (non-high-risk) pause ──
+  // Mirrors the N2 "post-resume routing for a supervisor-triggered pause"
+  // case above: proves the post-human_review short-circuit
+  // (`hitlRequest.node === "human_review" && riskLevel === "high"`) staying
+  // UNEXTENDED (see its own comment in lib/agent-graph.js) also covers a
+  // safety-triggered pause -- riskLevel="medium" here does not satisfy that
+  // short-circuit, so this state falls through to the ordinary phase lookup,
+  // where `!state.hitlRequest?.decision` is false (a decision IS present)
+  // and the lookup just returns "synthesize" via phaseMap[8] alone.
+  test("post-resume routing for a safety-triggered (medium-risk) pause reaches synthesize via the phase lookup, not the (riskLevel-only) post-review short-circuit", () => {
+    const state = {
+      phaseCursor: 8,
+      riskLevel: "medium",
+      inputSafety: { status: "needs_review", risk_types: ["prompt_injection"] },
+      hitlRequest: { node: "human_review", reason: "resumed with decision", decision: "approve", triggers: ["input_safety_flag"] }
+    };
+    assert.equal(decideNextRoute(state), "synthesize");
+  });
+
+  // ── Precedence: the revise branch is checked (and taken) strictly BEFORE
+  // the phase-lookup's HITL reroute -- mirrors the N2 revise-priority case
+  // above, with a flagged input instead of the supervisor flag proving the
+  // same thing for the new trigger.
+  test("input flagged (plus riskLevel high) does not preempt the revise branch at cursor 7 -- revise loop resolves before the HITL gate is even reachable", () => {
+    const state = {
+      phaseCursor: nextPhaseCursor("qa_plan"), // 7 -> would normally be "guardrails"
+      riskLevel: "high",
+      inputSafety: { status: "needs_review", risk_types: ["prompt_injection"] },
+      qaReview: { verdict: "revise", additional_queries: ["dependency callers tests"] }
+    };
+    assert.equal(decideNextRoute(state), "retrieve");
+  });
+});

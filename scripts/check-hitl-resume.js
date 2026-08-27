@@ -103,22 +103,61 @@ assert(codeOnlySource.includes('"native_interrupt_resume"'),
 // each site for why this cannot regress hitl's existing paused/approved/
 // rejected/reason/decision fields, which are still asserted unchanged in
 // section 4 above).
-assert(codeOnlySource.includes("function describeHitlReason(triggers)"),
-  "describeHitlReason(triggers) must exist to build the operator-facing hitl.reason text from whichever HITL signal(s) fired");
+//
+// describeHitlReason's own signature grew a second `state` parameter under
+// Task N3 (see section 9 below for why: the two new safety triggers need
+// state.inputSafety/retrievedSafety.risk_types, not just the trigger name,
+// to build their reason text) -- both the function-definition pin and the
+// human_review call-site pin below are updated to that real two-parameter
+// shape, not weakened; they still fail if either is reverted to the old
+// single-parameter shape or hardcoded back to a literal string.
+assert(codeOnlySource.includes("function describeHitlReason(triggers, state = {})"),
+  "describeHitlReason(triggers, state) must exist to build the operator-facing hitl.reason text from whichever HITL signal(s) fired");
 assert(codeOnlySource.includes('high_risk: "high risk change requires human review"') && codeOnlySource.includes('supervisor_flag: "supervisor requested human review"'),
   "the HITL trigger reason text must name both signals distinctly (high-risk change vs supervisor-requested review)");
-assert(codeOnlySource.includes("const triggers = hitlReviewTriggers(state);") && codeOnlySource.includes("reason: describeHitlReason(triggers),"),
-  "human_review's interrupt() reviewRequest must compute its reason from hitlReviewTriggers(state)/describeHitlReason(), not a hardcoded string");
+assert(codeOnlySource.includes("const triggers = hitlReviewTriggers(state);") && codeOnlySource.includes("reason: describeHitlReason(triggers, state),"),
+  "human_review's interrupt() reviewRequest must compute its reason from hitlReviewTriggers(state)/describeHitlReason(triggers, state), not a hardcoded string");
 assert(serverSource.includes("triggers: Array.isArray(state.hitlRequest.triggers) ? state.hitlRequest.triggers : []"),
   "the finalPayload's hitl object must additively expose which trigger(s) fired as hitl.triggers");
 
+// ── 9. Task N3: the deterministic safety layer (lib/safety.js) becomes a
+// third, independently OR'd HITL trigger source -- a flagged input question
+// OR flagged retrieved repository content now requests a pause exactly like
+// riskLevel="high" or the Supervisor's require_human_review flag already do.
+// Asserted against `codeOnlySource` (comments stripped) with the exact
+// literal lines from hitlReviewTriggers() so a mutation to either condition
+// (e.g. loosening `=== "needs_review"` to truthiness, or reading the wrong
+// channel) fails these assertions -- see the report for this card's
+// out-of-repo mutation-verification evidence for each one.
+assert(codeOnlySource.includes('if (state.inputSafety?.status === "needs_review") triggers.push("input_safety_flag");'),
+  "hitlReviewTriggers must treat a flagged input safety scan (state.inputSafety.status === \"needs_review\", strict string compare) as the input_safety_flag trigger");
+assert(codeOnlySource.includes('if (state.retrievedSafety?.status === "needs_review") triggers.push("retrieved_safety_flag");'),
+  "hitlReviewTriggers must treat flagged retrieved-content safety (state.retrievedSafety.status === \"needs_review\", strict string compare) as the retrieved_safety_flag trigger");
+// outputSafety is deliberately NOT wired in as a trigger (see lib/agent-graph.js's
+// own comment on hitlReviewTriggers for why: it isn't computed until
+// buildFinalPayload() runs inside synthesize itself, too late to gate a pause
+// before it). Pinning its ABSENCE from the trigger list guards against a
+// future edit silently adding a fourth, structurally-too-late trigger here
+// instead of wiring a real second HITL checkpoint after synthesize.
+assert(!codeOnlySource.includes('state.outputSafety?.status === "needs_review") triggers.push('),
+  "outputSafety must NOT be wired into hitlReviewTriggers -- it is computed after the only point in the graph that can still reroute to human_review");
+// describeHitlReason must build the reason text for the two safety triggers
+// from the SPECIFIC risk_types that fired (e.g. "prompt_injection"), not a
+// generic "flagged" label -- pinned as the exact template-literal lines so a
+// mutation back to a static string (losing the risk-type detail) fails.
+assert(codeOnlySource.includes('return `input flagged: ${riskTypes.join(", ")}`;'),
+  "describeHitlReason must build the input_safety_flag reason text from state.inputSafety.risk_types, not a static string");
+assert(codeOnlySource.includes('return `retrieved content flagged: ${riskTypes.join(", ")}`;'),
+  "describeHitlReason must build the retrieved_safety_flag reason text from state.retrievedSafety.risk_types, not a static string");
+
 console.log("[OK] AGENT_HITL_ENABLED env var properly initialized.");
 console.log("[OK] human_review node sets hitlRequest and reports hitl_paused.");
-console.log("[OK] Routing: QACritic + guardrails → hitlReviewRequired (high risk OR supervisor flag) → human_review → synthesize.");
-console.log("[OK] hitlReviewRequired(state) is a real two-signal OR predicate (riskLevel==\"high\" OR supervisorPlan.require_human_review===true, strict boolean).");
+console.log("[OK] Routing: QACritic + guardrails → hitlReviewRequired (high risk, supervisor flag, or safety flag) → human_review → synthesize.");
+console.log("[OK] hitlReviewRequired(state) is a real multi-signal OR predicate (riskLevel==\"high\" OR supervisorPlan.require_human_review===true OR inputSafety/retrievedSafety flagged, strict comparisons).");
 console.log("[OK] synthesize produces hitl field (paused/approved/rejected).");
 console.log("[OK] /api/langgraph-resume accepts decision parameter.");
 console.log("[OK] Resume handler injects hitlRequest into workflow state.");
 console.log("[OK] human_review uses native interrupt()/Command resume (native_interrupt_resume mode present).");
 console.log("[OK] Paused payload names which HITL trigger(s) fired (hitl.reason text + additive hitl.triggers).");
+console.log("[OK] Task N3: input/retrieved safety flags are wired into hitlReviewTriggers with risk-type-specific reason text; outputSafety is not.");
 console.log("[PASS] All HITL checks passed.");
