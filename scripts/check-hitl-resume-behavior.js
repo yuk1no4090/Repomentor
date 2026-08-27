@@ -463,6 +463,14 @@ async function main() {
     // routed onward. This is precisely the checkpoint the reviewer's repro
     // targeted ("真实 phaseCursor 本应是 4 的中途 checkpoint").
     const replay = await requestTo(baseUrl, `/api/langgraph-replay?projectId=${projectId}&runId=${runId}`);
+    // GUARD (do not copy-paste this selector onto a different fixture without
+    // re-checking this): `.find()` returns only the FIRST checkpoint whose
+    // trace_steps reads 4, which is unambiguous here only because this
+    // fixture's run is a single straight-line pass with no revise loop. A
+    // revise round (QACritic requesting a bounded re-run) can produce a
+    // SECOND checkpoint that also reads trace_steps === 4 but sits at a
+    // different graph position -- against a revise-looping fixture, `.find()`
+    // would silently pick the wrong one instead of failing loudly.
     const midGraphStep = replay.steps.find((step) => step.state_summary?.trace_steps === 4);
     assert(midGraphStep,
       `expected a persisted checkpoint with trace_steps === 4 (right after "retrieve") in run ${runId}'s replay, got trace_steps sequence: ${JSON.stringify(replay.steps.map((step) => step.state_summary?.trace_steps))}`);

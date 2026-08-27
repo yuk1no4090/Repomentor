@@ -280,6 +280,33 @@ export function stripComments(source, options = {}) {
       i++;
       continue;
     }
+    if ((ch === "+" && nextCh === "+") || (ch === "-" && nextCh === "-")) {
+      // `++`/`--` (postfix or prefix increment/decrement): JS's lexer uses
+      // maximal munch, so two adjacent identical `+`/`-` characters are
+      // always ONE `++`/`--` token, never two separate unary operators —
+      // that's why this two-char lookahead (rather than counting a longer
+      // run of signs, which would also have to reason about things like
+      // `a - -b`) is enough to disambiguate. What matters for division-vs-
+      // regex classification is whether this token is POSTFIX or PREFIX,
+      // which is exactly what prevTokenAllowsDivision already told us about
+      // the token immediately before this one:
+      //   - postfix (`x++`, `a.b++`): the previous token was already a
+      //     value (prevTokenAllowsDivision === true), and `x++` evaluates
+      //     to that value — so a `/` right after this token is division.
+      //   - prefix (`++x`, `++ x`): the previous token was NOT a value
+      //     (prevTokenAllowsDivision === false), and prefix `++`/`--` still
+      //     awaits its operand — so we conservatively leave
+      //     prevTokenAllowsDivision false, same as any other punctuation.
+      //     (In practice the operand is an identifier immediately after,
+      //     which sets the correct state itself via flushWord(); this only
+      //     matters for the rare `++ /* comment */ x` shape.)
+      const isPostfix = prevTokenAllowsDivision;
+      out += ch;
+      out += nextCh;
+      i += 2;
+      prevTokenAllowsDivision = isPostfix;
+      continue;
+    }
     // Every other punctuation/operator character (including `/` when
     // prevTokenAllowsDivision is true, i.e. real division) and whitespace.
     if (ch !== " " && ch !== "\t" && ch !== "\n" && ch !== "\r") {

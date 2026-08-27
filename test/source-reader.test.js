@@ -299,3 +299,62 @@ describe("stripComments: throws on an unterminated string/template/block comment
     assert.doesNotThrow(() => stripComments("const x = a / b;\nconst y = 2;"));
   });
 });
+
+// ── Postfix `++`/`--` leaves division context (review-flagged fast-follow) ──
+//
+// Before the fix, `+` and `-` fell through to the generic "every other
+// punctuation" branch, which unconditionally marks "operand expected next".
+// That's correct for a BINARY `+`/`-` or a PREFIX `++`/`--` (both await an
+// operand), but wrong for a POSTFIX `++`/`--`: `x++` already produced a
+// value (the pre-increment value of `x`), so a `/` right after it is
+// division, not the start of a regex literal. With the bug, that `/` was
+// misread as a regex-candidate, which greedily "closed" on the first `/` of
+// a following `//` comment — leaving a lone `/` behind that never forms a
+// second `//`, so the real comment survived stripping entirely.
+describe("stripComments: postfix `++`/`--` leaves division context", () => {
+  test("RED→GREEN: `x++ / y // comment` — comment is stripped, code (including the division `/`) is preserved", () => {
+    const source = "let z = x++ / y; // trailing comment";
+    const result = stripComments(source);
+    assert.equal(result.includes("trailing comment"), false,
+      "the real trailing // comment must be stripped, not swallowed into a fake regex nor left behind as an orphan comment");
+    assert.ok(result.includes("let z = x++ / y;"),
+      "the code, including the genuine division `/`, must be preserved verbatim — no code may ever be deleted");
+  });
+
+  test("`x-- / y /* c */` — postfix decrement, block comment is stripped", () => {
+    const source = "let z = x-- / y; /* c */ let w = 1;";
+    const result = stripComments(source);
+    assert.equal(result.includes("/* c */") || result.includes(" c "), false,
+      "the block comment body must be removed");
+    assert.ok(result.includes("let z = x-- / y;"));
+    assert.ok(result.includes("let w = 1;"));
+  });
+
+  test("`a.b++ / c // c2` — postfix increment on a member expression, comment is stripped", () => {
+    const source = "let z = a.b++ / c; // c2";
+    const result = stripComments(source);
+    assert.equal(result.includes("c2"), false, "the trailing comment must be stripped");
+    assert.ok(result.includes("let z = a.b++ / c;"));
+  });
+
+  test("control: prefix `++x / y // comment` still resolves `/` as division (correct because `x` itself is a value, independent of the `++` fix)", () => {
+    // Not a case where `/` should be read as regex: even though `++x` is a
+    // PREFIX increment (still awaiting its operand at the moment `++` is
+    // scanned), the very next token is the identifier `x`, which — like any
+    // identifier — marks "value produced" on its own via flushWord(). So the
+    // `/` after `++x` is correctly division regardless of how `++` itself is
+    // classified. This pins down that the postfix fix does not regress the
+    // (already-correct) prefix case.
+    const source = "let z = ++x / y; // trailing comment";
+    const result = stripComments(source);
+    assert.equal(result.includes("trailing comment"), false);
+    assert.ok(result.includes("let z = ++x / y;"));
+  });
+
+  test("`x++ + ++y // comment` — postfix then binary `+` then prefix — comment stripped, code intact", () => {
+    const source = "let z = x++ + ++y; // trailing comment";
+    const result = stripComments(source);
+    assert.equal(result.includes("trailing comment"), false);
+    assert.ok(result.includes("let z = x++ + ++y;"));
+  });
+});

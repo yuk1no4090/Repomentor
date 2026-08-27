@@ -189,6 +189,65 @@ describe("resolveLlmTemperature / resolveLlmTemperatureForRole", () => {
   });
 });
 
+// Reviewer-flagged fast-follow: normalizeTemperatureEnvValue used to call
+// bare Number(trimmed), which happily parses hex ("0x2" -> 2), binary
+// ("0b1" -> 1), and scientific ("1e-1" -> 0.1) literal syntax -- so a typo'd
+// env var like OPENAI_TEMPERATURE_QA_CRITIC=0x2 silently became temperature
+// 2 instead of being rejected as malformed. The fix pre-validates against a
+// strict plain-decimal regex (`/^-?\d+(\.\d+)?$/`) before ever calling
+// Number(); anything that doesn't match is treated the same as today's
+// unset/NaN/out-of-range case (falls through to the next resolution step).
+// Exercised through the exported resolveLlmTemperature()/
+// resolveLlmTemperatureForRole() -- normalizeTemperatureEnvValue itself is
+// an internal (non-exported) helper -- same pattern the existing
+// "treats blank/non-numeric/out-of-range values as unset" test above uses.
+describe("normalizeTemperatureEnvValue rejects non-decimal numeric literal syntax (hex/binary/scientific)", () => {
+  test('rejects a hex literal ("0x1") -- falls back to the default rather than silently parsing it as decimal 1', () => {
+    process.env.OPENAI_TEMPERATURE = "0x1";
+    assert.equal(resolveLlmTemperature(), 0.2);
+  });
+
+  test('rejects a binary literal ("0b1") -- falls back to the default rather than silently parsing it as decimal 1', () => {
+    process.env.OPENAI_TEMPERATURE = "0b1";
+    assert.equal(resolveLlmTemperature(), 0.2);
+  });
+
+  test('rejects scientific notation ("1e-1") per the reject-exotic-syntax decision, even though it is in-range once parsed (0.1)', () => {
+    process.env.OPENAI_TEMPERATURE = "1e-1";
+    assert.equal(resolveLlmTemperature(), 0.2);
+  });
+
+  test('a role-specific override of "0x1" is rejected too, falling through to OPENAI_TEMPERATURE / the default -- not just the shared-path resolution', () => {
+    delete process.env.OPENAI_TEMPERATURE;
+    process.env.OPENAI_TEMPERATURE_QA_CRITIC = "0x2";
+    assert.equal(resolveLlmTemperatureForRole(QA_CRITIC_AGENT.role), 0.2);
+  });
+
+  test('"010" is rejected for being out of range once parsed as decimal 10 -- not evidence either way about octal handling (Number("010") is decimal in modern JS, no octal reinterpretation)', () => {
+    process.env.OPENAI_TEMPERATURE = "010";
+    assert.equal(resolveLlmTemperature(), 0.2);
+  });
+
+  test('a leading zero on an otherwise-plain decimal ("01") IS accepted -- unlike a 0x/0b/0o prefix, a bare leading zero is not an alternate-radix marker in JS numeric syntax, so "01" parsing as 1 is unsurprising and in-range', () => {
+    process.env.OPENAI_TEMPERATURE = "01";
+    assert.equal(resolveLlmTemperature(), 1);
+  });
+
+  test("plain decimals in range are still accepted: \"0.2\", \"2\", \"0\"", () => {
+    for (const [value, expected] of [["0.2", 0.2], ["2", 2], ["0", 0]]) {
+      process.env.OPENAI_TEMPERATURE = value;
+      assert.equal(resolveLlmTemperature(), expected, `expected ${expected} for OPENAI_TEMPERATURE=${JSON.stringify(value)}`);
+    }
+  });
+
+  test('plain decimals out of the [0, 2] range are still rejected: "-1", "3"', () => {
+    for (const value of ["-1", "3"]) {
+      process.env.OPENAI_TEMPERATURE = value;
+      assert.equal(resolveLlmTemperature(), 0.2, `expected default for OPENAI_TEMPERATURE=${JSON.stringify(value)}`);
+    }
+  });
+});
+
 describe("resolveRoleModelConfig", () => {
   test("reports the effective model/temperature and override flags per role", () => {
     process.env.OPENAI_MODEL = "gpt-4o-mini";
