@@ -23,7 +23,8 @@ _一个帮助新工程师、技术 PM 和 QA 快速理解代码仓库的 MVP Web
 - **产品内置的 AI 质量看板，而非外挂工具** —— 引用覆盖率、答案 schema 合规率、guardrail 命中率是产品 UI 的一部分，而不是需要工程介入才能打开的外部 LLMOps 工具。
 - **MCP Server** 暴露 4 个工具（仓库问答、影响分析、onboarding 计划生成、项目列表），让 Claude Code、Cursor 等 AI coding agent 可以直接消费本项目的分析能力。
 
-**质量证据**：237 条 `node:test` 单元测试、34 项静态检查门禁、9 套运行时黑盒测试套件——全部无需 API key 即可端到端运行（`npm test`）。
+**质量证据**：237 条 `node:test` 单元测试、33 项静态检查门禁、9 套运行时黑盒测试套件——全部无需 API key 即可端到端运行（`npm test`）。
+<!-- 计数单一来源：本行是全部文档中唯一携带"单元测试数/静态检查数"这两个易变计数的地方。修改前请重新推导：单元测试数 = `node --test "test/**/*.js"` 输出末尾的 "tests N" 行；静态检查数 = `ls scripts/check-*.js | wc -l`（与 `npm run test:static` 打印的 `checkScripts` 字段一致）。其余所有文档一律使用定性表述，不得写死数字，以免过期。 -->
 
 延伸阅读：[docs/POSITIONING.md](docs/POSITIONING.md)（定位与市场验证）· [docs/AGENT_RUNTIME_ARCHITECTURE.md](docs/AGENT_RUNTIME_ARCHITECTURE.md)（实现边界）· [docs/PRD.md](docs/PRD.md)（需求与取舍决策）· [docs/CHANGELOG.md](docs/CHANGELOG.md)（开发日志）
 

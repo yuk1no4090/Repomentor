@@ -29,7 +29,7 @@
 | RAG | 分块/检索/查询扩展，回答逐条带文件引用 |
 | Agentic Workflow | Supervisor/ImpactAnalyst/QACritic 三个独立模型 Agent + LangGraph supervisor 路由、有界 QACritic revise 环（图上唯一真实环路）、基于原生 interrupt/Command 的 HITL 人工审批、checkpoint 断点续跑、节点级 SSE 进度流、分角色模型/温度配置、预算与超时控制、结构化输出 |
 | Guardrails | 输入/检索/输出三级安全扫描、敏感信息脱敏、红队测试脚本 |
-| Evals | 内置评估看板 + agent benchmark（5 案例全过）+ 237 条 node:test 单元测试 + 34 项静态检查门禁 |
+| Evals | 内置评估看板 + agent benchmark 全场景通过 + 大量离线可跑的 node:test 单元测试与静态检查门禁（精确计数见 README 质量行） |
 | 记忆与个性化 | 用户偏好长期记忆（SQLite+FTS+向量）、记忆确认闭环、用户隔离 |
 | 工程素养 | 单文件 6029 行重构为 13 模块（约 1550 行主文件）、CI、Docker、双语文档、全程测试全绿 |
 

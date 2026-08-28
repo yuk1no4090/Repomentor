@@ -23,7 +23,8 @@ New hires typically take days to weeks to build working context on an unfamiliar
 - **An AI quality dashboard built into the product, not bolted on** — citation coverage, answer-schema compliance, and guardrail hit rates are first-class product UI instead of an external LLMOps tool a PM has to ask an engineer to open.
 - **An MCP Server** exposing 4 tools (repository Q&A, impact analysis, onboarding plans, project listing) so AI coding agents such as Claude Code or Cursor can consume this project's analysis directly.
 
-**Quality bar:** 237 `node:test` unit tests, 34 static-check gates, and 9 runtime black-box test suites — all running end-to-end with zero API key required (`npm test`).
+**Quality bar:** 237 `node:test` unit tests, 33 static-check gates, and 9 runtime black-box test suites — all running end-to-end with zero API key required (`npm test`).
+<!-- COUNTS-SOURCE-OF-TRUTH: this line is the ONLY place in the docs that carries the live unit-test/static-check numbers. Re-derive before editing: unit tests = final "tests N" line from `node --test "test/**/*.js"`; static-check gates = `ls scripts/check-*.js | wc -l` (matches the `checkScripts` field `npm run test:static` prints). Every other doc must describe these qualitatively, not with a hardcoded number, so they can't go stale. -->
 
 More: [docs/POSITIONING.md](docs/POSITIONING.md) (positioning + market validation) · [docs/AGENT_RUNTIME_ARCHITECTURE.md](docs/AGENT_RUNTIME_ARCHITECTURE.md) (implementation boundary) · [docs/PRD.md](docs/PRD.md) (requirements + scope decisions) · [docs/CHANGELOG.md](docs/CHANGELOG.md) (development log)
 

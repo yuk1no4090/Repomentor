@@ -252,7 +252,7 @@ export OPENAI_MODEL_QA_CRITIC=gpt-4o-mini
 
 ### 7.1 自动化验收
 
-- `npm run test:static`：静态契约、文案、依赖、架构文档和前端 UI 结构检查（`scripts/check-*.js`，34 项；其中也包含 `test/` 下 237 条 `node:test` 单元测试的运行）。
+- `npm run test:static`：静态契约、文案、依赖、架构文档和前端 UI 结构检查（`scripts/check-*.js` 全量自动发现执行；其中一项会驱动 `test/` 下全部 `node:test` 单元测试的运行）。
 - `npm run test:smoke`：后端 API、LangGraph、记忆、harness、安全、评价指标的临时服务回归测试。
 - `npm run test:ui`：启动临时服务，拉取真实前端资源，导入 sample workspace，运行 Agent Workflow，并确认 Memory / Harness / Safety / long-term memory / Dashboard / harness audit panel 都有可渲染数据。
 - `npm run test:safety` / `test:memory` / `test:user-memory` / `test:auth` / `test:embedding` / `test:benchmark` / `test:mcp`：分别对应安全红队、记忆压缩、用户记忆隔离、认证边界、embedding provider、agent benchmark 和 MCP server 的独立回归测试。
