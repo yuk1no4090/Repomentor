@@ -1,6 +1,33 @@
 import { readFile } from "node:fs/promises";
 import { readServerSource } from "./shared/source-reader.js";
 
+// SLIM-A consolidation note: this file used to also pin the MemorySaver
+// import, the langgraph_checkpoints/langgraph_checkpoint_payloads table DDL,
+// every persist/serialize/deserialize/load/list/find/summarize function name,
+// the GET /api/langgraph-checkpoint, GET /api/langgraph-replay, and POST
+// /api/langgraph-resume route strings, and the checkpoint_continuation/
+// harness.checkpointing/recent_langgraph_checkpoints/langgraph_checkpoint_count/
+// time_travel fields against server source. All of that is now proven --
+// more strongly, through the real call path -- by scripts/smoke-test.js and
+// check-hitl-resume-behavior.js (behavioral, untouchable): both spawn the
+// real server, persist real checkpoints across a real multi-phase run, and
+// call all three endpoints for real, asserting the exact real
+// checkpointing.enabled/langgraph_checkpoint_count/recent_langgraph_checkpoints
+// fields, the real time_travel note, and the real resume.mode values
+// including "checkpoint_continuation" -- this file's requiredSmokeSnippets
+// section below is a test-gutting guard on that behavioral source, not a
+// duplicate of it.
+//
+// What remains here is what neither proves: (1) the package.json dependency
+// declaration; (2) LANGGRAPH_REPLAY_UNAVAILABLE / LANGGRAPH_RESUME_UNAVAILABLE
+// and resume_input_json -- no behavioral check ever drives the actual
+// unavailable-replay/unavailable-resume failure path (only the healthy path
+// is exercised), so these three have no other guard; (3) the
+// `.compile({ checkpointer })` wiring shape, an explicit CAREFUL EXCEPTION
+// (a unit test of the graph-building code cannot see this compile-time
+// shape, and no behavioral check greps for it either -- it can only be
+// observed by inspecting the source); (4) doc-sync.
+
 const [packageJsonRaw, serverSource, smokeSource, readme, architectureDoc] = await Promise.all([
   readFile("package.json", "utf8"),
   readServerSource(),
@@ -14,32 +41,9 @@ const packageJson = JSON.parse(packageJsonRaw);
 const missingDependencies = ["@langchain/langgraph-checkpoint"].filter((name) => !packageJson.dependencies?.[name]);
 
 const requiredServerSnippets = [
-  "import { MemorySaver } from \"@langchain/langgraph-checkpoint\"",
-  "CREATE TABLE IF NOT EXISTS langgraph_checkpoints",
-  "CREATE TABLE IF NOT EXISTS langgraph_checkpoint_payloads",
-  "function persistLangGraphCheckpoints",
-  "function serializeMemorySaverSnapshot",
-  "function deserializeMemorySaverSnapshot",
-  "function persistLangGraphCheckpointPayload",
-  "function loadLangGraphCheckpointPayload",
-  "function listLangGraphCheckpoints",
-  "function findLangGraphCheckpoint",
-  "function summarizeCheckpointTuple",
-  "new MemorySaver()",
-  "thread_id: runId",
-  "harness.checkpointing",
-  "recent_langgraph_checkpoints",
-  "langgraph_checkpoint_count",
-  "GET\" && pathname === \"/api/langgraph-checkpoint\"",
-  "GET\" && pathname === \"/api/langgraph-replay\"",
-  "POST\" && pathname === \"/api/langgraph-resume\"",
-  "function buildLangGraphReplay",
-  "function runLangGraphResumeFromCheckpoint",
   "resume_input_json",
-  "checkpoint_continuation",
   "LANGGRAPH_REPLAY_UNAVAILABLE",
-  "LANGGRAPH_RESUME_UNAVAILABLE",
-  "time_travel"
+  "LANGGRAPH_RESUME_UNAVAILABLE"
 ];
 
 const requiredSmokeSnippets = [

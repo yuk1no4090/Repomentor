@@ -82,34 +82,24 @@ for (const [role, toolList] of roleMap) {
   console.log(`  - ${role}: ${toolList.length} tool(s) → ${toolList.join(", ")}`);
 }
 
-// Verify state annotation includes handoffs and agentRoster
-if (!serverSource.includes("handoffs: Annotation")) {
-  throw new Error("MULTI_AGENT_ROLES: State annotation missing 'handoffs' field.");
-}
-if (!serverSource.includes("agentRoster: Annotation")) {
-  throw new Error("MULTI_AGENT_ROLES: State annotation missing 'agentRoster' field.");
-}
+// SLIM-A consolidation note: this file used to also pin "handoffs: Annotation",
+// "agentRoster: Annotation", makeTraceStep()'s "agent_role" parameter,
+// finalPayload's "agent_roster:" field, "model_calls:"+"runAgentModelAdapter"
+// wiring, and per-role model-contract existence for Supervisor/ImpactAnalyst/
+// QACritic against server source. All of that is now proven -- more
+// strongly, through the real call path -- by scripts/smoke-test.js: it
+// asserts the real payload.handoffs array (>= 8 entries, each with
+// sender/recipient), payload.agent_roster (>= 7 roles, with SafetyGuard/
+// Supervisor/QACritic each present), payload.harness.model_calls with the
+// exact role ordering "Supervisor,ImpactAnalyst,QACritic", and every
+// payload.trace[].agent_role field (SafetyGuard/Retriever/ImpactAnalyst/
+// Synthesizer each explicitly checked). What remains here -- the
+// AGENT_TOOL_REGISTRY structural validation above (every tool individually
+// has a name and role, no empty-tool roles, no duplicate tool names, all 10
+// expected roles present) -- is NOT redundant with that: smoke-test/
+// agent-benchmark only exercise the tools actually reached by their handful
+// of scenarios, not an exhaustive per-entry scan of the full registry, so
+// this remains the only guard against e.g. a duplicate tool name or an
+// orphaned zero-tool role anywhere in the registry.
 
-// Verify makeTraceStep accepts agent_role
-if (!serverSource.includes("agent_role")) {
-  throw new Error("MULTI_AGENT_ROLES: makeTraceStep() does not accept 'agent_role' parameter.");
-}
-
-// Verify finalPayload includes agent_roster
-if (!serverSource.includes("agent_roster:")) {
-  throw new Error("MULTI_AGENT_ROLES: finalPayload missing 'agent_roster' field.");
-}
-if (!serverSource.includes("model_calls:") || !serverSource.includes("runAgentModelAdapter")) {
-  throw new Error("MULTI_AGENT_ROLES: model-backed agent calls are not exposed through the harness.");
-}
-for (const role of ["Supervisor", "ImpactAnalyst", "QACritic"]) {
-  if (!serverSource.includes(`role: "${role}"`)) {
-    throw new Error(`MULTI_AGENT_ROLES: missing independent model contract for ${role}.`);
-  }
-}
-
-console.log("[OK] State annotation includes multi-agent fields (handoffs, agentRoster).");
-console.log("[OK] makeTraceStep() supports agent_role.");
-console.log("[OK] finalPayload includes agent_roster.");
-console.log("[OK] Supervisor, ImpactAnalyst, and QACritic have model contracts and observable calls.");
 console.log("[PASS] All multi-agent role checks passed.");

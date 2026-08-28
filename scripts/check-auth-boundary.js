@@ -1,5 +1,4 @@
 import { readFileSync } from "node:fs";
-import { readServerSource } from "./shared/source-reader.js";
 
 function assertIncludes(source, needle, label) {
   if (!source.includes(needle)) {
@@ -7,53 +6,47 @@ function assertIncludes(source, needle, label) {
   }
 }
 
-const server = await readServerSource();
-const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
-const readme = readFileSync("README.md", "utf8");
-const architecture = readFileSync("docs/AGENT_RUNTIME_ARCHITECTURE.md", "utf8");
+// SLIM-A consolidation note: this file used to also pin every auth function
+// name (parseAuthTokenConfig, getRequestAuthToken, resolveAuthenticatedUserId,
+// authUserFromIdentity, normalizeAuthTokenRecord, findStoreAuthTokenIdentity,
+// upsertLocalAuthUser, disableLocalAuthUser, listAuthUsers, recordAuthEvent,
+// listAuthEvents, requireAuthScope, requiredScopeForRequest), every
+// /api/auth/* route string, every AUTH_* error code, and the "health remains
+// public"/token_count/users_indexed health metadata against server source.
+// All of that is now proven -- more strongly, through the real call path --
+// by scripts/auth-boundary-test.js (this file's own behavioral companion,
+// part of `npm test` via test:auth): it spawns the real server and drives
+// real HTTP calls through every one of those routes, asserting the exact
+// real status codes and payload.code values (AUTH_REQUIRED, AUTH_INVALID,
+// AUTH_USER_MISMATCH, AUTH_SCOPE_FORBIDDEN, ...), real scope enforcement
+// (viewer vs admin), real token creation/disable lifecycle, and the real
+// health.auth.{required,token_count,scopes_enabled,users_indexed} fields --
+// including implicitly proving /api/health stays public, since
+// waitForServer() polls it with no token at all before anything else runs.
+// A mutation to any of those function names' effects, route strings, or
+// error codes would fail one of those real HTTP assertions.
+//
+// What remains here is what scripts/auth-boundary-test.js's real assertions
+// cannot guard: (1) package.json wiring; (2) README/architecture doc-sync
+// for the specific field names ("authUsers", "authTokens", "authEvents",
+// "scopes") that check-architecture-docs.js's own generic term list does not
+// already require (it DOES already require "## Auth Boundary",
+// "token-bound user identity", and "AUTH_USER_MISMATCH" -- see that file --
+// so those three are not re-pinned here to avoid a duplicate-of-a-duplicate).
+// The README route/error-code mentions this file used to check are also
+// dropped: check-api-docs.js already auto-discovers every `/api/auth/*`
+// route from server source and cross-checks README + USER_GUIDE, and its own
+// requiredErrorDocSnippets list already includes AUTH_REQUIRED, AUTH_INVALID,
+// AUTH_USER_MISMATCH, and AUTH_SCOPE_FORBIDDEN verbatim.
 
-[
-  ["AI_PM_AUTH_REQUIRED", "auth required env"],
-  ["AI_PM_USER_TOKENS", "auth token mapping env"],
-  ["function parseAuthTokenConfig", "auth token parser"],
-  ["function getRequestAuthToken", "request auth token parser"],
-  ["function resolveAuthenticatedUserId", "authenticated user resolver"],
-  ["function authUserFromIdentity", "auth user record builder"],
-  ["function normalizeAuthTokenRecord", "auth token record normalizer"],
-  ["function findStoreAuthTokenIdentity", "store auth token resolver"],
-  ["function upsertLocalAuthUser", "local auth user creation"],
-  ["function disableLocalAuthUser", "local auth user disable"],
-  ["function listAuthUsers", "auth user audit listing"],
-  ["function recordAuthEvent", "auth event recorder"],
-  ["function listAuthEvents", "auth event audit listing"],
-  ["function requireAuthScope", "auth scope gate"],
-  ["function requiredScopeForRequest", "route scope mapping"],
-  ["\"/api/auth/me\"", "auth me endpoint"],
-  ["\"/api/auth/users\"", "auth users endpoint"],
-  ["\"/api/auth/users/disable\"", "auth user disable endpoint"],
-  ["\"/api/auth/events\"", "auth events endpoint"],
-  ["AUTH_SCOPE_FORBIDDEN", "scope forbidden error"],
-  ["AUTH_REQUIRED", "missing auth error"],
-  ["AUTH_INVALID", "invalid auth error"],
-  ["AUTH_USER_MISMATCH", "user mismatch error"],
-  ["pathname !== \"/api/health\"", "health remains public"],
-  ["token_count", "health auth metadata"],
-  ["users_indexed", "health auth user count metadata"]
-].forEach(([needle, label]) => assertIncludes(server, needle, label));
+const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
+const architecture = readFileSync("docs/AGENT_RUNTIME_ARCHITECTURE.md", "utf8");
 
 if (packageJson.scripts["test:auth"] !== "node scripts/auth-boundary-test.js") {
   throw new Error("package.json is missing test:auth script");
 }
 
 assertIncludes(packageJson.scripts.test, "npm run test:auth", "full test suite auth step");
-assertIncludes(readme, "AI_PM_AUTH_REQUIRED", "README auth env docs");
-assertIncludes(readme, "/api/auth/me", "README auth me docs");
-assertIncludes(readme, "/api/auth/users", "README auth users docs");
-assertIncludes(readme, "/api/auth/users/disable", "README auth user disable docs");
-assertIncludes(readme, "/api/auth/events", "README auth events docs");
-assertIncludes(readme, "AUTH_USER_MISMATCH", "README auth error docs");
-assertIncludes(readme, "AUTH_SCOPE_FORBIDDEN", "README auth scope error docs");
-assertIncludes(architecture, "token-bound user identity", "architecture auth boundary docs");
 assertIncludes(architecture, "authUsers", "architecture auth user audit docs");
 assertIncludes(architecture, "authTokens", "architecture auth token docs");
 assertIncludes(architecture, "authEvents", "architecture auth event audit docs");
