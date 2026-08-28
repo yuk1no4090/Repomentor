@@ -23,7 +23,7 @@ _一个帮助新工程师、技术 PM 和 QA 快速理解代码仓库的 MVP Web
 - **产品内置的 AI 质量看板，而非外挂工具** —— 引用覆盖率、答案 schema 合规率、guardrail 命中率是产品 UI 的一部分，而不是需要工程介入才能打开的外部 LLMOps 工具。
 - **MCP Server** 暴露 4 个工具（仓库问答、影响分析、onboarding 计划生成、项目列表），让 Claude Code、Cursor 等 AI coding agent 可以直接消费本项目的分析能力。
 
-**质量证据**：231 条 `node:test` 单元测试、33 项静态检查门禁、9 套运行时黑盒测试套件——全部无需 API key 即可端到端运行（`npm test`）。
+**质量证据**：237 条 `node:test` 单元测试、34 项静态检查门禁、9 套运行时黑盒测试套件——全部无需 API key 即可端到端运行（`npm test`）。
 
 延伸阅读：[docs/POSITIONING.md](docs/POSITIONING.md)（定位与市场验证）· [docs/AGENT_RUNTIME_ARCHITECTURE.md](docs/AGENT_RUNTIME_ARCHITECTURE.md)（实现边界）· [docs/PRD.md](docs/PRD.md)（需求与取舍决策）· [docs/CHANGELOG.md](docs/CHANGELOG.md)（开发日志）
 
@@ -259,7 +259,7 @@ GitHub Actions 会在 push 到 `main` 和创建 pull request 时运行 `npm ci` 
 | `OPENAI_TEMPERATURE_QA_CRITIC` | 未设置（回退到 `OPENAI_TEMPERATURE`） | 仅用于 QACritic agent 的采样温度。 |
 | `LLM_CONTEXT_TOKEN_BUDGET` | `8000` | 使用确定性回退之前，估算的 prompt 上下文 token 预算上限。 |
 | `LLM_REQUEST_TIMEOUT_MS` | 运行时默认值 | LangGraph 工作流和 direct chat harness 共用的单次模型调用超时时间。非法或非正数值会回退到一个有限的默认值。 |
-| `AGENT_GRAPH_MODE` | `supervisor` | 图路由模式：`supervisor` 为动态多 Agent 路由，`linear` 为原始的 9 节点线性管线。 |
+| `AGENT_GRAPH_MODE` | `supervisor` | 图路由模式：`supervisor` 为动态多 Agent 路由，`linear` 为原始的 9 节点线性管线——linear 模式没有 supervisor 路由、没有 QACritic revise 环，也没有 `human_review` 节点，因此无论 `AGENT_HITL_ENABLED` 是否为 `true`，HITL 在该模式下都是结构性失效的（服务启动时若处于 linear 模式会打印一条告警，点名这一点）。 |
 | `AGENT_MAX_STEPS` | `14` | LangGraph 最大执行步数（从 9 上调，以覆盖 supervisor 路由的额外开销）。 |
 | `AGENT_MAX_REVISION_ROUNDS` | `1` | 有界 QACritic revise 轮次的最大数量（`qa_plan` 返回 `"revise"` 时会回到 `retrieve`）。设为 `0` 可完全关闭 revise 环。 |
 | `AGENT_HITL_ENABLED` | `false` | 设为 `true` 时，对高风险变更、Supervisor 自身请求复核（`supervisorPlan.require_human_review`）、输入问题/检索到的仓库内容被安全扫描标记，或 QACritic 在有界 revise 环预算用尽后仍返回 `"revise"`（`critic_flag`——否则流水线会交付一个 critic 自己仍在拒绝的答案）的情形，启用人工审核（human-in-the-loop）。在确定性/离线回退路径下（未配置 `OPENAI_API_KEY`），`require_human_review`/`risk_hypothesis`/`riskLevel` 都只是基于问题关键词或文件路径的启发式判断，并非对变更本身的证据化推理。 |
@@ -426,7 +426,7 @@ input safety
 - `LANGGRAPH_RESUME_USER_MISMATCH`
 - `INVALID_FEEDBACK_TYPE`
 - `ROUTE_NOT_FOUND`
-- `STREAM_FAILED`（仅 `/api/agent-impact/stream`——SSE 响应已经开始之后发生的意外错误；由于此时 HTTP 状态码已经提交，会作为一个 `error` SSE 事件下发，而不是 HTTP 错误状态码）
+- `STREAM_FAILED`（仅 `/api/agent-impact/stream`——SSE 响应已经开始之后发生意外错误时的兜底错误码；由于此时 HTTP 状态码已经提交，会作为一个 `error` SSE 事件下发，而不是 HTTP 错误状态码。这只是兜底值：`code: error.code || "STREAM_FAILED"` 会优先下发那个错误自身携带的 code——例如提交阶段一次罕见的竞态可能带出 `PROJECT_NOT_FOUND`——只有当该错误本身不带 code 时才会下发 `STREAM_FAILED`）
 
 `/api/agent-impact` 与现有前端保持兼容，并新增以下字段：
 
@@ -446,7 +446,7 @@ input safety
 | `revise_round_entered` | `{ round, additional_queries, reason, elapsed_ms }` | 每个有界 QACritic 修订轮发出一次，即 `retrieve` 携带 critic 的 `additional_queries` 重新进入时。 |
 | `hitl_paused` | `{ reason, risk_level, change_type, triggers, elapsed_ms }` | 仅一次，如果任一 HITL 触发信号在 `human_review` 内触发了 LangGraph 原生的 `interrupt()`。`triggers` 标明具体命中了哪个信号：`high_risk`（ImpactAnalyst 风险判断）、`supervisor_flag`（Supervisor 自身计划）、`input_safety_flag`/`retrieved_safety_flag`（对问题/检索到的仓库内容的确定性安全扫描），或 `critic_flag`（有界 revise 环预算用尽后 QACritic 仍返回 `"revise"`）——可以是其中任意组合，顺序固定如上。 |
 | `final` | `{ answerId, kind, payload }` | 仅一次，且是最后一个——与 `POST /api/agent-impact` 的 JSON 响应体形状完全相同。 |
-| `error` | `{ error, code }` | 仅当 SSE 响应已经开始之后运行失败时发出（参见上面的 `STREAM_FAILED`）。 |
+| `error` | `{ error, code }` | 仅当 SSE 响应已经开始之后运行失败时发出；`code` 优先是失败错误自身携带的 code，否则为 `STREAM_FAILED`（参见上面的 `STREAM_FAILED`）。 |
 
 鉴权方式与其他所有路由相同，使用 `Authorization: Bearer ...`（或 `X-API-Key`/`X-AI-PM-Token`）请求头——刻意**不**使用浏览器的 `EventSource` API（它无法设置自定义请求头），也**不**把 token 放进 query string（URL 中的 token 会泄漏进服务器日志和浏览器历史记录）。客户端使用 `fetch()` 加 `response.body.getReader()` 消费该流，自行解析 `event: <type>\ndata: <json>\n\n` 格式的事件帧；`public/app.js` 的 `streamAgentImpact()` 是参考实现，包含在流式端点不可用、中途出错、或浏览器不支持 `fetch`/`ReadableStream` 时优雅回退到普通 JSON 路由的逻辑。客户端在流式传输过程中断开连接，会通过请求超时机制本就使用的同一个 `AbortController` 中止底层的 LangGraph 运行，并且不会为该次运行写入答案记录。
 

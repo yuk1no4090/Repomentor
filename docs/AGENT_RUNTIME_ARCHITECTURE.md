@@ -34,7 +34,7 @@ Dependencies between `lib/` modules are unidirectional and acyclic: `lib/agent-g
 
 Two injection points keep `lib/store.js` and `lib/checkpoints.js` decoupled from the domain modules that own the record shapes they normalize or the handlers they call, avoiding circular imports: `server.js` imports the actual normalizer functions from `lib/auth.js`, `lib/answers.js`, `lib/agent-graph.js`, and `lib/memory-db.js`, then calls `setStoreRecordNormalizers()` once at bootstrap; `setCheckpointCollaborators()` similarly injects `findProject`, `findHarnessRunAudit`, and `runAgenticImpactWorkflow` (from `lib/agent-graph.js`) into `lib/checkpoints.js` before the HTTP server starts.
 
-A `test/` directory holds 231 pure-function/unit cases across 11 files on Node's built-in `node:test` runner, including routing (including the bounded QACritic revise loop), safety, retrieval, Agent contracts, per-role model/temperature configuration, checkpoint retention, preference purity, briefing, frontend import helpers, server/lib source-comment stripping, and workflow timeout behavior. Tests import and exercise the real exported functions instead of re-implementing logic mirrors. `scripts/check-unit-tests.js` runs `node --test test/**/*.js` and is picked up automatically by `static-checks.js`'s `scripts/check-*.js` auto-discovery, so it participates in `npm test` with no separate wiring.
+A `test/` directory holds 237 pure-function/unit cases across 11 files on Node's built-in `node:test` runner, including routing (including the bounded QACritic revise loop), safety, retrieval, Agent contracts, per-role model/temperature configuration, checkpoint retention, preference purity, briefing, frontend import helpers, server/lib source-comment stripping, and workflow timeout behavior. Tests import and exercise the real exported functions instead of re-implementing logic mirrors. `scripts/check-unit-tests.js` runs `node --test test/**/*.js` and is picked up automatically by `static-checks.js`'s `scripts/check-*.js` auto-discovery, so it participates in `npm test` with no separate wiring.
 
 ## Graph Nodes
 
@@ -82,7 +82,7 @@ Every other transition in this graph is a straight, acyclic walk through `ROUTE_
 input_safety → memory → classify → retrieve → expand_context → impact_analysis → qa_plan → guardrails → synthesize → END
 ```
 
-The linear mode skips supervisor/human_review nodes entirely and is wire-compatible with pre-P2 checkpoint data.
+The linear mode skips supervisor/human_review nodes entirely and is wire-compatible with pre-P2 checkpoint data. Because it has no supervisor node and no `human_review` node, it also has no QACritic revise loop and no HITL safety gate — every HITL trigger signal (risk level, supervisor flag, safety-scan flags, critic block) is structurally inert here regardless of `AGENT_HITL_ENABLED`; `server.js` logs a one-time `console.warn` naming this whenever the effective mode is linear.
 
 Each node appends trace metadata so the UI can show the agent path instead of hiding the workflow.
 
@@ -326,7 +326,7 @@ Static checks cover:
 - locale key sync
 - text quality
 - agent benchmark contract
-- unit tests under `test/` (`node --test test/**/*.js`, 231 cases across 11 test files)
+- unit tests under `test/` (`node --test test/**/*.js`, 237 cases across 11 test files)
 - bounded QACritic revise-loop mechanism (`scripts/check-revise-loop.js`): offline, no-API-key proof that a revise verdict loops back to `retrieve`, folds `additional_queries` into the next retrieval pass, resolves in a constructed fixture (or exhausts its round budget and still terminates in another) — see "What it does and does not prove" above
 - revise loop × HITL cross-feature regression (`scripts/check-revise-hitl-cross.js`): a fake-LLM-backed fixture (the deterministic critic cannot produce "revise" and a cited high-risk area at the same time) proving a revise round can resolve, then a high-risk pause via native `interrupt()`, then a decision resume, still compose correctly through the SAME `decideNextRoute` and persisted graph state (the revise round resolves the critic to `"approve"` before the HITL gate, so `critic_flag` does not co-fire here — the fixture's own QACritic call count assertion pins that)
 - Supervisor `require_human_review` as a second HITL trigger (`scripts/check-hitl-supervisor-trigger.js`): a fake-LLM-backed fixture with `require_human_review=true` and a `riskLevel` that never reaches `"high"`, proving the pause is genuinely explained by the supervisor flag alone (`hitl.triggers` is exactly `["supervisor_flag"]`) and that a decision resume still completes correctly; the identical fixture with `require_human_review=false` is the load-bearing negative control (no pause at all)

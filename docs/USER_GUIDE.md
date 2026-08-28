@@ -98,7 +98,7 @@ npm run dev
 **确定性角色/工具节点**：SafetyGuard、MemoryCurator、Classifier、Retriever、OnboardingPlanner、Synthesizer、Harness。它们不因出现在 LangGraph node 中就被定义成独立模型 Agent。
 
 **新特性（2026-08-07）**：
-- **Supervisor 路由**：确定性规则表 `ROUTE_RULES` 驱动动态编排，支持 `AGENT_GRAPH_MODE=linear` 一键回退。
+- **Supervisor 路由**：确定性规则表 `ROUTE_RULES` 驱动动态编排，支持 `AGENT_GRAPH_MODE=linear` 一键回退到原始的 9 节点线性管线；但 linear 模式没有 supervisor 路由、没有 QACritic revise 环，也没有 `human_review` 节点，因此无论 `AGENT_HITL_ENABLED` 是否为 `true`，HITL 在该模式下都完全失效（服务启动时会打印一条告警）。
 - **HITL 审核**：启用 `AGENT_HITL_ENABLED=true` 后，四类信号中任意一个都会暂停到人工审核节点：高风险变更（`riskLevel === "high"`）、Supervisor 自身请求复核（`supervisorPlan.require_human_review`）、输入问题/检索到的仓库内容被安全扫描标记（`inputSafety`/`retrievedSafety` 状态为 `needs_review`），或 QACritic 在有界 revise 环预算用尽后仍返回 `verdict="revise"`（`critic_flag`——流水线即将交付一个 critic 自己仍在拒绝的答案，此时才需要人工介入；若预算未用尽，环路会照常再跑一轮而不会暂停）。通过 `/api/langgraph-resume` 提交 approve/reject 决策；暂停卡片会标明具体是哪个信号触发的（`hitl.reason`/`hitl.triggers`），安全类信号的 `hitl.reason` 还会点名具体的风险类型（如 `"input flagged: prompt_injection"`），`critic_flag` 的 `hitl.reason` 会点名具体轮数（如 `"critic still requested revision after 1 round(s)"`）。approve 只是放行本次执行，不会清除 `safety.status`（仍保持 `needs_review`）；reject 则直接阻断，不返回完整答案。确定性/离线回退路径下，`require_human_review`/`risk_hypothesis`/`riskLevel` 都只是基于问题关键词或文件路径的启发式判断，并非对变更本身的证据化推理。
 - **Agent Roster 面板**：页面展示所有 Agent 角色及其工具子集。
 - **Handoff 流转链**：可视化 Agent 间的交接路径（sender → recipient）。
@@ -252,7 +252,7 @@ export OPENAI_MODEL_QA_CRITIC=gpt-4o-mini
 
 ### 7.1 自动化验收
 
-- `npm run test:static`：静态契约、文案、依赖、架构文档和前端 UI 结构检查（`scripts/check-*.js`，33 项；其中也包含 `test/` 下 231 条 `node:test` 单元测试的运行）。
+- `npm run test:static`：静态契约、文案、依赖、架构文档和前端 UI 结构检查（`scripts/check-*.js`，34 项；其中也包含 `test/` 下 237 条 `node:test` 单元测试的运行）。
 - `npm run test:smoke`：后端 API、LangGraph、记忆、harness、安全、评价指标的临时服务回归测试。
 - `npm run test:ui`：启动临时服务，拉取真实前端资源，导入 sample workspace，运行 Agent Workflow，并确认 Memory / Harness / Safety / long-term memory / Dashboard / harness audit panel 都有可渲染数据。
 - `npm run test:safety` / `test:memory` / `test:user-memory` / `test:auth` / `test:embedding` / `test:benchmark` / `test:mcp`：分别对应安全红队、记忆压缩、用户记忆隔离、认证边界、embedding provider、agent benchmark 和 MCP server 的独立回归测试。

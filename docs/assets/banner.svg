@@ -96,6 +96,6 @@
       <rect x="1000" y="188" width="120" height="34" rx="17" fill="#ffffff" opacity="0.16"/>
       <text x="1018" y="210" fill="#ffffff">MCP Server</text>
     </g>
-    <text x="362" y="252" font-size="15" fill="#c7d2fe">Zero API key required · 231 unit tests · 33 static gates · 9 black-box suites</text>
+    <text x="362" y="252" font-size="15" fill="#c7d2fe">Zero API key required · 237 unit tests · 34 static gates · 9 black-box suites</text>
   </g>
 </svg>

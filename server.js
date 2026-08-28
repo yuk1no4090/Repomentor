@@ -1520,6 +1520,34 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   log("info", "server started", { host: HOST, port: PORT, graph_mode: AGENT_GRAPH_MODE, hitl_enabled: AGENT_HITL_ENABLED });
+  // N7 Item 1: AGENT_GRAPH_MODE=linear compiles a hardwired 9-node chain
+  // (see lib/agent-graph.js's createAgentGraph) with NO supervisor node, NO
+  // conditional routing, NO QACritic revise loop, and NO human_review node --
+  // so every HITL trigger signal (risk level, the supervisor's own
+  // require_human_review flag, input/retrieved safety-scan flags, and the
+  // critic's own block) is structurally inert in this mode, regardless of
+  // AGENT_HITL_ENABLED. An operator who flips to linear "to save supersteps"
+  // silently loses every pause-for-review guarantee, so this is surfaced as a
+  // one-time, unmissable stderr warning (console.warn, not the JSON `log()`
+  // helper, which routes non-error levels to stdout) right where the other
+  // one-time startup log already lives -- inside server.listen()'s callback,
+  // which runs exactly once per server process, only for a process that is
+  // actually serving traffic (unlike lib/config.js's module-init, which would
+  // also fire for every check script / mcp-server.js process that merely
+  // imports a constant from lib/config.js, and unlike putting this inside
+  // lib/agent-graph.js's createAgentGraph(), which is called fresh on EVERY
+  // /api/agent-impact request, not once per process).
+  if (AGENT_GRAPH_MODE === "linear") {
+    console.warn(
+      "[startup] AGENT_GRAPH_MODE=linear: supervisor routing, the QACritic revise loop, "
+      + "and the human_review pause node are ALL structurally absent from this graph -- "
+      + "every HITL trigger signal (risk level, supervisor require_human_review flag, "
+      + "input/retrieved safety-scan flags, critic block) is inert."
+      + (AGENT_HITL_ENABLED
+        ? " AGENT_HITL_ENABLED=true has no effect in linear mode."
+        : "")
+    );
+  }
 });
 
 // ── Graceful shutdown ──

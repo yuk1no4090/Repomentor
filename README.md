@@ -23,7 +23,7 @@ New hires typically take days to weeks to build working context on an unfamiliar
 - **An AI quality dashboard built into the product, not bolted on** — citation coverage, answer-schema compliance, and guardrail hit rates are first-class product UI instead of an external LLMOps tool a PM has to ask an engineer to open.
 - **An MCP Server** exposing 4 tools (repository Q&A, impact analysis, onboarding plans, project listing) so AI coding agents such as Claude Code or Cursor can consume this project's analysis directly.
 
-**Quality bar:** 231 `node:test` unit tests, 33 static-check gates, and 9 runtime black-box test suites — all running end-to-end with zero API key required (`npm test`).
+**Quality bar:** 237 `node:test` unit tests, 34 static-check gates, and 9 runtime black-box test suites — all running end-to-end with zero API key required (`npm test`).
 
 More: [docs/POSITIONING.md](docs/POSITIONING.md) (positioning + market validation) · [docs/AGENT_RUNTIME_ARCHITECTURE.md](docs/AGENT_RUNTIME_ARCHITECTURE.md) (implementation boundary) · [docs/PRD.md](docs/PRD.md) (requirements + scope decisions) · [docs/CHANGELOG.md](docs/CHANGELOG.md) (development log)
 
@@ -259,7 +259,7 @@ The project targets Node.js 24 because the long-term memory store uses the built
 | `OPENAI_TEMPERATURE_QA_CRITIC` | unset (falls back to `OPENAI_TEMPERATURE`) | Sampling temperature for the QACritic agent only. |
 | `LLM_CONTEXT_TOKEN_BUDGET` | `8000` | Estimated prompt context token budget before using deterministic fallback. |
 | `LLM_REQUEST_TIMEOUT_MS` | runtime default | Per-model-call timeout for both the LangGraph workflow and the direct chat harness. Invalid or non-positive values fall back to a finite default. |
-| `AGENT_GRAPH_MODE` | `supervisor` | Graph routing mode: `supervisor` for dynamic multi-agent routing or `linear` for the original 9-node pipeline. |
+| `AGENT_GRAPH_MODE` | `supervisor` | Graph routing mode: `supervisor` for dynamic multi-agent routing, or `linear` for the original 9-node pipeline — linear mode has no supervisor routing, no QACritic revise loop, and no `human_review` node, so HITL is structurally inert regardless of `AGENT_HITL_ENABLED` (server startup logs a warning naming this whenever linear mode is active). |
 | `AGENT_MAX_STEPS` | `14` | Maximum LangGraph execution steps (increased from 9 to support supervisor routing overhead). |
 | `AGENT_MAX_REVISION_ROUNDS` | `1` | Maximum number of bounded QACritic revise rounds (`qa_plan` verdict `"revise"` loops back to `retrieve`). `0` disables the revise cycle entirely. |
 | `AGENT_HITL_ENABLED` | `false` | Set to `true` to enable human-in-the-loop review for high-risk changes, whenever the Supervisor's own plan requests review (`supervisorPlan.require_human_review`), whenever the input question or retrieved repository content is flagged by the safety scan, or whenever the QACritic still returns verdict `"revise"` once the bounded revise loop's budget is exhausted (`critic_flag` — the pipeline would otherwise ship an answer the critic itself still rejects). In the deterministic/offline fallback (no `OPENAI_API_KEY`), `require_human_review`/`risk_hypothesis`/`riskLevel` are question-keyword or file-path heuristics, not evidence-grounded reasoning about the actual change. |
@@ -426,7 +426,7 @@ Common API errors include:
 - `LANGGRAPH_RESUME_USER_MISMATCH`
 - `INVALID_FEEDBACK_TYPE`
 - `ROUTE_NOT_FOUND`
-- `STREAM_FAILED` (`/api/agent-impact/stream` only — an unexpected error after the SSE response has already started; delivered as an `error` SSE event, since the HTTP status is already committed by then)
+- `STREAM_FAILED` (`/api/agent-impact/stream` only — the fallback code for an unexpected error after the SSE response has already started; delivered as an `error` SSE event, since the HTTP status is already committed by then. This is only the fallback: `code: error.code || "STREAM_FAILED"` sends the underlying error's own code when it has one — e.g. a rare commit-phase race can surface `PROJECT_NOT_FOUND` instead — and `STREAM_FAILED` only when that error carries no code of its own)
 
 `/api/agent-impact` remains compatible with the existing frontend and adds these fields:
 
@@ -446,7 +446,7 @@ Common API errors include:
 | `revise_round_entered` | `{ round, additional_queries, reason, elapsed_ms }` | Once per bounded QACritic revise round, when `retrieve` re-enters carrying the critic's `additional_queries`. |
 | `hitl_paused` | `{ reason, risk_level, change_type, triggers, elapsed_ms }` | Once, if any HITL trigger fires LangGraph's native `interrupt()` inside `human_review`. `triggers` names which signal(s) fired: `high_risk` (ImpactAnalyst risk), `supervisor_flag` (Supervisor's own plan), `input_safety_flag`/`retrieved_safety_flag` (deterministic safety scan on the question / retrieved repository content), or `critic_flag` (QACritic still returned `"revise"` after the bounded revise loop's budget was exhausted) — any combination, in that fixed order. |
 | `final` | `{ answerId, kind, payload }` | Once, last — the exact same shape `POST /api/agent-impact`'s JSON response body has. |
-| `error` | `{ error, code }` | Only if the run fails after the SSE response has already started (see `STREAM_FAILED` above). |
+| `error` | `{ error, code }` | Only if the run fails after the SSE response has already started; `code` is the failing error's own code when it has one, `STREAM_FAILED` otherwise (see `STREAM_FAILED` above). |
 
 Authentication uses the same `Authorization: Bearer ...` (or `X-API-Key`/`X-AI-PM-Token`) header as every other route — deliberately **not** the browser `EventSource` API (which cannot set custom request headers) and **not** a token passed as a query-string parameter (tokens in URLs leak into server logs and browser history). Clients consume the stream with `fetch()` and `response.body.getReader()`, parsing `event: <type>\ndata: <json>\n\n` frames by hand; `public/app.js`'s `streamAgentImpact()` is the reference implementation, including graceful fallback to the plain JSON route if the stream endpoint is unavailable, errors mid-flight, or the browser lacks `fetch`/`ReadableStream` support. Closing the client connection mid-stream aborts the underlying LangGraph run (via the same `AbortController` the request-timeout race already uses) and skips writing an answer record for that run.
 

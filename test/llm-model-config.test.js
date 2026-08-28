@@ -194,13 +194,24 @@ describe("resolveLlmTemperature / resolveLlmTemperatureForRole", () => {
 // ("0b1" -> 1), and scientific ("1e-1" -> 0.1) literal syntax -- so a typo'd
 // env var like OPENAI_TEMPERATURE_QA_CRITIC=0x2 silently became temperature
 // 2 instead of being rejected as malformed. The fix pre-validates against a
-// strict plain-decimal regex (`/^-?\d+(\.\d+)?$/`) before ever calling
-// Number(); anything that doesn't match is treated the same as today's
-// unset/NaN/out-of-range case (falls through to the next resolution step).
-// Exercised through the exported resolveLlmTemperature()/
+// strict plain-decimal regex (`/^[+-]?(\d+\.?\d*|\.\d+)$/`) before ever
+// calling Number(); anything that doesn't match is treated the same as
+// today's unset/NaN/out-of-range case (falls through to the next resolution
+// step). Exercised through the exported resolveLlmTemperature()/
 // resolveLlmTemperatureForRole() -- normalizeTemperatureEnvValue itself is
 // an internal (non-exported) helper -- same pattern the existing
 // "treats blank/non-numeric/out-of-range values as unset" test above uses.
+//
+// N7 Item 2 fast-follow-to-the-fast-follow: the regex above replaces an
+// earlier, narrower `/^-?\d+(\.\d+)?$/` that (correctly) rejected
+// hex/binary/scientific syntax but ALSO silently rejected plain-decimal forms
+// a human operator plausibly types by hand -- a leading-dot decimal (".5"),
+// an explicit leading "+" ("+1"), and a trailing-dot integer ("1.") -- which
+// was an undocumented behavior change from the pre-regex bare Number() call
+// (which accepted all three). See the "accepts human-typed decimal forms"
+// describe block below for the red/green coverage of that fix; the
+// hex/binary/scientific-rejection tests in THIS block are unaffected by it
+// and still pass unchanged.
 describe("normalizeTemperatureEnvValue rejects non-decimal numeric literal syntax (hex/binary/scientific)", () => {
   test('rejects a hex literal ("0x1") -- falls back to the default rather than silently parsing it as decimal 1', () => {
     process.env.OPENAI_TEMPERATURE = "0x1";
@@ -242,6 +253,47 @@ describe("normalizeTemperatureEnvValue rejects non-decimal numeric literal synta
 
   test('plain decimals out of the [0, 2] range are still rejected: "-1", "3"', () => {
     for (const value of ["-1", "3"]) {
+      process.env.OPENAI_TEMPERATURE = value;
+      assert.equal(resolveLlmTemperature(), 0.2, `expected default for OPENAI_TEMPERATURE=${JSON.stringify(value)}`);
+    }
+  });
+});
+
+// N7 Item 2: TEMPERATURE_DECIMAL_PATTERN broadened from `/^-?\d+(\.\d+)?$/`
+// to `/^[+-]?(\d+\.?\d*|\.\d+)$/` so plain-decimal forms a human operator
+// plausibly types by hand are accepted, while hex/binary/octal/scientific
+// literal syntax (covered by the describe block above) remains rejected.
+describe("normalizeTemperatureEnvValue accepts human-typed decimal forms (.5, +1, 1.)", () => {
+  test('a leading-dot decimal (".5") is accepted as 0.5, not rejected as malformed', () => {
+    process.env.OPENAI_TEMPERATURE = ".5";
+    assert.equal(resolveLlmTemperature(), 0.5);
+  });
+
+  test('an explicit leading plus ("+1") is accepted as 1', () => {
+    process.env.OPENAI_TEMPERATURE = "+1";
+    assert.equal(resolveLlmTemperature(), 1);
+  });
+
+  test('a trailing-dot integer ("1.") is accepted as 1', () => {
+    process.env.OPENAI_TEMPERATURE = "1.";
+    assert.equal(resolveLlmTemperature(), 1);
+  });
+
+  test('a role-specific override also accepts these forms -- ".5" on OPENAI_TEMPERATURE_QA_CRITIC wins over OPENAI_TEMPERATURE', () => {
+    process.env.OPENAI_TEMPERATURE = "0.9";
+    process.env.OPENAI_TEMPERATURE_QA_CRITIC = ".5";
+    assert.equal(resolveLlmTemperatureForRole(QA_CRITIC_AGENT.role), 0.5);
+  });
+
+  test("hex/octal/binary/scientific literal syntax is still rejected after the broadening (0x1, 0b1, 1e-1)", () => {
+    for (const value of ["0x1", "0b1", "1e-1"]) {
+      process.env.OPENAI_TEMPERATURE = value;
+      assert.equal(resolveLlmTemperature(), 0.2, `expected default for OPENAI_TEMPERATURE=${JSON.stringify(value)}`);
+    }
+  });
+
+  test('a bare sign or dot alone ("+", "-", ".") is still rejected -- at least one digit is required', () => {
+    for (const value of ["+", "-", "."]) {
       process.env.OPENAI_TEMPERATURE = value;
       assert.equal(resolveLlmTemperature(), 0.2, `expected default for OPENAI_TEMPERATURE=${JSON.stringify(value)}`);
     }
